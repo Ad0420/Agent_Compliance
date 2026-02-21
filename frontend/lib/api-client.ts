@@ -1,0 +1,132 @@
+import { getApiKey, clearApiKey } from "./auth";
+import type {
+  HealthResponse,
+  Organization,
+  ActionListResponse,
+  ActionRecord,
+  ActionQueryParams,
+  ChainVerification,
+  RecordVerification,
+  CheckpointListResponse,
+  Checkpoint,
+  CheckpointVerifyAllResponse,
+  Agent,
+  ApiKey,
+  ApiKeyCreateResponse,
+  ApiKeyCreateInput,
+} from "./api-types";
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+
+function getHeaders(): HeadersInit {
+  const apiKey = getApiKey();
+  return {
+    "Content-Type": "application/json",
+    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+  };
+}
+
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const response = await fetch(`${BASE_URL}${path}`, {
+    ...options,
+    headers: { ...getHeaders(), ...options?.headers },
+  });
+
+  if (response.status === 401) {
+    clearApiKey();
+    if (typeof window !== "undefined") {
+      window.location.href = "/login";
+    }
+    throw new ApiError(401, "Unauthorized");
+  }
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: "Request failed" }));
+    throw new ApiError(response.status, error.detail || `Request failed (${response.status})`);
+  }
+
+  if (response.status === 204) return undefined as T;
+  return response.json();
+}
+
+function buildQuery(params?: Record<string, string | number | undefined>): string {
+  if (!params) return "";
+  const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== "");
+  if (entries.length === 0) return "";
+  const searchParams = new URLSearchParams();
+  entries.forEach(([k, v]) => searchParams.set(k, String(v)));
+  return `?${searchParams.toString()}`;
+}
+
+// Health
+export function getHealth(): Promise<HealthResponse> {
+  return request("/health");
+}
+
+// Actions
+export function getActions(params?: ActionQueryParams): Promise<ActionListResponse> {
+  return request(`/v1/actions${buildQuery(params as Record<string, string | number | undefined>)}`);
+}
+
+export function getAction(id: string): Promise<ActionRecord> {
+  return request(`/v1/actions/${id}`);
+}
+
+// Verification
+export function verifyChain(startSeq?: number, endSeq?: number): Promise<ChainVerification> {
+  return request(`/v1/verify${buildQuery({ start_seq: startSeq, end_seq: endSeq })}`);
+}
+
+export function verifyRecord(id: string): Promise<RecordVerification> {
+  return request(`/v1/verify/${id}`);
+}
+
+// Checkpoints
+export function getCheckpoints(): Promise<CheckpointListResponse> {
+  return request("/v1/verify/checkpoints");
+}
+
+export function createCheckpoint(): Promise<Checkpoint> {
+  return request("/v1/verify/checkpoints", { method: "POST" });
+}
+
+export function verifyAllCheckpoints(): Promise<CheckpointVerifyAllResponse> {
+  return request("/v1/verify/checkpoints/verify", { method: "POST" });
+}
+
+// Agents
+export function getAgents(): Promise<Agent[]> {
+  return request("/v1/agents");
+}
+
+export function getAgent(id: string): Promise<Agent> {
+  return request(`/v1/agents/${id}`);
+}
+
+// Organization
+export function getOrganization(): Promise<Organization> {
+  return request("/v1/organizations/me");
+}
+
+// API Keys
+export function getApiKeys(): Promise<ApiKey[]> {
+  return request("/v1/api-keys");
+}
+
+export function createApiKeyRequest(input: ApiKeyCreateInput): Promise<ApiKeyCreateResponse> {
+  return request("/v1/api-keys", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function revokeApiKey(id: string): Promise<{ detail: string }> {
+  return request(`/v1/api-keys/${id}`, { method: "DELETE" });
+}
