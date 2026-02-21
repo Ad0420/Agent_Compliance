@@ -1,0 +1,6 @@
+Metadata-Version: 2.1
+Name: actionledger
+Version: 0.1.0
+Summary: SDK for the Action Ledger — immutable audit trail for AI agents
+Requires-Python: >=3.10
+Requires-Dist: httpx>=0.25.0

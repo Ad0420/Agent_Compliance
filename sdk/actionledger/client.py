@@ -1,0 +1,137 @@
+import logging
+import time
+
+import httpx
+
+logger = logging.getLogger("actionledger.client")
+
+MAX_RETRIES = 3
+RETRY_BACKOFF_BASE = 0.5
+
+
+class ActionLedgerClient:
+    """Synchronous client for the Action Ledger API."""
+
+    def __init__(
+        self,
+        api_url: str = "http://localhost:8000",
+        api_key: str = "",
+        agent_name: str = "default-agent",
+        agent_version: str | None = None,
+        model_id: str | None = None,
+        framework: str | None = None,
+        timeout: float = 30.0,
+    ):
+        self.api_url = api_url.rstrip("/")
+        self.agent_name = agent_name
+        self.agent_version = agent_version
+        self.model_id = model_id
+        self.framework = framework
+        self._client = httpx.Client(
+            base_url=self.api_url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=timeout,
+        )
+
+    def _request_with_retry(self, method: str, path: str, **kwargs) -> httpx.Response:
+        """Make an HTTP request with exponential backoff retry."""
+        last_exc = None
+        for attempt in range(MAX_RETRIES):
+            try:
+                resp = getattr(self._client, method)(path, **kwargs)
+                resp.raise_for_status()
+                return resp
+            except (httpx.TransportError, httpx.HTTPStatusError) as e:
+                last_exc = e
+                if isinstance(e, httpx.HTTPStatusError) and e.response.status_code < 500:
+                    raise  # Don't retry client errors (4xx)
+                wait = RETRY_BACKOFF_BASE * (2 ** attempt)
+                logger.warning(f"Request failed (attempt {attempt + 1}/{MAX_RETRIES}), retrying in {wait}s: {e}")
+                time.sleep(wait)
+        raise last_exc
+
+    def record_action(
+        self,
+        action_name: str,
+        action_type: str = "function_call",
+        result: str = "success",
+        input_data: dict | None = None,
+        outcome: dict | None = None,
+        reasoning: dict | None = None,
+        duration_ms: int | None = None,
+        error_message: str | None = None,
+        **kwargs,
+    ) -> dict:
+        """Record a single action."""
+        payload = {
+            "action_name": action_name,
+            "action_type": action_type,
+            "agent_name": self.agent_name,
+            "agent_version": self.agent_version,
+            "model_id": self.model_id,
+            "framework": self.framework,
+            "result": result,
+            "input_data": input_data or {},
+            "outcome": outcome or {},
+            "reasoning": reasoning or {},
+            "duration_ms": duration_ms,
+            "error_message": error_message,
+            **kwargs,
+        }
+        resp = self._request_with_retry("post", "/v1/actions", json=payload)
+        return resp.json()
+
+    def record_action_batch(self, records: list[dict]) -> list[dict]:
+        """Record a batch of actions."""
+        resp = self._request_with_retry("post", "/v1/actions/batch", json={"records": records})
+        return resp.json()
+
+    def query_actions(self, **filters) -> dict:
+        """Query action records with filters."""
+        resp = self._request_with_retry("get", "/v1/actions", params=filters)
+        return resp.json()
+
+    def verify_chain(self) -> dict:
+        """Verify the integrity of the action chain."""
+        resp = self._request_with_retry("get", "/v1/verify")
+        return resp.json()
+
+    def register_agent(
+        self,
+        name: str,
+        description: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Register an agent."""
+        payload = {"name": name, "description": description, "metadata": metadata or {}}
+        resp = self._request_with_retry("post", "/v1/agents", json=payload)
+        return resp.json()
+
+    def list_agents(self) -> list[dict]:
+        """List all agents."""
+        resp = self._request_with_retry("get", "/v1/agents")
+        return resp.json()
+
+    def create_checkpoint(self) -> dict:
+        """Create a signed checkpoint of the current chain state."""
+        resp = self._request_with_retry("post", "/v1/verify/checkpoints")
+        return resp.json()
+
+    def list_checkpoints(self) -> dict:
+        """List all checkpoints for the organization."""
+        resp = self._request_with_retry("get", "/v1/verify/checkpoints")
+        return resp.json()
+
+    def verify_checkpoints(self) -> dict:
+        """Verify all checkpoints for the organization."""
+        resp = self._request_with_retry("post", "/v1/verify/checkpoints/verify")
+        return resp.json()
+
+    def close(self):
+        self._client.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
