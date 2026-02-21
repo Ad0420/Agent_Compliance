@@ -1,0 +1,67 @@
+version: "3.9"
+
+# Production deployment configuration.
+#
+# Usage:
+#   1. Copy .env.example to .env and set SECRET_KEY + POSTGRES_PASSWORD
+#   2. docker compose -f docker-compose.prod.yml up -d
+#
+# Optional AWS immutability (set in .env):
+#   ACTIONLEDGER_KMS_PROVIDER=aws
+#   AWS_KMS_KEY_ID=arn:aws:kms:us-east-1:123456789:key/your-key-id
+#   ACTIONLEDGER_EXTERNAL_STORE=s3
+#   ACTIONLEDGER_S3_BUCKET=your-worm-bucket
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: actionledger
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: actionledger
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/migrations/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U actionledger"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: always
+    # No port binding — DB only accessible within Docker network
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://actionledger:${POSTGRES_PASSWORD}@db:5432/actionledger
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in .env}
+      ENVIRONMENT: production
+      RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-200}
+      RATE_LIMIT_BURST: ${RATE_LIMIT_BURST:-30}
+      # KMS signing (local HMAC by default, set to "aws" for hardware-backed)
+      ACTIONLEDGER_KMS_PROVIDER: ${ACTIONLEDGER_KMS_PROVIDER:-local}
+      ACTIONLEDGER_SIGNING_KEY: ${ACTIONLEDGER_SIGNING_KEY:-}
+      AWS_KMS_KEY_ID: ${AWS_KMS_KEY_ID:-}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      # External proof store (local file by default, set to "s3" for WORM)
+      ACTIONLEDGER_EXTERNAL_STORE: ${ACTIONLEDGER_EXTERNAL_STORE:-local}
+      ACTIONLEDGER_S3_BUCKET: ${ACTIONLEDGER_S3_BUCKET:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: always
+    command: >
+      gunicorn app.main:app
+      --bind 0.0.0.0:8000
+      --workers 4
+      --worker-class uvicorn.workers.UvicornWorker
+      --access-logfile -
+      --error-logfile -
+      --timeout 120
+
+volumes:
+  postgres_data:
