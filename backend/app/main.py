@@ -15,6 +15,7 @@ from .routes import (
     organizations_router,
     api_keys_router,
     checkpoints_router,
+    export_router,
 )
 from .middleware import RateLimitMiddleware
 from .services.immutability import install_sqlite_triggers
@@ -72,3 +73,4 @@ app.include_router(checkpoints_router, prefix="/v1")
 app.include_router(verification_router, prefix="/v1")
 app.include_router(organizations_router, prefix="/v1")
 app.include_router(api_keys_router, prefix="/v1")
+app.include_router(export_router, prefix="/v1")

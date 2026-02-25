@@ -10,7 +10,9 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { formatDate, truncateHash } from "@/lib/utils";
-import { ShieldCheck, ShieldAlert, Plus, RefreshCw, Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { ShieldCheck, ShieldAlert, Plus, RefreshCw, Loader2, CheckCircle2, XCircle, FileDown } from "lucide-react";
+import { exportPdf } from "@/lib/api-client";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import type { CheckpointVerifyAllResponse } from "@/lib/api-types";
 
@@ -22,6 +24,7 @@ export default function VerificationPage() {
   const verifyCheckpoints = useVerifyCheckpoints();
   const [verifyResults, setVerifyResults] = useState<CheckpointVerifyAllResponse | null>(null);
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
 
   const handleCreateCheckpoint = async () => {
     await createCheckpoint.mutateAsync();
@@ -31,6 +34,18 @@ export default function VerificationPage() {
   const handleVerifyAll = async () => {
     const result = await verifyCheckpoints.mutateAsync();
     setVerifyResults(result);
+  };
+
+  const handleDownloadPdf = async () => {
+    setDownloadingPdf(true);
+    try {
+      await exportPdf();
+      toast.success("Audit report downloaded");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "PDF generation failed");
+    } finally {
+      setDownloadingPdf(false);
+    }
   };
 
   return (
@@ -74,10 +89,24 @@ export default function VerificationPage() {
               )}
             </div>
           </div>
-          <Button variant="outline" size="sm" onClick={() => refetchChain()} disabled={chainLoading}>
-            <RefreshCw className={cn("mr-1 h-4 w-4", chainLoading && "animate-spin")} />
-            Re-verify
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => refetchChain()} disabled={chainLoading}>
+              <RefreshCw className={cn("mr-1 h-4 w-4", chainLoading && "animate-spin")} />
+              Re-verify
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleDownloadPdf}
+              disabled={downloadingPdf}
+            >
+              {downloadingPdf ? (
+                <><Loader2 className="mr-1 h-4 w-4 animate-spin" /> Generating...</>
+              ) : (
+                <><FileDown className="mr-1 h-4 w-4" /> Download Report</>
+              )}
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

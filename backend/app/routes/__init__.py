@@ -4,6 +4,7 @@ from .verification import router as verification_router
 from .organizations import router as organizations_router
 from .api_keys import router as api_keys_router
 from .checkpoints import router as checkpoints_router
+from .export import router as export_router
 
 __all__ = [
     "actions_router",
@@ -12,4 +13,5 @@ __all__ = [
     "organizations_router",
     "api_keys_router",
     "checkpoints_router",
+    "export_router",
 ]

@@ -271,7 +271,7 @@ All endpoints require `Authorization: Bearer <api_key>` header (except `/health`
 | `GET` | `/v1/verify/{id}` | read | Verify a single record's hash + chain link |
 | `POST` | `/v1/verify/checkpoints` | admin | Create signed checkpoint (Merkle root + external proof) |
 | `GET` | `/v1/verify/checkpoints` | read | List all checkpoints |
-| `POST` | `/v1/verify/checkpoints/verify` | admin | Verify all checkpoint signatures |
+| `POST` | `/v1/verify/checkpoints/verify` | read | Verify all checkpoint signatures |
 
 ### Agents & Organization
 
@@ -289,6 +289,13 @@ All endpoints require `Authorization: Bearer <api_key>` header (except `/health`
 | `POST` | `/v1/api-keys` | admin | Create API key (raw key returned **once**) |
 | `GET` | `/v1/api-keys` | admin | List API keys (prefix only) |
 | `DELETE` | `/v1/api-keys/{id}` | admin | Revoke API key (permanent, irreversible) |
+
+### Export
+
+| Method | Path | Permission | Description |
+|--------|------|------------|-------------|
+| `GET` | `/v1/export/csv` | read | Stream CSV of action records (filters: `agent_name`, `action_type`, `result`, `start_date`, `end_date`; `limit` default 5000, max 10000; 26 columns) |
+| `GET` | `/v1/export/pdf` | read | Generate PDF audit report (chain integrity + checkpoints + action records; max 5000 records) |
 
 ### System
 
@@ -325,7 +332,7 @@ All config is via environment variables. Set in `.env` file or export directly.
 | `MAX_JSON_FIELD_SIZE` | `1000000` | Max bytes per JSON field (1 MB) |
 | `API_KEY_PREFIX` | `al_live_` | Prefix for generated API keys |
 
-A complete `.env.example` is in the project root.
+Copy the table above into a `.env` file in the `backend/` directory and set at minimum `SECRET_KEY` and `DATABASE_URL` before running in production.
 
 ---
 
@@ -349,7 +356,7 @@ Data stored in `backend/actionledger.db` (single file, auto-created).
 docker compose up -d
 
 # Production (Gunicorn, 4 workers, DB port closed)
-cp .env.example .env           # Edit SECRET_KEY and POSTGRES_PASSWORD
+# Create a .env file with SECRET_KEY, POSTGRES_PASSWORD, and other required vars (see Configuration)
 docker compose -f docker-compose.prod.yml up -d
 ```
 
@@ -491,7 +498,7 @@ cd frontend && npm run build
 
 ```
 .
-├── .env.example                     Environment template (copy to .env)
+├── .gitignore                       Ignores __pycache__, *.db, node_modules, .next, .env files
 ├── docker-compose.yml               Dev: PostgreSQL 16 + API with hot-reload
 ├── docker-compose.prod.yml          Prod: Gunicorn, 4 workers, DB port closed
 ├── README.md                        This file
@@ -524,7 +531,8 @@ cd frontend && npm run build
 │   │   │   ├── verification.py      Chain + record verification
 │   │   │   ├── checkpoints.py       Checkpoint create/list/verify
 │   │   │   ├── organizations.py     Org CRUD
-│   │   │   └── api_keys.py          Key create/list/revoke
+│   │   │   ├── api_keys.py          Key create/list/revoke
+│   │   │   └── export.py            CSV stream + PDF generation endpoints
 │   │   ├── services/
 │   │   │   ├── hashing.py           *** HASHABLE_FIELDS, canonical JSON, SHA-256
 │   │   │   ├── chain.py             Chain building with per-org locks
@@ -534,6 +542,7 @@ cd frontend && npm run build
 │   │   │   ├── external_store.py    LocalFileStore + S3WORMStore
 │   │   │   ├── merkle.py            Binary Merkle tree (proof gen/verify)
 │   │   │   ├── immutability.py      SQLite trigger installation
+│   │   │   ├── export.py            CSV streaming generator + PDF builder (fpdf2)
 │   │   │   └── auth.py              API key generation, auth, permissions
 │   │   └── middleware/
 │   │       └── rate_limit.py        Sliding-window per API key
@@ -553,8 +562,7 @@ cd frontend && npm run build
 │           └── crewai.py            BaseTool monkey-patch
 │
 └── frontend/
-    ├── package.json                 Dependencies (Next.js, React, Radix, TanStack)
-    ├── .env.local                   NEXT_PUBLIC_API_URL=http://localhost:8000
+    ├── package.json                 Dependencies (Next.js 16, React 19, Radix, TanStack)
     ├── components.json              shadcn/ui configuration
     ├── lib/
     │   ├── api-client.ts            Typed fetch wrapper (Bearer auth, 401 redirect)
@@ -584,10 +592,10 @@ cd frontend && npm run build
             ├── layout.tsx           Sidebar + topbar + auth guard
             ├── page.tsx             Dashboard (status, stats, chart, recent)
             ├── actions/
-            │   ├── page.tsx         Filterable list with pagination
+            │   ├── page.tsx         Filterable list with pagination + Export CSV button
             │   └── [id]/page.tsx    Detail view with JSON viewer
             ├── verification/
-            │   └── page.tsx         Chain integrity + checkpoint management
+            │   └── page.tsx         Chain integrity + checkpoint management + Download Report button
             ├── agents/
             │   ├── page.tsx         Agent list
             │   └── [id]/page.tsx    Agent detail + filtered actions
@@ -600,8 +608,8 @@ cd frontend && npm run build
 ## Architecture
 
 ```
-Frontend (Next.js 14)                SDK (Python)
-  6 pages: Dashboard, Actions,        @audit / @async_audit decorators
+Frontend (Next.js 16)                SDK (Python)
+  8 pages: Dashboard, Actions,        @audit / @async_audit decorators
   Verification, Agents, Settings       LangChain | OpenAI | CrewAI integrations
        |                                    |
        | HTTP (Bearer token)                v
@@ -618,7 +626,7 @@ Frontend (Next.js 14)                SDK (Python)
              Auth (API Key + RBAC: read/write/admin)
                   |
              Routes: /v1/actions, /v1/verify, /v1/agents,
-                     /v1/organizations, /v1/api-keys
+                     /v1/organizations, /v1/api-keys, /v1/export
                   |
                   v
            Services
@@ -656,28 +664,31 @@ Frontend (Next.js 14)                SDK (Python)
 
 ## Roadmap
 
-**Step 1 of 6 complete. Next: PDF/CSV export.**
+**Step 2 of 6 complete. Next: Deploy to AWS.**
 
 | Step | What | Status | Effort |
 |------|------|--------|--------|
 | 1 | Frontend Dashboard | **Done** | -- |
-| 2 | PDF/CSV Export | **Next** | Medium |
-| 3 | Deploy to AWS | Planned | Large |
+| 2 | PDF/CSV Export | **Done** | -- |
+| 3 | Deploy to AWS | **Next** | Large |
 | 4 | Webhook/Alerting | Planned | Medium |
 | 5 | Enterprise Hardening | Planned | Large |
 | 6 | Scale & Multi-tenant | Future | XL |
 
 <details>
-<summary><strong>Step 2 — PDF/CSV Export</strong></summary>
+<summary><strong>Step 2 — PDF/CSV Export (Done)</strong></summary>
 
-Regulators need downloadable reports, not API responses.
+Regulators cannot accept "call our API" as evidence. Downloadable audit reports are required by EU AI Act Art. 11, SEC Rule 17a-4, and Colorado AI Act.
 
-**What to build:**
-- `GET /v1/export/csv?start_date=...&end_date=...` — streams CSV
-- `GET /v1/export/pdf?start_date=...&end_date=...` — generates PDF with chain verification status, hash chain proof, checkpoint signatures
-- Download button in the frontend dashboard
+**What was built:**
+- `GET /v1/export/csv` — streams a CSV of action records (26 columns, 500-record chunks, up to 10,000 records), requires `read` permission
+- `GET /v1/export/pdf` — generates a PDF compliance report (chain integrity status, checkpoints table, action records table, max 5,000 records), requires `read` permission
+- "Export CSV" button on the Actions page (respects current filters)
+- "Download Report" button on the Verification page (PDF)
 
-**Regulatory driver:** EU AI Act Art. 11/Annex IV (technical documentation), SEC Rule 17a-4 (accessible records), Colorado (impact assessments). Every compliance buyer will ask for this.
+Both endpoints accept the same filters: `start_date`, `end_date`, `agent_name`, `action_type`, `result`.
+
+**Regulatory driver:** EU AI Act Art. 11/Annex IV (technical documentation), SEC Rule 17a-4 (accessible records), Colorado (impact assessments).
 </details>
 
 <details>
@@ -770,8 +781,7 @@ Action Ledger targets the emerging AI compliance landscape. This section maps ex
 
 | Requirement | Regulation | Gap | Priority |
 |---|---|---|---|
-| Downloadable audit reports | EU AI Act Art. 11, SEC 17a-4 | No PDF/CSV export | P0 (Step 2) |
-| Alerting on tampering | EU AI Act Art. 26, FINRA | No webhooks/notifications | P1 (Step 4) |
+| Alerting on tampering | EU AI Act Art. 26, FINRA | No webhooks/notifications | P0 (Step 4) |
 | Impact assessment templates | Colorado AI Act, ISO 42001 | Not generated or stored | P1 |
 | Training data provenance | ISO 42001 A.8.5, EU AI Act Annex IV | Logs actions, not training data lineage | P2 |
 | Bias/fairness metrics | NYC LL 144, Colorado | Data exists, analysis layer doesn't | P2 |
