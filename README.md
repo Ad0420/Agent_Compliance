@@ -1,4 +1,4 @@
-# Action Ledger
+# Action Ledger - v1
 
 Immutable audit trail for AI agent actions. Cryptographic hash chain with tamper-proof verification, built for compliance teams who need to prove what their AI agents did, when, and why.
 
