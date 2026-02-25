@@ -12,7 +12,9 @@ import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { PaginationControls } from "@/components/shared/pagination-controls";
 import { formatDate, formatDuration, truncateHash } from "@/lib/utils";
-import { Search, X } from "lucide-react";
+import { Search, X, Download, Loader2 } from "lucide-react";
+import { exportCsv } from "@/lib/api-client";
+import { toast } from "sonner";
 import type { ActionQueryParams } from "@/lib/api-types";
 
 const ALL_VALUE = "__all__";
@@ -20,6 +22,7 @@ const ALL_VALUE = "__all__";
 export default function ActionsPage() {
   const [filters, setFilters] = useState<ActionQueryParams>({ limit: 50, offset: 0 });
   const [searchInput, setSearchInput] = useState("");
+  const [downloading, setDownloading] = useState(false);
   const { data, isLoading } = useActions(filters);
   const { data: agents } = useAgents();
 
@@ -34,6 +37,24 @@ export default function ActionsPage() {
   const clearFilters = () => {
     setFilters({ limit: 50, offset: 0 });
     setSearchInput("");
+  };
+
+  const handleExportCsv = async () => {
+    setDownloading(true);
+    try {
+      await exportCsv({
+        agent_name: filters.agent_name,
+        action_type: filters.action_type,
+        result: filters.result,
+        start_date: filters.start_date,
+        end_date: filters.end_date,
+      });
+      toast.success("CSV export downloaded");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Export failed");
+    } finally {
+      setDownloading(false);
+    }
   };
 
   const hasFilters = filters.agent_name || filters.action_type || filters.result || filters.search;
@@ -97,6 +118,19 @@ export default function ActionsPage() {
               <X className="mr-1 h-4 w-4" /> Clear
             </Button>
           )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExportCsv}
+            disabled={downloading}
+            className="ml-auto"
+          >
+            {downloading ? (
+              <><Loader2 className="mr-1 h-4 w-4 animate-spin" /> Exporting...</>
+            ) : (
+              <><Download className="mr-1 h-4 w-4" /> Export CSV</>
+            )}
+          </Button>
         </CardContent>
       </Card>
 
