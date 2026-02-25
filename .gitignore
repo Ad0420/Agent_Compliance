@@ -1,0 +1,42 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+.env
+.venv
+venv/
+env/
+*.pyo
+
+# ── SQLite databases ──────────────────────────────────────────────────────────
+*.db
+*.db-shm
+*.db-wal
+
+# ── Node / Next.js ────────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/.vercel/
+frontend/*.tsbuildinfo
+frontend/.env.local
+frontend/.env*.local
+
+# ── External proof / checkpoint files (local dev artifacts) ──────────────────
+external_proofs.jsonl
+checkpoints.json
+backend/external_proofs.jsonl
+backend/checkpoints.json
+
+# ── OS / editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

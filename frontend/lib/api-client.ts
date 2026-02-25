@@ -130,3 +130,44 @@ export function createApiKeyRequest(input: ApiKeyCreateInput): Promise<ApiKeyCre
 export function revokeApiKey(id: string): Promise<{ detail: string }> {
   return request(`/v1/api-keys/${id}`, { method: "DELETE" });
 }
+
+// Export
+export interface ExportParams {
+  start_date?: string;
+  end_date?: string;
+  agent_name?: string;
+  action_type?: string;
+  result?: string;
+  limit?: number;
+}
+
+async function downloadFile(path: string, filename: string): Promise<void> {
+  const response = await fetch(`${BASE_URL}${path}`, {
+    headers: getHeaders(),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: "Export failed" }));
+    throw new ApiError(response.status, error.detail || `Export failed (${response.status})`);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+export function exportCsv(params?: ExportParams): Promise<void> {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const query = buildQuery(params as Record<string, string | number | undefined>);
+  return downloadFile(`/v1/export/csv${query}`, `action_ledger_export_${timestamp}.csv`);
+}
+
+export function exportPdf(params?: ExportParams): Promise<void> {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const query = buildQuery(params as Record<string, string | number | undefined>);
+  return downloadFile(`/v1/export/pdf${query}`, `action_ledger_report_${timestamp}.pdf`);
+}
