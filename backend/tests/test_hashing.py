@@ -64,6 +64,7 @@ class TestVerifyRecordHash:
             "action_name": "test_action",
             "action_type": "function_call",
             "agent_name": "test-agent",
+            "data_subject_id": None,
             "agent_version": None,
             "model_id": None,
             "model_version": None,

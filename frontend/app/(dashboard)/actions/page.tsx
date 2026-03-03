@@ -22,6 +22,7 @@ const ALL_VALUE = "__all__";
 export default function ActionsPage() {
   const [filters, setFilters] = useState<ActionQueryParams>({ limit: 50, offset: 0 });
   const [searchInput, setSearchInput] = useState("");
+  const [subjectInput, setSubjectInput] = useState("");
   const [downloading, setDownloading] = useState(false);
   const { data, isLoading } = useActions(filters);
   const { data: agents } = useAgents();
@@ -34,9 +35,14 @@ export default function ActionsPage() {
     updateFilter("search", searchInput || undefined);
   };
 
+  const handleSubjectSearch = () => {
+    updateFilter("data_subject_id", subjectInput || undefined);
+  };
+
   const clearFilters = () => {
     setFilters({ limit: 50, offset: 0 });
     setSearchInput("");
+    setSubjectInput("");
   };
 
   const handleExportCsv = async () => {
@@ -57,7 +63,7 @@ export default function ActionsPage() {
     }
   };
 
-  const hasFilters = filters.agent_name || filters.action_type || filters.result || filters.search;
+  const hasFilters = filters.agent_name || filters.action_type || filters.result || filters.search || filters.data_subject_id;
 
   return (
     <div className="space-y-6">
@@ -77,6 +83,14 @@ export default function ActionsPage() {
               onChange={(e) => setSearchInput(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSearch()}
               className="pl-9"
+            />
+          </div>
+          <div className="relative min-w-[180px]">
+            <Input
+              placeholder="Data subject ID..."
+              value={subjectInput}
+              onChange={(e) => setSubjectInput(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSubjectSearch()}
             />
           </div>
           <Select value={filters.agent_name || ALL_VALUE} onValueChange={(v) => updateFilter("agent_name", v === ALL_VALUE ? undefined : v)}>

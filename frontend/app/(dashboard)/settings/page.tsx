@@ -26,6 +26,7 @@ export default function SettingsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
   const [newKeyPerms, setNewKeyPerms] = useState<string[]>(["read", "write"]);
+  const [newKeyExpiry, setNewKeyExpiry] = useState("");
   const [createdKey, setCreatedKey] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [revokeConfirm, setRevokeConfirm] = useState<string | null>(null);
@@ -34,6 +35,7 @@ export default function SettingsPage() {
     const result = await createApiKey.mutateAsync({
       name: newKeyName,
       permissions: newKeyPerms,
+      ...(newKeyExpiry ? { expires_at: new Date(newKeyExpiry).toISOString() } : {}),
     });
     setCreatedKey(result.raw_key);
   };
@@ -51,6 +53,7 @@ export default function SettingsPage() {
     setCreatedKey(null);
     setNewKeyName("");
     setNewKeyPerms(["read", "write"]);
+    setNewKeyExpiry("");
   };
 
   const handleRevoke = async (id: string) => {
@@ -166,6 +169,15 @@ export default function SettingsPage() {
                         />
                       </div>
                       <div>
+                        <label className="text-sm font-medium">Expiry date <span className="text-muted-foreground font-normal">(optional)</span></label>
+                        <Input
+                          type="date"
+                          value={newKeyExpiry}
+                          onChange={(e) => setNewKeyExpiry(e.target.value)}
+                          className="mt-1"
+                        />
+                      </div>
+                      <div>
                         <label className="text-sm font-medium">Permissions</label>
                         <div className="mt-2 flex gap-2">
                           {["read", "write", "admin"].map((perm) => (
@@ -209,6 +221,7 @@ export default function SettingsPage() {
                     <TableHead>Key Prefix</TableHead>
                     <TableHead>Permissions</TableHead>
                     <TableHead>Created</TableHead>
+                    <TableHead>Expires</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead className="w-16" />
                   </TableRow>
@@ -216,13 +229,13 @@ export default function SettingsPage() {
                 <TableBody>
                   {keysLoading ? (
                     <TableRow>
-                      <TableCell colSpan={6} className="py-8 text-center">
+                      <TableCell colSpan={7} className="py-8 text-center">
                         <Loader2 className="mx-auto h-6 w-6 animate-spin text-muted-foreground" />
                       </TableCell>
                     </TableRow>
                   ) : !apiKeys?.length ? (
                     <TableRow>
-                      <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
+                      <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">
                         No API keys
                       </TableCell>
                     </TableRow>
@@ -244,6 +257,9 @@ export default function SettingsPage() {
                         </TableCell>
                         <TableCell className="text-sm text-muted-foreground">
                           {formatDate(key.created_at)}
+                        </TableCell>
+                        <TableCell className="text-sm text-muted-foreground">
+                          {key.expires_at ? formatDate(key.expires_at) : "Never"}
                         </TableCell>
                         <TableCell>
                           {key.is_active ? (
