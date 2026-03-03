@@ -135,7 +135,7 @@ Agent Action --> SDK --> API --> Hash Chain --> Checkpoint --> External Proof (S
 
 ### How the hash chain works
 
-Every action record contains 26 fields. **All** of them are included in the hash:
+Every action record contains 27 fields. **All** of them are included in the hash:
 
 ```
 record_hash = SHA-256(previous_hash + canonical_json(all_fields))
@@ -260,7 +260,7 @@ All endpoints require `Authorization: Bearer <api_key>` header (except `/health`
 |--------|------|------------|-------------|
 | `POST` | `/v1/actions` | write | Record a single action |
 | `POST` | `/v1/actions/batch` | write | Record up to 100 actions atomically |
-| `GET` | `/v1/actions` | read | Query actions (filters: `agent_name`, `action_type`, `result`, `start_date`, `end_date`, `authorized_by`, `search`) |
+| `GET` | `/v1/actions` | read | Query actions (filters: `agent_name`, `action_type`, `result`, `start_date`, `end_date`, `authorized_by`, `data_subject_id`, `search`) |
 | `GET` | `/v1/actions/{id}` | read | Get a single action by ID |
 
 ### Verification
@@ -286,7 +286,7 @@ All endpoints require `Authorization: Bearer <api_key>` header (except `/health`
 
 | Method | Path | Permission | Description |
 |--------|------|------------|-------------|
-| `POST` | `/v1/api-keys` | admin | Create API key (raw key returned **once**) |
+| `POST` | `/v1/api-keys` | admin | Create API key (raw key returned **once**; optional `expires_at` datetime) |
 | `GET` | `/v1/api-keys` | admin | List API keys (prefix only) |
 | `DELETE` | `/v1/api-keys/{id}` | admin | Revoke API key (permanent, irreversible) |
 
@@ -294,7 +294,7 @@ All endpoints require `Authorization: Bearer <api_key>` header (except `/health`
 
 | Method | Path | Permission | Description |
 |--------|------|------------|-------------|
-| `GET` | `/v1/export/csv` | read | Stream CSV of action records (filters: `agent_name`, `action_type`, `result`, `start_date`, `end_date`; `limit` default 5000, max 10000; 26 columns) |
+| `GET` | `/v1/export/csv` | read | Stream CSV of action records (filters: `agent_name`, `action_type`, `result`, `start_date`, `end_date`; `limit` default 5000, max 10000; 27 columns) |
 | `GET` | `/v1/export/pdf` | read | Generate PDF audit report (chain integrity + checkpoints + action records; max 5000 records) |
 
 ### System
@@ -348,6 +348,8 @@ uvicorn app.main:app --reload  # http://localhost:8000
 ```
 
 Data stored in `backend/actionledger.db` (single file, auto-created).
+
+> **After pulling new model changes** (e.g. new columns like `data_subject_id` or `expires_at`): delete `actionledger.db` and re-run `python setup_local.py` — `create_all` picks up the new columns automatically. For PostgreSQL, run `alembic upgrade head` instead.
 
 ### Docker with PostgreSQL (recommended for development)
 
@@ -510,7 +512,7 @@ cd frontend && npm run build
 │   ├── alembic.ini                  Migration configuration
 │   ├── alembic/
 │   │   ├── env.py                   Migration env (async URL conversion)
-│   │   └── versions/               Generated migrations
+│   │   └── versions/               Generated migrations (incl. a1b2c3d4e5f6: data_subject_id + expires_at)
 │   ├── migrations/
 │   │   └── init.sql                 PostgreSQL schema (tables + triggers)
 │   ├── app/
@@ -664,7 +666,7 @@ Frontend (Next.js 16)                SDK (Python)
 
 ## Roadmap
 
-**Step 2 of 6 complete. Next: Deploy to AWS.**
+**Step 2 of 6 complete. Pre-deploy fixes shipped. Next: Deploy to AWS.**
 
 | Step | What | Status | Effort |
 |------|------|--------|--------|
@@ -681,7 +683,7 @@ Frontend (Next.js 16)                SDK (Python)
 Regulators cannot accept "call our API" as evidence. Downloadable audit reports are required by EU AI Act Art. 11, SEC Rule 17a-4, and Colorado AI Act.
 
 **What was built:**
-- `GET /v1/export/csv` — streams a CSV of action records (26 columns, 500-record chunks, up to 10,000 records), requires `read` permission
+- `GET /v1/export/csv` — streams a CSV of action records (27 columns, 500-record chunks, up to 10,000 records), requires `read` permission
 - `GET /v1/export/pdf` — generates a PDF compliance report (chain integrity status, checkpoints table, action records table, max 5,000 records), requires `read` permission
 - "Export CSV" button on the Actions page (respects current filters)
 - "Download Report" button on the Verification page (PDF)
@@ -722,7 +724,7 @@ Both endpoints accept the same filters: `start_date`, `end_date`, `agent_name`, 
 <details>
 <summary><strong>Step 5 — Enterprise Hardening</strong></summary>
 
-- API key expiration + rotation (keys live forever today)
+- API key expiration + rotation ✅ shipped (keys now support `expires_at`)
 - Structured logging with correlation IDs (needed for SOC 2)
 - Redis rate limiter (current in-memory doesn't work across instances)
 - Configurable per-org retention policies (balance EU AI Act Art. 19 with GDPR deletion)
@@ -774,6 +776,7 @@ Action Ledger targets the emerging AI compliance landscape. This section maps ex
 | **Monitoring of AI operation** | EU AI Act Art. 26(5) | Chain verification API enables continuous monitoring |
 | **Per-action accountability** | Colorado AI Act, NIST AI RMF | `agent_name`, `authorized_by`, `delegation_chain`, `reasoning` per record |
 | **Bias audit data availability** | NYC LL 144, Colorado | Historical data queryable by date range, agent, type |
+| **Data subject access / right to explanation** | EU AI Act Art. 86, GDPR, Colorado AI Act | `data_subject_id` field enables querying all decisions for a specific individual |
 </details>
 
 <details>
@@ -805,14 +808,13 @@ Action Ledger targets the emerging AI compliance landscape. This section maps ex
 
 ## Known Issues & Limitations
 
-### Open issues (4)
+### Open issues (3)
 
 | # | Severity | Issue |
 |---|----------|-------|
 | 1 | MEDIUM | `init.sql` and `alembic/` define the PostgreSQL schema separately — they can drift |
 | 2 | MEDIUM | No tests for S3 external store verification logic |
 | 3 | MEDIUM | Checkpoint creation doesn't acquire org lock — small race condition window with concurrent inserts |
-| 4 | LOW | API keys have no `expires_at` field — keys live forever until manually revoked |
 
 ### Limitations (by design)
 
@@ -829,7 +831,7 @@ Action Ledger targets the emerging AI compliance landscape. This section maps ex
 
 ## Changelog
 
-**21 bugs found and fixed across 4 audits. 4 open issues remain.**
+**21 bugs + 3 pre-deploy fixes across 5 rounds. 3 open issues remain.**
 
 <details>
 <summary><strong>Audit 1 — 7 bugs fixed</strong> (SDK, validation, S3 config)</summary>
@@ -878,6 +880,16 @@ Action Ledger targets the emerging AI compliance landscape. This section maps ex
 | # | Severity | Fix | File |
 |---|----------|-----|------|
 | 1 | CRITICAL | `HASHABLE_FIELDS` was missing 7 fields (model_version, framework, framework_version, delegation_chain, policies_applied, environment, metadata_) — these could be tampered without breaking chain verification. All record fields now included in hash. | `services/hashing.py`, `tests/test_hashing.py` |
+</details>
+
+<details>
+<summary><strong>Pre-deploy fixes — 3 product gaps closed</strong> (agents, data subject, key expiry)</summary>
+
+| # | Severity | Fix | Files |
+|---|----------|-----|-------|
+| 1 | HIGH | **Agent auto-registration** — agents were only created via explicit `POST /v1/agents`, so the Agents page showed 0 even while actions were being recorded. Now `_get_or_create_agent()` runs inside the per-org lock on every action write; agent + record land in the same transaction. IntegrityError catch handles PostgreSQL multi-process races. | `services/chain.py` |
+| 2 | HIGH | **`data_subject_id` field** — EU AI Act Art. 86, Colorado AI Act, and GDPR all require finding every decision made about a specific person. Added to model, schema, HASHABLE_FIELDS (safe: null excluded from canonical JSON so existing hashes stay valid), query filter, CSV export column, and frontend filter bar. Alembic migration included. | `models/action_record.py`, `schemas/action.py`, `services/hashing.py`, `routes/actions.py`, `services/export.py`, `frontend/lib/api-types.ts`, `frontend/app/(dashboard)/actions/page.tsx` |
+| 3 | MEDIUM | **API key expiration** — keys lived forever, blocking SOC 2 and ISO 27001 reviews. `expires_at` field added to `ApiKey` model; `is_active` property now returns `False` for expired keys; create endpoint accepts optional `expires_at` datetime; Settings page shows Expires column and date picker on key creation. Alembic migration included. | `models/api_key.py`, `schemas/api_key.py`, `services/auth.py`, `routes/api_keys.py`, `frontend/app/(dashboard)/settings/page.tsx` |
 </details>
 
 ---

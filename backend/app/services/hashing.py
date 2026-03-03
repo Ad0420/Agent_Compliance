@@ -47,6 +47,7 @@ HASHABLE_FIELDS = (
     "action_name",
     "action_type",
     "agent_name",
+    "data_subject_id",
     "agent_version",
     "model_id",
     "model_version",

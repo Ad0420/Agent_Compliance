@@ -22,6 +22,7 @@ export interface ActionRecord {
   agent_name: string;
   agent_version: string | null;
   agent_id: string | null;
+  data_subject_id: string | null;
   model_id: string | null;
   model_version: string | null;
   framework: string | null;
@@ -58,6 +59,7 @@ export interface ActionQueryParams {
   action_type?: string;
   result?: string;
   authorized_by?: string;
+  data_subject_id?: string;
   start_date?: string;
   end_date?: string;
   search?: string;
@@ -128,6 +130,7 @@ export interface ApiKey {
   permissions: string[];
   created_at: string;
   revoked_at: string | null;
+  expires_at: string | null;
   is_active: boolean;
 }
 
@@ -143,4 +146,5 @@ export interface ApiKeyCreateResponse {
 export interface ApiKeyCreateInput {
   name: string;
   permissions: string[];
+  expires_at?: string;
 }

@@ -42,6 +42,7 @@ class ActionRecord(Base):
     agent_id: Mapped[Optional[str]] = mapped_column(
         String(36), ForeignKey("agents.id"), nullable=True
     )
+    data_subject_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True, index=True)
     agent_name: Mapped[str] = mapped_column(Text, nullable=False)
     agent_version: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     model_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

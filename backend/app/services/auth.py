@@ -18,7 +18,8 @@ def _hash_key(raw_key: str) -> str:
 
 
 async def generate_api_key(
-    session: AsyncSession, org_id: str, name: str, permissions: list[str]
+    session: AsyncSession, org_id: str, name: str, permissions: list[str],
+    expires_at=None,
 ) -> tuple[str, APIKey]:
     """Generate a new API key. Returns (raw_key, api_key_model)."""
     raw_key = settings.api_key_prefix + secrets.token_urlsafe(32)
@@ -31,6 +32,7 @@ async def generate_api_key(
         key_hash=key_hash,
         key_prefix=key_prefix,
         permissions=permissions,
+        expires_at=expires_at,
     )
     session.add(api_key)
     await session.commit()

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import String, DateTime, JSON, ForeignKey, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -24,13 +24,16 @@ class APIKey(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
-    revoked_at: Mapped[Optional[datetime]] = mapped_column(
-        DateTime, nullable=True
-    )
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     # Relationships
     organization: Mapped["Organization"] = relationship("Organization", back_populates="api_keys")
 
     @property
     def is_active(self) -> bool:
-        return self.revoked_at is None
+        if self.revoked_at is not None:
+            return False
+        if self.expires_at is not None and self.expires_at < datetime.now(timezone.utc):
+            return False
+        return True
