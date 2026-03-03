@@ -8,6 +8,7 @@ VALID_PERMISSIONS = {"read", "write", "admin"}
 class APIKeyCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     permissions: list[str] = Field(default_factory=lambda: ["read", "write"])
+    expires_at: Optional[datetime] = None
 
     @field_validator("permissions")
     @classmethod
@@ -40,6 +41,7 @@ class APIKeyResponse(BaseModel):
     permissions: list[str]
     created_at: datetime
     revoked_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
     is_active: bool
 
     model_config = {"from_attributes": True}

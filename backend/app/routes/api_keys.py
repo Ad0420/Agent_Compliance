@@ -20,7 +20,7 @@ async def create_api_key(
 ):
     org_id, _ = auth
     raw_key, api_key = await generate_api_key(
-        session, org_id, data.name, data.permissions
+        session, org_id, data.name, data.permissions, expires_at=data.expires_at
     )
     return APIKeyCreateResponse(
         id=api_key.id,
@@ -50,6 +50,7 @@ async def list_api_keys(
             permissions=k.permissions,
             created_at=k.created_at,
             revoked_at=k.revoked_at,
+            expires_at=k.expires_at,
             is_active=k.is_active,
         )
         for k in keys

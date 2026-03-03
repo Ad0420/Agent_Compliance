@@ -23,6 +23,7 @@ class ActionRecordCreate(BaseModel):
     action_name: str = Field(..., min_length=1, max_length=500)
     action_type: str = Field(default="function_call", min_length=1, max_length=100)
     agent_name: str = Field(..., min_length=1, max_length=500)
+    data_subject_id: Optional[str] = Field(default=None, max_length=500)
     agent_version: Optional[str] = Field(default=None, max_length=100)
     model_id: Optional[str] = Field(default=None, max_length=200)
     model_version: Optional[str] = Field(default=None, max_length=100)
@@ -84,6 +85,7 @@ class ActionRecordResponse(BaseModel):
     agent_name: str
     agent_version: Optional[str] = None
     agent_id: Optional[str] = None
+    data_subject_id: Optional[str] = None
     model_id: Optional[str] = None
     model_version: Optional[str] = None
     framework: Optional[str] = None

@@ -30,6 +30,7 @@ def _record_to_response(record: ActionRecord) -> ActionRecordResponse:
         agent_name=record.agent_name,
         agent_version=record.agent_version,
         agent_id=record.agent_id,
+        data_subject_id=record.data_subject_id,
         model_id=record.model_id,
         model_version=record.model_version,
         framework=record.framework,
@@ -87,6 +88,7 @@ async def list_actions(
     agent_name: Optional[str] = None,
     action_type: Optional[str] = None,
     result: Optional[str] = None,
+    data_subject_id: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     authorized_by: Optional[str] = None,
@@ -113,6 +115,9 @@ async def list_actions(
     if authorized_by:
         query = query.where(ActionRecord.authorized_by == authorized_by)
         count_query = count_query.where(ActionRecord.authorized_by == authorized_by)
+    if data_subject_id:
+        query = query.where(ActionRecord.data_subject_id == data_subject_id)
+        count_query = count_query.where(ActionRecord.data_subject_id == data_subject_id)
     if start_date:
         query = query.where(ActionRecord.action_timestamp >= start_date)
         count_query = count_query.where(ActionRecord.action_timestamp >= start_date)

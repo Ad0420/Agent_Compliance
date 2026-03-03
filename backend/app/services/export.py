@@ -29,6 +29,7 @@ _PDF_MAX_RECORDS = 5000
 
 CSV_COLUMNS = [
     "sequence_number",
+    "data_subject_id",
     "recorded_at",
     "action_timestamp",
     "action_name",

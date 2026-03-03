@@ -3,9 +3,10 @@ from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import ActionRecord, ChainState
+from ..models import ActionRecord, Agent, ChainState
 from ..schemas.action import ActionRecordCreate
 from .hashing import canonicalize, compute_record_hash, extract_hashable_fields
 
@@ -28,6 +29,30 @@ def _is_sqlite(session: AsyncSession) -> bool:
     """Check if the session is using SQLite (which doesn't support FOR UPDATE)."""
     url = str(session.bind.url) if session.bind else ""
     return "sqlite" in url
+
+
+async def _get_or_create_agent(
+    session: AsyncSession, org_id: str, agent_name: str, agent_version: str | None
+) -> str:
+    """Return the agent ID for (org_id, agent_name), creating the agent if it doesn't exist."""
+    result = await session.execute(
+        select(Agent).where(Agent.org_id == org_id, Agent.name == agent_name)
+    )
+    agent = result.scalar_one_or_none()
+    if agent is not None:
+        return agent.id
+
+    agent = Agent(org_id=org_id, name=agent_name)
+    session.add(agent)
+    try:
+        await session.flush()
+    except IntegrityError:
+        await session.rollback()
+        result = await session.execute(
+            select(Agent).where(Agent.org_id == org_id, Agent.name == agent_name)
+        )
+        agent = result.scalar_one()
+    return agent.id
 
 
 async def _lock_chain_state(session: AsyncSession, org_id: str) -> ChainState:
@@ -56,7 +81,8 @@ async def _lock_chain_state(session: AsyncSession, org_id: str) -> ChainState:
 
 
 def _create_record(
-    org_id: str, data: ActionRecordCreate, new_sequence: int, previous_hash: str, now: datetime
+    org_id: str, data: ActionRecordCreate, new_sequence: int, previous_hash: str, now: datetime,
+    agent_id: str | None = None,
 ) -> ActionRecord:
     """Create an ActionRecord instance and compute its hash."""
     action_timestamp = data.action_timestamp or now
@@ -65,6 +91,7 @@ def _create_record(
         org_id=org_id,
         sequence_number=new_sequence,
         previous_hash=previous_hash,
+        agent_id=agent_id,
         agent_name=data.agent_name,
         agent_version=data.agent_version,
         model_id=data.model_id,
@@ -89,6 +116,7 @@ def _create_record(
         reasoning=data.reasoning,
         outcome=data.outcome,
         metadata_=data.metadata,
+        data_subject_id=data.data_subject_id,
     )
 
     fields = extract_hashable_fields(record)
@@ -109,7 +137,8 @@ async def build_and_insert_record(
         previous_hash = chain_state.latest_hash
         now = datetime.now(timezone.utc)
 
-        record = _create_record(org_id, data, new_sequence, previous_hash, now)
+        agent_id = await _get_or_create_agent(session, org_id, data.agent_name, data.agent_version)
+        record = _create_record(org_id, data, new_sequence, previous_hash, now, agent_id)
         session.add(record)
 
         chain_state.latest_sequence = new_sequence
@@ -140,7 +169,8 @@ async def build_and_insert_batch(
             new_sequence = chain_state.latest_sequence + 1
             previous_hash = chain_state.latest_hash
 
-            record = _create_record(org_id, data, new_sequence, previous_hash, now)
+            agent_id = await _get_or_create_agent(session, org_id, data.agent_name, data.agent_version)
+            record = _create_record(org_id, data, new_sequence, previous_hash, now, agent_id)
             session.add(record)
 
             chain_state.latest_sequence = new_sequence
