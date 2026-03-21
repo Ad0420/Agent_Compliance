@@ -15,14 +15,23 @@ from app.services.auth import generate_api_key
 
 
 async def setup():
+    from sqlalchemy import select
+
     # 1. Create all tables
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     print("[OK] Database tables created")
 
     async with AsyncSessionLocal() as session:
+        # Check if org already exists — skip if so
+        existing = (await session.execute(select(Organization).limit(1))).scalar_one_or_none()
+        if existing:
+            print("[SKIP] Organization already exists — skipping setup")
+            await engine.dispose()
+            return
+
         # 2. Create default organization
-        org = Organization(name="Local Dev Org")
+        org = Organization(name="Vera Org")
         session.add(org)
         await session.flush()
 
@@ -43,10 +52,6 @@ async def setup():
         print("  YOUR API KEY (save this — it won't be shown again):")
         print(f"  {raw_key}")
         print("=" * 60)
-        print()
-        print("Next steps:")
-        print("  1. Start the server:  cd backend && uvicorn app.main:app --reload")
-        print(f"  2. Use this API key in the SDK or demo script")
 
     await engine.dispose()
 
