@@ -1,8 +1,10 @@
-# Action Ledger - v1
+# Vera
 
-Immutable audit trail for AI agent actions. Cryptographic hash chain with tamper-proof verification, built for compliance teams who need to prove what their AI agents did, when, and why.
+Tamper-proof audit trail for AI agents. Cryptographic hash chain with tamper-proof verification, built for teams that need to prove what their AI agents did, when, and why.
 
-**The problem:** Regulators (EU AI Act, FINRA, SEC, Colorado AI Act) are starting to require that companies log and retain every action their AI agents take. If your AI agent approves a loan, flags a transaction, or makes a hiring recommendation, you need an undeniable, tamper-proof record of what happened, what data went in, what came out, and why. AWS QLDB (the only comparable managed service) was deprecated July 2025. Action Ledger fills that gap.
+**Live:** [usevera.xyz](https://usevera.xyz) (password-protected testing environment)
+
+**The problem:** AI agents are taking consequential actions — approving loans, flagging transactions, making hiring recommendations — with no verifiable record. Regulators (EU AI Act Art. 12, GDPR, Colorado AI Act, SEC Rule 17a-4) are requiring tamper-proof logs. When something goes wrong, teams cannot answer: what did the agent do, did a human approve it, and has the log been touched since? AWS QLDB (the only comparable managed service) was deprecated July 2025. Vera fills that gap.
 
 **The solution:** A four-layer immutability stack: database triggers prevent edits, a SHA-256 hash chain detects tampering, KMS-signed checkpoints prevent chain recomputation, and S3 WORM external proofs survive full database compromise. Drop-in Python SDK with integrations for LangChain, OpenAI, and CrewAI.
 
@@ -53,18 +55,14 @@ python setup_local.py
 
 Expected output:
 ```
-Tables created successfully.
-Organization created: Local Dev Org (id: xxxxxxxx-xxxx-...)
-API Key created successfully!
+[OK] Database tables created
+[OK] Organization created: Vera Org (id: xxxxxxxx-xxxx-...)
+[OK] Admin API key created
 
-  YOUR API KEY: al_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
-  Save this key — it cannot be retrieved later.
-  Permissions: read, write, admin
-
-Next steps:
-  1. Start the server: uvicorn app.main:app --reload
-  2. Use the API key above in SDK calls or the frontend dashboard
+============================================================
+  YOUR API KEY (save this — it won't be shown again):
+  al_live_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+============================================================
 ```
 
 **Copy the API key.** It is shown once and cannot be retrieved.
@@ -85,7 +83,7 @@ npm run dev
 # Dashboard at http://localhost:3000
 ```
 
-Open http://localhost:3000, paste your API key, and you're in.
+Open http://localhost:3000 — you'll see the landing page. Click "Get started", paste your API key, and you're in the dashboard at `/dashboard`.
 
 ### Option B: Docker with PostgreSQL
 
@@ -315,7 +313,7 @@ All config is via environment variables. Set in `.env` file or export directly.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DATABASE_URL` | `sqlite+aiosqlite:///./actionledger.db` | Database connection string. Use `postgresql+asyncpg://user:pass@host:5432/dbname` for production |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./vera.db` | Database connection string. Use `postgresql+asyncpg://user:pass@host:5432/dbname` for production |
 | `SECRET_KEY` | `dev_secret_change_in_production` | App secret for general use. **App refuses to start in production with the default** |
 | `ENVIRONMENT` | `development` | `development` or `production` |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins for the frontend |
@@ -347,9 +345,41 @@ python setup_local.py          # Creates DB + org + API key
 uvicorn app.main:app --reload  # http://localhost:8000
 ```
 
-Data stored in `backend/actionledger.db` (single file, auto-created).
+Data stored in `backend/vera.db` (single file, auto-created).
 
-> **After pulling new model changes** (e.g. new columns like `data_subject_id` or `expires_at`): delete `actionledger.db` and re-run `python setup_local.py` — `create_all` picks up the new columns automatically. For PostgreSQL, run `alembic upgrade head` instead.
+> **After pulling new model changes:** delete `vera.db` and re-run `python setup_local.py` — `create_all` picks up new columns automatically. For PostgreSQL, run `alembic upgrade head` instead (handled automatically in production via `start.sh`).
+
+### Railway + Vercel (current production deployment)
+
+The live instance at [usevera.xyz](https://usevera.xyz) runs on:
+- **Backend:** Railway (FastAPI + PostgreSQL). Custom start command: `sh start.sh` which runs `python setup_local.py && alembic upgrade head` then starts uvicorn.
+- **Frontend:** Vercel (Next.js). Environment variable `NEXT_PUBLIC_API_URL` points to the Railway backend URL.
+
+**Required Railway environment variables:**
+
+| Variable | Value |
+|----------|-------|
+| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` (Railway internal reference) |
+| `SECRET_KEY` | Random hex string |
+| `ENVIRONMENT` | `production` |
+| `CORS_ORIGINS` | `https://usevera.xyz,https://www.usevera.xyz` |
+
+**Required Vercel environment variables:**
+
+| Variable | Value |
+|----------|-------|
+| `NEXT_PUBLIC_API_URL` | Railway backend URL (no trailing slash) |
+| `SITE_PASSWORD` | Site-wide basic auth password (optional — omit for public access) |
+
+On every deploy, Railway runs `start.sh`:
+```sh
+#!/bin/sh
+python setup_local.py     # Creates org + admin key if first boot (idempotent)
+alembic upgrade head      # Applies any pending DB migrations
+exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+The admin API key is printed once in the Railway deploy logs on first boot. Save it.
 
 ### Docker with PostgreSQL (recommended for development)
 
@@ -416,7 +446,7 @@ aws s3api put-object-lock-configuration \
 aws kms create-key \
   --key-spec HMAC_256 \
   --key-usage GENERATE_VERIFY_MAC \
-  --description "Action Ledger checkpoint signing key"
+  --description "Vera checkpoint signing key"
 
 # Use the KeyId from the output as AWS_KMS_KEY_ID
 ```
@@ -746,7 +776,7 @@ Both endpoints accept the same filters: `start_date`, `end_date`, `agent_name`, 
 
 ## Regulatory Compliance
 
-Action Ledger targets the emerging AI compliance landscape. This section maps exactly what we cover and what we don't.
+Vera targets the emerging AI compliance landscape. This section maps exactly what we cover and what we don't.
 
 <details>
 <summary><strong>Regulations tracked</strong></summary>
@@ -765,7 +795,7 @@ Action Ledger targets the emerging AI compliance landscape. This section maps ex
 <details>
 <summary><strong>What we cover</strong></summary>
 
-| Requirement | Regulation | How Action Ledger Satisfies It |
+| Requirement | Regulation | How Vera Satisfies It |
 |---|---|---|
 | **Automatic event logging** | EU AI Act Art. 12 | Core product. Every action cryptographically chained with full context |
 | **Log retention (min 6 months)** | EU AI Act Art. 19/26 | Append-only with triggers blocking DELETE. S3 WORM configurable retention |

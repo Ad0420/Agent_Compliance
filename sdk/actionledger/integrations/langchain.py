@@ -18,7 +18,7 @@ logger = logging.getLogger("actionledger.integrations.langchain")
 
 class ActionLedgerCallbackHandler(BaseCallbackHandler):
     """LangChain callback handler that records all LLM/chain/tool/agent actions
-    to the Action Ledger.
+    to the Vera.
 
     Usage:
         handler = ActionLedgerCallbackHandler(client=ledger_client)

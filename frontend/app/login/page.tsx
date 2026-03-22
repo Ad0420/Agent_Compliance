@@ -24,7 +24,7 @@ export default function LoginPage() {
     setError("");
     try {
       await login(apiKey.trim());
-      router.push("/");
+      router.push("/dashboard");
     } catch {
       setError("Invalid API key. Check your key and try again.");
     } finally {

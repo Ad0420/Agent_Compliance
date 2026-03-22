@@ -10,7 +10,7 @@ RETRY_BACKOFF_BASE = 0.5
 
 
 class ActionLedgerClient:
-    """Synchronous client for the Action Ledger API."""
+    """Synchronous client for the Vera API."""
 
     def __init__(
         self,
