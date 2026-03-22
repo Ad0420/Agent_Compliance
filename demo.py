@@ -1,5 +1,5 @@
 """
-End-to-end demo for the Action Ledger.
+End-to-end demo for the Vera.
 
 Prerequisites:
   1. cd backend && python setup_local.py   (creates DB + org + API key)
@@ -36,7 +36,7 @@ def main():
     # ── 2. Register an agent ──────────────────────────────
     agent = client.register_agent(
         name="demo-agent",
-        description="A demo agent for testing the Action Ledger",
+        description="A demo agent for testing the Vera",
         metadata={"purpose": "demo", "version": "1.0.0"},
     )
     print(f"[2/8] Agent registered: {agent['name']} (id: {agent['id']})")

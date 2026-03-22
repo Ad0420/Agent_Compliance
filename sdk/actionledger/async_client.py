@@ -1,4 +1,4 @@
-"""Async client for the Action Ledger API.
+"""Async client for the Vera API.
 
 Provides non-blocking HTTP calls via httpx.AsyncClient and a background
 queue that batches records and sends them without blocking the caller.
@@ -20,7 +20,7 @@ RETRY_BACKOFF_BASE = 0.5  # seconds, doubles each retry
 
 
 class AsyncActionLedgerClient:
-    """Async client for the Action Ledger API."""
+    """Async client for the Vera API."""
 
     def __init__(
         self,

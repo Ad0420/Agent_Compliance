@@ -22,6 +22,6 @@ setup(
             "pytest-httpx",
         ],
     },
-    description="SDK for the Action Ledger — immutable audit trail for AI agents",
+    description="SDK for the Vera — immutable audit trail for AI agents",
     python_requires=">=3.10",
 )
