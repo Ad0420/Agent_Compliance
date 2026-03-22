@@ -39,7 +39,7 @@ export default function LoginPage() {
           <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-lg bg-blue-500/10">
             <ShieldCheck className="h-7 w-7 text-blue-400" />
           </div>
-          <CardTitle className="text-xl">Action Ledger</CardTitle>
+          <CardTitle className="text-xl">Vera</CardTitle>
           <CardDescription>
             Enter your API key to access the audit dashboard
           </CardDescription>

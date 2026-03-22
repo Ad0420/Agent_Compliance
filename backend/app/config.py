@@ -7,7 +7,7 @@ _DEFAULT_SECRET = "dev_secret_change_in_production"
 
 
 class Settings(BaseSettings):
-    database_url: str = "sqlite+aiosqlite:///./actionledger.db"
+    database_url: str = "sqlite+aiosqlite:///./vera.db"
     secret_key: str = _DEFAULT_SECRET
     environment: str = "development"
 
