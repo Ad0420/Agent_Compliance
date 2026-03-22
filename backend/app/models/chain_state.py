@@ -9,7 +9,7 @@ class ChainState(Base):
     __tablename__ = "chain_state"
 
     org_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("organizations.id"), primary_key=True
+        String(36), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
     )
     latest_sequence: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     latest_hash: Mapped[str] = mapped_column(String, nullable=False, default="GENESIS")
