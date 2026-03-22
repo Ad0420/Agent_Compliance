@@ -24,7 +24,7 @@ class ActionRecord(Base):
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
     org_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("organizations.id"), nullable=False
+        String(36), ForeignKey("organizations.id", ondelete="RESTRICT"), nullable=False
     )
     sequence_number: Mapped[int] = mapped_column(BigInteger, nullable=False)
     previous_hash: Mapped[str] = mapped_column(Text, nullable=False)
@@ -40,7 +40,7 @@ class ActionRecord(Base):
 
     # ── Agent Identity ────────────────────────────────────
     agent_id: Mapped[Optional[str]] = mapped_column(
-        String(36), ForeignKey("agents.id"), nullable=True
+        String(36), ForeignKey("agents.id", ondelete="SET NULL"), nullable=True
     )
     data_subject_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True, index=True)
     agent_name: Mapped[str] = mapped_column(Text, nullable=False)
