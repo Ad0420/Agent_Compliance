@@ -35,7 +35,7 @@ async def export_csv(
         "limit": limit,
     }
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    filename = f"action_ledger_export_{timestamp}.csv"
+    filename = f"vera_export_{timestamp}.csv"
     return StreamingResponse(
         stream_csv(session, org_id, filters),
         media_type="text/csv",
@@ -64,7 +64,7 @@ async def export_pdf(
         "result": result,
     }
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    filename = f"action_ledger_report_{timestamp}.pdf"
+    filename = f"vera_report_{timestamp}.pdf"
     pdf_bytes = await generate_pdf(session, org_id, filters)
     return Response(
         content=pdf_bytes,

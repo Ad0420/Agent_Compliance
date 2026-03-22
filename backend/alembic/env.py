@@ -41,7 +41,7 @@ def _get_sync_url() -> str:
     synchronous migrations.  This helper swaps the async driver for a
     sync one.
     """
-    url = os.getenv("DATABASE_URL", "sqlite:///./actionledger.db")
+    url = os.getenv("DATABASE_URL", "sqlite:///./vera.db")
     # Strip async driver prefixes
     url = url.replace("sqlite+aiosqlite", "sqlite")
     url = url.replace("postgresql+asyncpg", "postgresql")

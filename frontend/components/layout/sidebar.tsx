@@ -20,7 +20,7 @@ export function Sidebar() {
     <aside className="fixed left-0 top-0 z-30 flex h-screen w-56 flex-col border-r border-border bg-card">
       <div className="flex h-14 items-center gap-2 border-b border-border px-4">
         <ShieldCheck className="h-6 w-6 text-blue-400" />
-        <span className="text-base font-semibold tracking-tight">Action Ledger</span>
+        <span className="text-base font-semibold tracking-tight">Vera</span>
       </div>
       <nav className="flex-1 space-y-1 p-3">
         {NAV_ITEMS.map((item) => {
@@ -43,7 +43,7 @@ export function Sidebar() {
         })}
       </nav>
       <div className="border-t border-border p-3">
-        <p className="text-[10px] text-muted-foreground/50">Action Ledger v0.1.0</p>
+        <p className="text-[10px] text-muted-foreground/50">Vera v0.1.0</p>
       </div>
     </aside>
   );

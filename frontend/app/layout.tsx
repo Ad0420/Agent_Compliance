@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Action Ledger",
-  description: "Immutable audit trail for AI agent actions",
+  title: "Vera",
+  description: "Tamper-proof audit trail for AI agents",
 };
 
 export default function RootLayout({
