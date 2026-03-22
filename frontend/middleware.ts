@@ -23,7 +23,7 @@ export function middleware(request: NextRequest) {
   return new NextResponse("Access restricted.", {
     status: 401,
     headers: {
-      "WWW-Authenticate": 'Basic realm="Action Ledger"',
+      "WWW-Authenticate": 'Basic realm="Vera"',
     },
   });
 }

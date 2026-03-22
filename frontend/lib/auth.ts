@@ -1,5 +1,5 @@
-const API_KEY_STORAGE_KEY = "actionledger_api_key";
-const IS_ADMIN_STORAGE_KEY = "actionledger_is_admin";
+const API_KEY_STORAGE_KEY = "vera_api_key";
+const IS_ADMIN_STORAGE_KEY = "vera_is_admin";
 
 export function getApiKey(): string | null {
   if (typeof window === "undefined") return null;

@@ -163,11 +163,11 @@ async function downloadFile(path: string, filename: string): Promise<void> {
 export function exportCsv(params?: ExportParams): Promise<void> {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const query = buildQuery(params as Record<string, string | number | undefined>);
-  return downloadFile(`/v1/export/csv${query}`, `action_ledger_export_${timestamp}.csv`);
+  return downloadFile(`/v1/export/csv${query}`, `vera_export_${timestamp}.csv`);
 }
 
 export function exportPdf(params?: ExportParams): Promise<void> {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const query = buildQuery(params as Record<string, string | number | undefined>);
-  return downloadFile(`/v1/export/pdf${query}`, `action_ledger_report_${timestamp}.pdf`);
+  return downloadFile(`/v1/export/pdf${query}`, `vera_report_${timestamp}.pdf`);
 }

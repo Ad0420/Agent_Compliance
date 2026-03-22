@@ -20,7 +20,7 @@ from .routes import (
 from .middleware import RateLimitMiddleware
 from .services.immutability import install_sqlite_triggers
 
-logger = logging.getLogger("actionledger")
+logger = logging.getLogger("vera")
 
 
 @asynccontextmanager
@@ -30,15 +30,15 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
         if settings.database_url.startswith("sqlite"):
             await conn.run_sync(install_sqlite_triggers)
-    logger.info("Action Ledger API started — tables ready")
+    logger.info("Vera API started — tables ready")
     yield
     # Shutdown: close DB connection pool
     await engine.dispose()
 
 
 app = FastAPI(
-    title="Action Ledger API",
-    description="Immutable audit ledger for AI agent actions",
+    title="Vera API",
+    description="Tamper-proof audit trail for AI agents",
     version="0.1.0",
     lifespan=lifespan,
 )
