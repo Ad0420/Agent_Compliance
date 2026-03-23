@@ -11,12 +11,20 @@ export default function LandingPage() {
           <ShieldCheck className="h-5 w-5 text-blue-400" />
           <span className="font-semibold tracking-tight text-foreground">Vera</span>
         </div>
-        <Link
-          href="/login"
-          className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors"
-        >
-          Sign in
-        </Link>
+        <div className="flex items-center gap-3">
+          <Link
+            href="/login"
+            className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Sign in
+          </Link>
+          <Link
+            href="/register"
+            className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors"
+          >
+            Get started
+          </Link>
+        </div>
       </nav>
 
       {/* Hero */}
@@ -47,12 +55,18 @@ export default function LandingPage() {
             exactly what happened.
           </p>
 
-          <div className="mt-9">
+          <div className="mt-9 flex items-center gap-4">
             <Link
-              href="/login"
+              href="/register"
               className="rounded-md bg-blue-600 px-6 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors shadow-lg shadow-blue-500/20"
             >
-              Get started
+              Get started free
+            </Link>
+            <Link
+              href="/login"
+              className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+            >
+              Sign in →
             </Link>
           </div>
         </div>
@@ -162,14 +176,22 @@ export default function LandingPage() {
       <section className="border-t border-border/60 px-8 py-20 text-center">
         <h2 className="text-2xl font-bold mb-4">Ready to add a compliance layer?</h2>
         <p className="text-muted-foreground text-sm mb-8 max-w-sm mx-auto">
-          Sign in with your API key to access the audit dashboard.
+          Set up your organization in 30 seconds. No credit card required.
         </p>
-        <Link
-          href="/login"
-          className="inline-flex rounded-md bg-blue-600 px-6 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors shadow-lg shadow-blue-500/20"
-        >
-          Get started
-        </Link>
+        <div className="flex items-center justify-center gap-4">
+          <Link
+            href="/register"
+            className="inline-flex rounded-md bg-blue-600 px-6 py-2.5 text-sm font-medium text-white hover:bg-blue-500 transition-colors shadow-lg shadow-blue-500/20"
+          >
+            Get started free
+          </Link>
+          <Link
+            href="/login"
+            className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Sign in →
+          </Link>
+        </div>
       </section>
 
       {/* Footer */}
