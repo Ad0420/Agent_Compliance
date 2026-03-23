@@ -1,6 +1,7 @@
 """Hardening tests — immutability, concurrency, isolation, tampering, edge cases."""
 
 import asyncio
+from datetime import datetime, timezone, timedelta
 
 import pytest
 import pytest_asyncio
@@ -566,3 +567,309 @@ async def test_batch_sequences_are_contiguous(async_client, org_and_key):
         assert seqs[i] == seqs[i - 1] + 1, f"Gap at index {i}: {seqs}"
     for i in range(1, len(data)):
         assert data[i]["previous_hash"] == data[i - 1]["record_hash"]
+
+
+# ── API key expiration ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_expired_key_is_rejected(async_client, org_and_key, db_session):
+    """A key whose expires_at is in the past must be rejected with 401."""
+    org, _, _ = org_and_key
+    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    raw_key, _ = await generate_api_key(
+        db_session, org.id, "expired-key", ["read", "write"], expires_at=past
+    )
+
+    resp = await async_client.get(
+        "/v1/actions",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_future_expiry_key_is_accepted(async_client, org_and_key, db_session):
+    """A key whose expires_at is in the future must still be accepted."""
+    org, _, _ = org_and_key
+    future = datetime.now(timezone.utc) + timedelta(days=365)
+    raw_key, _ = await generate_api_key(
+        db_session, org.id, "future-key", ["read", "write"], expires_at=future
+    )
+
+    resp = await async_client.get(
+        "/v1/actions",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_key_without_expiry_never_expires(async_client, org_and_key, db_session):
+    """A key with no expires_at must remain valid indefinitely."""
+    org, _, _ = org_and_key
+    raw_key, _ = await generate_api_key(
+        db_session, org.id, "no-expiry-key", ["read"], expires_at=None
+    )
+
+    resp = await async_client.get(
+        "/v1/actions",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_with_expires_at(async_client, org_and_key):
+    """Creating a key via the API endpoint with expires_at stores it correctly."""
+    _, raw_key, _ = org_and_key
+    future = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+
+    resp = await async_client.post(
+        "/v1/api-keys",
+        json={"name": "expiring-key", "permissions": ["read"], "expires_at": future},
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["expires_at"] is not None
+
+
+# ── data_subject_id filtering ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_data_subject_id_filter_returns_only_matching_records(async_client, org_and_key):
+    """GET /v1/actions?data_subject_id=X must return only records for that subject."""
+    _, raw_key, _ = org_and_key
+
+    # Record for subject A
+    await async_client.post(
+        "/v1/actions",
+        json={
+            "action_name": "action_for_alice",
+            "action_type": "decision",
+            "agent_name": "agent",
+            "result": "success",
+            "data_subject_id": "user_alice",
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+
+    # Record for subject B
+    await async_client.post(
+        "/v1/actions",
+        json={
+            "action_name": "action_for_bob",
+            "action_type": "decision",
+            "agent_name": "agent",
+            "result": "success",
+            "data_subject_id": "user_bob",
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+
+    # Record with no subject
+    await async_client.post(
+        "/v1/actions",
+        json={
+            "action_name": "no_subject_action",
+            "action_type": "function_call",
+            "agent_name": "agent",
+            "result": "success",
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+
+    resp = await async_client.get(
+        "/v1/actions?data_subject_id=user_alice",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["records"][0]["data_subject_id"] == "user_alice"
+    assert data["records"][0]["action_name"] == "action_for_alice"
+
+
+@pytest.mark.asyncio
+async def test_data_subject_id_stored_in_record(async_client, org_and_key):
+    """data_subject_id written on creation must be returned in the response."""
+    _, raw_key, _ = org_and_key
+
+    resp = await async_client.post(
+        "/v1/actions",
+        json={
+            "action_name": "dsid_test",
+            "action_type": "decision",
+            "agent_name": "agent",
+            "result": "success",
+            "data_subject_id": "subject_xyz",
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["data_subject_id"] == "subject_xyz"
+
+
+# ── Agent auto-registration ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_recording_action_auto_creates_agent(async_client, org_and_key):
+    """Recording an action must auto-create the agent if it doesn't already exist."""
+    _, raw_key, _ = org_and_key
+
+    await async_client.post(
+        "/v1/actions",
+        json={
+            "action_name": "auto_register_test",
+            "action_type": "function_call",
+            "agent_name": "auto-agent",
+            "result": "success",
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+
+    resp = await async_client.get(
+        "/v1/agents",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200
+    agents = resp.json()
+    agent_names = [a["name"] for a in agents]
+    assert "auto-agent" in agent_names
+
+
+@pytest.mark.asyncio
+async def test_repeated_actions_same_agent_no_duplicate(async_client, org_and_key):
+    """Multiple actions from the same agent must not create duplicate agent rows."""
+    _, raw_key, _ = org_and_key
+
+    for _ in range(3):
+        await async_client.post(
+            "/v1/actions",
+            json={
+                "action_name": "repeated",
+                "action_type": "function_call",
+                "agent_name": "dedup-agent",
+                "result": "success",
+            },
+            headers={"Authorization": f"Bearer {raw_key}"},
+        )
+
+    resp = await async_client.get(
+        "/v1/agents",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200
+    dedup_agents = [a for a in resp.json() if a["name"] == "dedup-agent"]
+    assert len(dedup_agents) == 1
+
+
+# ── Actions filtering ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_filter_actions_by_result(async_client, org_and_key):
+    """GET /v1/actions?result=failure must return only failure records."""
+    _, raw_key, _ = org_and_key
+
+    await async_client.post(
+        "/v1/actions",
+        json={"action_name": "ok", "action_type": "f", "agent_name": "a", "result": "success"},
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    await async_client.post(
+        "/v1/actions",
+        json={"action_name": "fail", "action_type": "f", "agent_name": "a", "result": "failure"},
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+
+    resp = await async_client.get(
+        "/v1/actions?result=failure",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] >= 1
+    assert all(r["result"] == "failure" for r in data["records"])
+
+
+@pytest.mark.asyncio
+async def test_filter_actions_by_agent_name(async_client, org_and_key):
+    """GET /v1/actions?agent_name=X must return only records from that agent."""
+    _, raw_key, _ = org_and_key
+
+    await async_client.post(
+        "/v1/actions",
+        json={"action_name": "a1", "action_type": "f", "agent_name": "filter-agent", "result": "success"},
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    await async_client.post(
+        "/v1/actions",
+        json={"action_name": "a2", "action_type": "f", "agent_name": "other-agent", "result": "success"},
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+
+    resp = await async_client.get(
+        "/v1/actions?agent_name=filter-agent",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] >= 1
+    assert all(r["agent_name"] == "filter-agent" for r in data["records"])
+
+
+@pytest.mark.asyncio
+async def test_filter_actions_by_action_type(async_client, org_and_key):
+    """GET /v1/actions?action_type=decision must return only decision records."""
+    _, raw_key, _ = org_and_key
+
+    await async_client.post(
+        "/v1/actions",
+        json={"action_name": "d1", "action_type": "decision", "agent_name": "a", "result": "success"},
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    await async_client.post(
+        "/v1/actions",
+        json={"action_name": "f1", "action_type": "function_call", "agent_name": "a", "result": "success"},
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+
+    resp = await async_client.get(
+        "/v1/actions?action_type=decision",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] >= 1
+    assert all(r["action_type"] == "decision" for r in data["records"])
+
+
+@pytest.mark.asyncio
+async def test_actions_pagination(async_client, org_and_key):
+    """limit and offset must correctly page through results."""
+    _, raw_key, _ = org_and_key
+
+    for i in range(5):
+        await async_client.post(
+            "/v1/actions",
+            json={"action_name": f"page_{i}", "action_type": "f", "agent_name": "a", "result": "success"},
+            headers={"Authorization": f"Bearer {raw_key}"},
+        )
+
+    page1 = await async_client.get(
+        "/v1/actions?limit=2&offset=0",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    page2 = await async_client.get(
+        "/v1/actions?limit=2&offset=2",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert page1.status_code == 200
+    assert page2.status_code == 200
+    ids1 = {r["id"] for r in page1.json()["records"]}
+    ids2 = {r["id"] for r in page2.json()["records"]}
+    assert ids1.isdisjoint(ids2), "Pages must not overlap"
