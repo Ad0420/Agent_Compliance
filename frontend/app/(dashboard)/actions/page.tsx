@@ -16,6 +16,7 @@ import { Search, X, Download, Loader2 } from "lucide-react";
 import { exportCsv } from "@/lib/api-client";
 import { toast } from "sonner";
 import type { ActionQueryParams } from "@/lib/api-types";
+import { GettingStarted } from "@/components/dashboard/getting-started";
 
 const ALL_VALUE = "__all__";
 
@@ -177,8 +178,16 @@ export default function ActionsPage() {
                 ))
               ) : data?.records.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-12 text-center text-muted-foreground">
-                    No actions found
+                  <TableCell colSpan={8} className="py-4">
+                    {hasFilters ? (
+                      <p className="text-center text-sm text-muted-foreground py-8">
+                        No actions match your filters.
+                      </p>
+                    ) : (
+                      <div className="px-4 py-2">
+                        <GettingStarted />
+                      </div>
+                    )}
                   </TableCell>
                 </TableRow>
               ) : (
