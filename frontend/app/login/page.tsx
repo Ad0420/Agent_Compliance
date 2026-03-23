@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -82,11 +83,11 @@ export default function LoginPage() {
               )}
             </Button>
 
-            <p className="text-center text-xs text-muted-foreground">
-              Get your API key by running{" "}
-              <code className="rounded bg-accent px-1 py-0.5 font-mono text-[11px]">
-                python setup_local.py
-              </code>
+            <p className="text-center text-sm text-muted-foreground">
+              Don&apos;t have an account?{" "}
+              <Link href="/register" className="text-blue-400 hover:text-blue-300 underline underline-offset-4">
+                Create one
+              </Link>
             </p>
           </form>
         </CardContent>
