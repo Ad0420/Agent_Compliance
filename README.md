@@ -83,7 +83,7 @@ npm run dev
 # Dashboard at http://localhost:3000
 ```
 
-Open http://localhost:3000 — you'll see the landing page. Click "Get started", paste your API key, and you're in the dashboard at `/dashboard`.
+Open http://localhost:3000 — you'll see the landing page. Click "Get started free" to create an account at `/register`, then sign in with your API key at `/login` to reach the dashboard at `/dashboard`.
 
 ### Option B: Docker with PostgreSQL
 
@@ -295,6 +295,12 @@ All endpoints require `Authorization: Bearer <api_key>` header (except `/health`
 | `GET` | `/v1/export/csv` | read | Stream CSV of action records (filters: `agent_name`, `action_type`, `result`, `start_date`, `end_date`; `limit` default 5000, max 10000; 27 columns) |
 | `GET` | `/v1/export/pdf` | read | Generate PDF audit report (chain integrity + checkpoints + action records; max 5000 records) |
 
+### Registration
+
+| Method | Path | Permission | Description |
+|--------|------|------------|-------------|
+| `POST` | `/v1/register` | none | Self-serve signup — creates org + chain state + default admin API key in one shot. Returns raw key once. |
+
 ### System
 
 | Method | Path | Permission | Description |
@@ -490,7 +496,7 @@ Before deploying to real users:
 ## Testing
 
 ```bash
-# Backend — 63 tests
+# Backend — 88 tests
 cd backend && python -m pytest tests/ -v
 
 # SDK — 6 tests
@@ -500,7 +506,7 @@ cd sdk && python -m pytest tests/ -v
 cd frontend && npm run build
 ```
 
-**69 total tests, all passing.** Tests use an in-memory SQLite database, no external services required.
+**94 total tests, all passing.** Tests use an in-memory SQLite database, no external services required.
 
 ### What's tested
 
@@ -509,8 +515,9 @@ cd frontend && npm run build
 | API endpoints | 22 | CRUD for actions, agents, orgs, API keys, verification, checkpoints, auth errors |
 | Authentication | 5 | Key generation, correct/wrong key, revocation, permission checking |
 | Hash chain | 4 | Single insert, sequential chaining, batch insert, full chain verification |
-| Hardening | 21 | Immutability triggers (UPDATE/DELETE blocked), tamper detection, concurrent inserts, cross-org isolation, checkpoint tampering, permission matrix, input validation, batch atomicity |
+| Hardening | 46 | Immutability triggers, tamper detection, concurrency, cross-org isolation, checkpoint tampering, permission matrix, input validation, batch atomicity, API key expiry, data_subject_id filter, agent auto-registration, actions filtering, pagination |
 | Hashing | 11 | Canonical JSON (sorting, null filtering, determinism), hash computation, record verification |
+| Register endpoint | 13 | Happy path, response shape, no-auth required, key immediately usable, admin permissions, chain init, name stripping, independent orgs, all validation edge cases |
 | SDK decorators | 6 | Success/failure recording, no-client fallback, input capture, default client |
 
 ### What's NOT tested
@@ -540,9 +547,10 @@ cd frontend && npm run build
 │   ├── setup_local.py               Bootstrap: creates DB, org, API key
 │   ├── Dockerfile                   Python 3.12-slim container
 │   ├── alembic.ini                  Migration configuration
+│   ├── .env.example                 Template for all required environment variables
 │   ├── alembic/
 │   │   ├── env.py                   Migration env (async URL conversion)
-│   │   └── versions/               Generated migrations (incl. a1b2c3d4e5f6: data_subject_id + expires_at)
+│   │   └── versions/               3 migrations: initial schema, data_subject_id + expires_at, FK cascade constraints
 │   ├── migrations/
 │   │   └── init.sql                 PostgreSQL schema (tables + triggers)
 │   ├── app/
@@ -564,6 +572,7 @@ cd frontend && npm run build
 │   │   │   ├── checkpoints.py       Checkpoint create/list/verify
 │   │   │   ├── organizations.py     Org CRUD
 │   │   │   ├── api_keys.py          Key create/list/revoke
+│   │   │   ├── register.py          Self-serve signup (no auth required)
 │   │   │   └── export.py            CSV stream + PDF generation endpoints
 │   │   ├── services/
 │   │   │   ├── hashing.py           *** HASHABLE_FIELDS, canonical JSON, SHA-256
@@ -578,7 +587,7 @@ cd frontend && npm run build
 │   │   │   └── auth.py              API key generation, auth, permissions
 │   │   └── middleware/
 │   │       └── rate_limit.py        Sliding-window per API key
-│   └── tests/                       63 tests
+│   └── tests/                       88 tests (test_api, test_auth, test_chain, test_hardening, test_hashing, test_register)
 │
 ├── sdk/
 │   ├── setup.py                     Package definition (pip install -e .)
@@ -614,15 +623,18 @@ cd frontend && npm run build
     │   ├── ui/                      shadcn/ui primitives (17 components)
     │   ├── layout/                  Sidebar, Topbar, ProtectedRoute
     │   ├── shared/                  StatusBadge, JsonViewer, Pagination
-    │   └── dashboard/              ChainStatusCard, StatsRow, ActionChart
+    │   └── dashboard/              ChainStatusCard, StatsRow, ActionChart, GettingStarted (empty state)
     └── app/
         ├── layout.tsx               Root layout (dark theme, Geist fonts)
         ├── providers.tsx            QueryClient + Auth + Tooltip providers
         ├── globals.css              Tailwind + dark theme variables
+        ├── page.tsx                 Landing page (hero, features, CTA → /register)
         ├── login/page.tsx           API key login
+        ├── register/page.tsx        Self-serve signup (org name → key display → dashboard)
         └── (dashboard)/             Protected route group
             ├── layout.tsx           Sidebar + topbar + auth guard
-            ├── page.tsx             Dashboard (status, stats, chart, recent)
+            ├── page.tsx             Redirect → /dashboard
+            ├── dashboard/page.tsx   Dashboard (status, stats, chart, recent; getting-started card when empty)
             ├── actions/
             │   ├── page.tsx         Filterable list with pagination + Export CSV button
             │   └── [id]/page.tsx    Detail view with JSON viewer
@@ -696,16 +708,16 @@ Frontend (Next.js 16)                SDK (Python)
 
 ## Roadmap
 
-**Step 2 of 6 complete. Pre-deploy fixes shipped. Next: Deploy to AWS.**
+**Step 4 of 6 in progress. Live at [usevera.xyz](https://usevera.xyz).**
 
 | Step | What | Status | Effort |
 |------|------|--------|--------|
 | 1 | Frontend Dashboard | **Done** | -- |
 | 2 | PDF/CSV Export | **Done** | -- |
-| 3 | Deploy to AWS | **Next** | Large |
-| 4 | Webhook/Alerting | Planned | Medium |
-| 5 | Enterprise Hardening | Planned | Large |
-| 6 | Scale & Multi-tenant | Future | XL |
+| 3 | Deploy (Railway + Vercel) | **Done** | -- |
+| 4 | Self-serve signup + hardening | **In progress** | -- |
+| 5 | S3 WORM + Webhook/Alerting | Next | Medium |
+| 6 | Enterprise + Scale | Future | XL |
 
 <details>
 <summary><strong>Step 2 — PDF/CSV Export (Done)</strong></summary>
@@ -861,7 +873,7 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 
 ## Changelog
 
-**21 bugs + 3 pre-deploy fixes across 5 rounds. 3 open issues remain.**
+**21 bugs + 3 pre-deploy fixes + product round across 6 rounds. 3 open issues remain.**
 
 <details>
 <summary><strong>Audit 1 — 7 bugs fixed</strong> (SDK, validation, S3 config)</summary>
@@ -913,6 +925,22 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 </details>
 
 <details>
+<summary><strong>Product round — self-serve signup, hardening, tests</strong></summary>
+
+| # | Area | Change |
+|---|------|--------|
+| 1 | **Self-serve signup** | `POST /v1/register` (no auth) creates org + chain state + admin key in one transaction. `/register` page: org name form → key display with copy button + "I've saved it" gate → auto-login to dashboard. |
+| 2 | **FK cascade constraints** | All FK `ondelete` rules now explicit: agents/api_keys/chain_state/checkpoints → CASCADE; action_records.org_id → RESTRICT (immutable); action_records.agent_id → SET NULL. Alembic migration for production PostgreSQL. |
+| 3 | **Timezone bug in `is_active`** | SQLite returns naive datetimes; comparing against `datetime.now(timezone.utc)` threw `TypeError`. Fixed: naive datetimes treated as UTC before comparison. |
+| 4 | **`expires_at` missing from create response** | `APIKeyCreateResponse` didn't include `expires_at` — silently dropped after storing. Fixed. |
+| 5 | **Whitespace org name** | `RegisterRequest` validator strips then validates — "   " now correctly returns 422. |
+| 6 | **Empty state / onboarding** | Dashboard and Actions pages show a "Send your first action" card when audit trail is empty. Includes Python SDK + HTTP curl tabs with the user's actual API key pre-filled. Disappears once first action is recorded. |
+| 7 | **Landing page CTAs** | "Get started" now routes to `/register`, not `/login`. Nav shows both "Sign in" and "Get started" buttons. |
+| 8 | **`.env.example`** | Documents all environment variables with comments. Safe to commit — no real secrets. |
+| 9 | **88 backend tests** | Added `test_register.py` (13 tests), expanded `test_hardening.py` with 25 new tests covering API key expiry, data_subject_id filtering, agent auto-registration, actions filtering, and pagination. |
+</details>
+
+<details>
 <summary><strong>Pre-deploy fixes — 3 product gaps closed</strong> (agents, data subject, key expiry)</summary>
 
 | # | Severity | Fix | Files |
@@ -926,17 +954,17 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 
 ## Current State
 
-**Everything runs locally. Nothing is deployed. No AWS account connected.**
+**Live at [usevera.xyz](https://usevera.xyz) (password-protected testing environment).**
 
-| Component | Current | Production Target |
-|-----------|---------|-------------------|
-| Backend | `localhost:8000` (uvicorn) | ECS Fargate behind ALB with TLS |
-| Database | SQLite file | RDS PostgreSQL (encrypted, Multi-AZ) |
-| KMS | Local HMAC-SHA256 | AWS KMS hardware-backed |
-| External store | Local JSON Lines file | S3 with Object Lock (WORM) |
-| Frontend | `localhost:3000` (Next.js dev) | S3 + CloudFront or Vercel |
-| CI/CD | None | GitHub Actions |
-| Domain/TLS | None | ACM + Route 53 |
+| Component | Current | Notes |
+|-----------|---------|-------|
+| Backend | Railway (FastAPI) | PostgreSQL, `start.sh` runs migrations on deploy |
+| Database | Railway PostgreSQL | FK cascade constraints, append-only triggers, Alembic-managed |
+| KMS | Local HMAC-SHA256 | AWS KMS available but not yet connected |
+| External store | Local JSON Lines file | S3 WORM available but not yet connected |
+| Frontend | Vercel (Next.js) | usevera.xyz, SITE_PASSWORD protected |
+| CI/CD | None | Manual push to deploy |
+| Domain/TLS | usevera.xyz (Vercel) | TLS via Vercel |
 
 ---
 
