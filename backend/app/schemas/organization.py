@@ -1,5 +1,5 @@
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class OrganizationCreate(BaseModel):
@@ -16,6 +16,14 @@ class OrganizationResponse(BaseModel):
 
 class RegisterRequest(BaseModel):
     org_name: str = Field(..., min_length=1, max_length=200)
+
+    @field_validator("org_name")
+    @classmethod
+    def strip_and_require_nonempty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("org_name cannot be blank or whitespace only")
+        return v
 
 
 class RegisterResponse(BaseModel):

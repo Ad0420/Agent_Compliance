@@ -29,6 +29,7 @@ class APIKeyCreateResponse(BaseModel):
     key_prefix: str
     permissions: list[str]
     created_at: datetime
+    expires_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 

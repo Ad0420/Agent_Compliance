@@ -34,6 +34,11 @@ class APIKey(Base):
     def is_active(self) -> bool:
         if self.revoked_at is not None:
             return False
-        if self.expires_at is not None and self.expires_at < datetime.now(timezone.utc):
-            return False
+        if self.expires_at is not None:
+            # SQLite returns naive datetimes; treat them as UTC for comparison.
+            expires = self.expires_at
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if expires < datetime.now(timezone.utc):
+                return False
         return True
