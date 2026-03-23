@@ -131,6 +131,23 @@ export function revokeApiKey(id: string): Promise<{ detail: string }> {
   return request(`/v1/api-keys/${id}`, { method: "DELETE" });
 }
 
+// Register
+export interface RegisterInput {
+  org_name: string;
+}
+
+export interface RegisterResult {
+  org_id: string;
+  org_name: string;
+  api_key: string;
+  key_prefix: string;
+  created_at: string;
+}
+
+export function registerOrg(input: RegisterInput): Promise<RegisterResult> {
+  return request("/v1/register", { method: "POST", body: JSON.stringify(input) });
+}
+
 // Export
 export interface ExportParams {
   start_date?: string;
