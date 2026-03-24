@@ -63,9 +63,11 @@ async def health_check():
         db_ok = True
     except Exception:
         db_ok = False
+    import os
     status = "ok" if db_ok else "degraded"
     db_type = "sqlite" if settings.database_url.startswith("sqlite") else "postgresql"
-    return {"status": status, "environment": settings.environment, "database": db_ok, "db_type": db_type}
+    db_url_env = os.environ.get("DATABASE_URL", "NOT_SET")[:40]
+    return {"status": status, "environment": settings.environment, "database": db_ok, "db_type": db_type, "db_url_env": db_url_env}
 
 
 # Register all routers
