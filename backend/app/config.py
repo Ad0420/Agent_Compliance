@@ -38,6 +38,14 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+# Auto-convert bare postgresql:// URLs to the asyncpg dialect.
+# Railway's reference variables (e.g. ${{Postgres.DATABASE_URL}}) emit
+# postgresql:// which asyncpg doesn't accept without the +asyncpg suffix.
+if settings.database_url.startswith("postgresql://"):
+    settings.database_url = settings.database_url.replace(
+        "postgresql://", "postgresql+asyncpg://", 1
+    )
+
 # Fail-fast: refuse to run with default secret in non-dev environments
 if settings.environment != "development" and settings.secret_key == _DEFAULT_SECRET:
     raise RuntimeError(
