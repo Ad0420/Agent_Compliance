@@ -12,6 +12,8 @@ if _is_sqlite:
 else:
     engine_kwargs["pool_size"] = 10
     engine_kwargs["max_overflow"] = 20
+    engine_kwargs["pool_pre_ping"] = True   # detect stale connections before use
+    engine_kwargs["pool_recycle"] = 1800    # recycle connections every 30 min
 
 engine = create_async_engine(settings.database_url, **engine_kwargs)
 
