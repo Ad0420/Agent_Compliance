@@ -11,10 +11,12 @@ setup(
         "langchain": ["langchain-core>=0.1.0"],
         "openai": ["openai>=1.0.0"],
         "crewai": ["crewai>=0.1.0"],
+        "anthropic": ["anthropic>=0.40.0"],
         "all": [
             "langchain-core>=0.1.0",
             "openai>=1.0.0",
             "crewai>=0.1.0",
+            "anthropic>=0.40.0",
         ],
         "dev": [
             "pytest",
