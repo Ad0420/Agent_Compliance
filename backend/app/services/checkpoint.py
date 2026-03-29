@@ -61,7 +61,7 @@ async def create_checkpoint(session: AsyncSession, org_id: str) -> Checkpoint:
             detail=f"Chain state not found for organization {org_id}. Was the org initialized correctly?",
         )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     timestamp = now.isoformat()
 
     # Build Merkle root over records since last checkpoint
@@ -206,7 +206,7 @@ async def verify_all_checkpoints(
     checkpoints = list(result.scalars().all())
 
     results = []
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
 
     for cp in checkpoints:
         is_valid = await verify_checkpoint(session, cp)
