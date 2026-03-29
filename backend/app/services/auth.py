@@ -26,6 +26,10 @@ async def generate_api_key(
     key_hash = _hash_key(raw_key)
     key_prefix = raw_key[:12]
 
+    # Strip timezone before writing to TIMESTAMP WITHOUT TIME ZONE column.
+    if expires_at is not None and expires_at.tzinfo is not None:
+        expires_at = expires_at.replace(tzinfo=None)
+
     api_key = APIKey(
         org_id=org_id,
         name=name,
