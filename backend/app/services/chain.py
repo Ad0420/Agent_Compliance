@@ -135,7 +135,7 @@ async def build_and_insert_record(
 
         new_sequence = chain_state.latest_sequence + 1
         previous_hash = chain_state.latest_hash
-        now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         agent_id = await _get_or_create_agent(session, org_id, data.agent_name, data.agent_version)
         record = _create_record(org_id, data, new_sequence, previous_hash, now, agent_id)
@@ -162,7 +162,7 @@ async def build_and_insert_batch(
     async with lock:
         chain_state = await _lock_chain_state(session, org_id)
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         records = []
 
         for data in records_data:

@@ -74,6 +74,6 @@ async def revoke_api_key(
     if not api_key.is_active:
         raise HTTPException(status_code=400, detail="API key already revoked")
 
-    api_key.revoked_at = datetime.now(timezone.utc)
+    api_key.revoked_at = datetime.now(timezone.utc).replace(tzinfo=None)
     await session.commit()
     return {"detail": "API key revoked"}
