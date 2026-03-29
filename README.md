@@ -6,7 +6,7 @@ Tamper-proof audit trail for AI agents. Cryptographic hash chain with tamper-pro
 
 **The problem:** AI agents are taking consequential actions — approving loans, flagging transactions, making hiring recommendations — with no verifiable record. Regulators (EU AI Act Art. 12, GDPR, Colorado AI Act, SEC Rule 17a-4) are requiring tamper-proof logs. When something goes wrong, teams cannot answer: what did the agent do, did a human approve it, and has the log been touched since? AWS QLDB (the only comparable managed service) was deprecated July 2025. Vera fills that gap.
 
-**The solution:** A four-layer immutability stack: database triggers prevent edits, a SHA-256 hash chain detects tampering, KMS-signed checkpoints prevent chain recomputation, and S3 WORM external proofs survive full database compromise. Drop-in Python SDK with integrations for LangChain, OpenAI, and CrewAI.
+**The solution:** A four-layer immutability stack: database triggers prevent edits, a SHA-256 hash chain detects tampering, KMS-signed checkpoints prevent chain recomputation, and S3 WORM external proofs survive full database compromise. Drop-in Python SDK with integrations for LangChain, OpenAI, CrewAI, and Anthropic/Claude.
 
 ---
 
@@ -225,6 +225,23 @@ from actionledger.integrations.crewai import enable_crewai_auditing
 enable_crewai_auditing(client=client)
 # All CrewAI tool executions are automatically recorded
 ```
+
+### Anthropic / Claude integration
+
+```python
+import anthropic
+from actionledger.integrations.anthropic import AuditedAnthropic
+
+audited = AuditedAnthropic(anthropic.Anthropic(), ledger_client=client)
+response = audited.messages.create(
+    model="claude-sonnet-4-6",
+    max_tokens=1024,
+    messages=[{"role": "user", "content": "Summarize this document..."}],
+)
+# Records: model, token usage (input/output/total), stop_reason, duration_ms
+```
+
+**Limitation:** `client.messages.stream()` is NOT supported. Streaming calls pass through unaudited with a warning. Use `messages.create()` for audited calls.
 
 Thread-safe (`threading.local()`). Idempotent — safe to call multiple times.
 
@@ -771,7 +788,6 @@ Both endpoints accept the same filters: `start_date`, `end_date`, `agent_name`, 
 - Redis rate limiter (current in-memory doesn't work across instances)
 - Configurable per-org retention policies (balance EU AI Act Art. 19 with GDPR deletion)
 - OpenAI streaming support (buffer chunks, record complete response)
-- Anthropic/Claude SDK integration
 </details>
 
 <details>
@@ -850,13 +866,12 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 
 ## Known Issues & Limitations
 
-### Open issues (3)
+### Open issues (2)
 
 | # | Severity | Issue |
 |---|----------|-------|
-| 1 | MEDIUM | `init.sql` and `alembic/` define the PostgreSQL schema separately — they can drift |
-| 2 | MEDIUM | No tests for S3 external store verification logic |
-| 3 | MEDIUM | Checkpoint creation doesn't acquire org lock — small race condition window with concurrent inserts |
+| 1 | MEDIUM | No tests for S3 external store verification logic |
+| 2 | MEDIUM | Checkpoint creation doesn't acquire org lock — small race condition window with concurrent inserts |
 
 ### Limitations (by design)
 
@@ -873,7 +888,17 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 
 ## Changelog
 
-**21 bugs + 3 pre-deploy fixes + product round across 6 rounds. 3 open issues remain.**
+**21 bugs + 3 pre-deploy fixes + product round + 3 production fixes across 7 rounds. 2 open issues remain.**
+
+<details>
+<summary><strong>Production fixes — 3 critical bugs resolved</strong> (Railway PostgreSQL, asyncpg timezone, Anthropic SDK)</summary>
+
+| # | Severity | Fix | Files |
+|---|----------|-----|-------|
+| 1 | CRITICAL | **asyncpg timezone rejection** — `POST /v1/actions` and all write endpoints returned 500 in production. Root cause: `datetime.now(timezone.utc)` produces a tz-aware datetime; SQLAlchemy's `DateTime` column has no bind processor for asyncpg and passes it raw; asyncpg raises `DataError` when a tz-aware datetime is passed to a `TIMESTAMP WITHOUT TIME ZONE` column. Local tests passed because SQLite silently strips tzinfo. Fix: `.replace(tzinfo=None)` at all four write sites (`chain.py` ×2, `checkpoint.py` ×2, `api_keys.py`, `auth.py`). No schema migration needed. | `services/chain.py`, `services/checkpoint.py`, `routes/api_keys.py`, `services/auth.py` |
+| 2 | HIGH | **Railway PostgreSQL dialect mismatch** — Railway injects `DATABASE_URL` as `postgresql://` (bare), but SQLAlchemy async requires `postgresql+asyncpg://`. Auto-conversion added in `config.py` on startup. | `app/config.py` |
+| 3 | HIGH | **Anthropic/Claude SDK integration** — `AuditedAnthropic` wrapper records every `messages.create()` call: model, token usage (input/output/total), stop_reason, last message, duration_ms. Handles content blocks format. Streaming passes through with warning. | `sdk/actionledger/integrations/anthropic.py`, `sdk/setup.py` |
+</details>
 
 <details>
 <summary><strong>Audit 1 — 7 bugs fixed</strong> (SDK, validation, S3 config)</summary>
