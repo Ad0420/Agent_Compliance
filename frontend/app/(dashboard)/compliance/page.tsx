@@ -61,8 +61,8 @@ const COLORADO_REQUIREMENTS = [
     description: "Consumers can appeal decisions and request human review of automated decisions.",
   },
   {
-    req: "Opt-out",
-    description: "Provide mechanisms for consumers to opt out of profiling for consequential decisions.",
+    req: "Self-reporting obligation",
+    description: "Deployers must notify the Colorado AG within 90 days if algorithmic discrimination is detected.",
   },
 ];
 
@@ -108,7 +108,7 @@ const VERA_COVERAGE = [
 const TIMELINE = [
   { date: "May 2024", event: "Colorado SB 24-205 signed into law", region: "US" },
   { date: "Aug 2024", event: "EU AI Act enters into force", region: "EU" },
-  { date: "Feb 2026", event: "Colorado AI Act takes effect", region: "US", highlight: true },
+  { date: "June 2026", event: "Colorado AI Act takes effect", region: "US", highlight: true },
   { date: "Aug 2026", event: "EU AI Act obligations apply to high-risk AI", region: "EU", highlight: true },
   { date: "2026–2027", event: "Canada AIDA, Brazil AI Bill expected to pass", region: "Global" },
 ];
@@ -240,7 +240,7 @@ export default function CompliancePage() {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">Takes effect</span>
-                  <span className="font-mono text-xs font-semibold">Feb 1, 2026</span>
+                  <span className="font-mono text-xs font-semibold">June 30, 2026</span>
                 </div>
               </div>
             </div>
