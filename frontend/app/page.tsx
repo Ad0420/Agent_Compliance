@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ShieldCheck, Link2, Search, FileText } from "lucide-react";
+import { ShieldCheck, Link2, Search, FileText, Globe, MapPin, AlertTriangle } from "lucide-react";
 
 export default function LandingPage() {
   return (
@@ -12,6 +12,12 @@ export default function LandingPage() {
           <span className="font-semibold tracking-tight text-foreground">Vera</span>
         </div>
         <div className="flex items-center gap-3">
+          <Link
+            href="#regulations"
+            className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+          >
+            Regulations
+          </Link>
           <Link
             href="/login"
             className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
@@ -168,6 +174,102 @@ export default function LandingPage() {
           </div>
           <p className="mt-6 text-center text-sm text-muted-foreground">
             Works with LangChain, OpenAI, and CrewAI out of the box.
+          </p>
+        </div>
+      </section>
+
+      {/* Regulations */}
+      <section id="regulations" className="border-t border-border/60 px-8 py-20 bg-card/30">
+        <div className="mx-auto max-w-4xl">
+          <p className="text-xs font-semibold uppercase tracking-widest text-blue-400 text-center mb-4">
+            Regulatory Landscape
+          </p>
+          <h2 className="text-2xl font-bold text-center mb-3">
+            Two major laws. One deadline. Both require audit trails.
+          </h2>
+          <p className="text-center text-sm text-muted-foreground mb-12 max-w-lg mx-auto">
+            The EU AI Act and Colorado AI Act impose strict obligations on companies using AI for high-stakes decisions —
+            with penalties reaching €35M. The compliance window closes in 2026.
+          </p>
+
+          {/* Warning bar */}
+          <div className="flex items-center gap-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-5 py-3.5 mb-8">
+            <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0" />
+            <p className="text-sm text-muted-foreground">
+              <span className="font-semibold text-amber-500">Colorado AI Act: Feb 1, 2026 · EU AI Act: Aug 2, 2026 — </span>
+              Both require tamper-evident logs of every automated decision made about individuals.
+            </p>
+          </div>
+
+          {/* Two law cards */}
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 mb-10">
+            {/* EU AI Act */}
+            <div className="rounded-xl border border-border/60 bg-card/60 p-6 space-y-4">
+              <div className="flex items-center gap-2">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-500/10 border border-blue-500/20">
+                  <Globe className="h-4 w-4 text-blue-400" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold">EU AI Act</p>
+                  <p className="text-xs text-muted-foreground">Regulation (EU) 2024/1689</p>
+                </div>
+              </div>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>Applies to any AI system affecting people in the EU — regardless of where you&apos;re based.</p>
+                <ul className="space-y-1.5 mt-3">
+                  {[
+                    "Art. 12 — Mandatory event logging for high-risk AI",
+                    "Art. 86 — Right to explanation for automated decisions",
+                    "Art. 9 — Risk management system required",
+                  ].map((item) => (
+                    <li key={item} className="flex items-start gap-2 text-xs">
+                      <span className="text-blue-400 mt-0.5 shrink-0">→</span>
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div className="rounded-md bg-destructive/10 border border-destructive/20 px-3 py-2">
+                <p className="text-xs font-semibold text-destructive">Up to €35,000,000 or 7% global revenue</p>
+              </div>
+            </div>
+
+            {/* Colorado AI Act */}
+            <div className="rounded-xl border border-border/60 bg-card/60 p-6 space-y-4">
+              <div className="flex items-center gap-2">
+                <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-orange-500/10 border border-orange-500/20">
+                  <MapPin className="h-4 w-4 text-orange-400" />
+                </div>
+                <div>
+                  <p className="text-sm font-semibold">Colorado AI Act</p>
+                  <p className="text-xs text-muted-foreground">SB 24-205 — the US template</p>
+                </div>
+              </div>
+              <div className="space-y-2 text-sm text-muted-foreground">
+                <p>First US state AI law. 15+ states have similar bills in progress — this sets the standard.</p>
+                <ul className="space-y-1.5 mt-3">
+                  {[
+                    "Consequential decisions must be documented",
+                    "Consumers can request explanation + appeal",
+                    "Algorithmic impact assessments required annually",
+                  ].map((item) => (
+                    <li key={item} className="flex items-start gap-2 text-xs">
+                      <span className="text-orange-400 mt-0.5 shrink-0">→</span>
+                      {item}
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs mt-3">Covers: credit, employment, healthcare, housing, education, insurance.</p>
+              </div>
+              <div className="rounded-md bg-card border border-border/60 px-3 py-2">
+                <p className="text-xs font-semibold">Colorado AG enforcement + civil actions</p>
+              </div>
+            </div>
+          </div>
+
+          <p className="text-center text-xs text-muted-foreground">
+            Canada, Brazil, and the UK are next. The regulatory wave is global —
+            <span className="text-foreground font-medium"> Vera is designed to cover all of them.</span>
           </p>
         </div>
       </section>
