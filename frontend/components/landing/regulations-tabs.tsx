@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Globe, MapPin, AlertTriangle, TrendingUp } from "lucide-react";
+import { Globe, MapPin, TrendingUp } from "lucide-react";
 
 const TABS = [
   { id: "eu", label: "EU AI Act", icon: Globe },
@@ -14,18 +14,18 @@ const CONTENT = {
     badge: "Regulation (EU) 2024/1689",
     badgeColor: "text-blue-400 border-blue-500/30 bg-blue-500/5",
     effectiveDate: "Aug 2, 2026",
-    penalty: "Up to €35,000,000 or 7% of global annual turnover",
+    penalty: "Prohibited AI (Art. 5): up to €35M or 7% revenue · High-risk AI: up to €15M or 3% revenue",
     penaltyColor: "text-red-400",
     intro:
       "The world's first comprehensive AI law. Applies to any company whose AI affects people in the EU — regardless of where you're headquartered.",
     requirements: [
       {
-        label: "Art. 9 — Risk management",
-        detail: "Maintain an ongoing risk management system throughout the AI lifecycle.",
+        label: "Art. 9 — Risk management system",
+        detail: "Establish, implement, document and maintain a risk management system throughout the entire AI lifecycle.",
       },
       {
-        label: "Art. 12 — Automatic logging",
-        detail: "High-risk AI must automatically log events to enable traceability of every decision.",
+        label: "Art. 12 — Record-keeping",
+        detail: "High-risk AI systems must automatically log events throughout their lifecycle to enable traceability of decisions. Deployers must retain logs for at least six months.",
       },
       {
         label: "Art. 13 — Transparency",
@@ -51,42 +51,44 @@ const CONTENT = {
     accentColor: "blue",
   },
   colorado: {
-    badge: "SB 24-205 · Signed May 2024",
+    badge: "SB 24-205 · Signed May 17, 2024",
     badgeColor: "text-orange-400 border-orange-500/30 bg-orange-500/5",
-    effectiveDate: "Feb 1, 2026",
-    penalty: "Colorado AG enforcement + private civil actions",
+    effectiveDate: "June 30, 2026",
+    penalty: "Colorado AG enforcement only — no private right of action. Up to $20,000 per violation.",
     penaltyColor: "text-orange-400",
     intro:
-      "The first US state AI law targeting 'consequential decisions'. Sets the template — 15+ states have similar bills in progress.",
+      "The first comprehensive US state AI consumer protection law, targeting 'consequential decisions'. Multiple states are actively enacting AI legislation — Colorado sets an early benchmark.",
     requirements: [
       {
         label: "Risk management program",
-        detail: "Identify and mitigate algorithmic discrimination before deployment.",
+        detail: "Developers and deployers must implement a program to identify and mitigate algorithmic discrimination.",
       },
       {
         label: "Impact assessments",
-        detail: "Annual algorithmic impact assessments required for high-risk AI systems.",
+        detail: "Annual algorithmic impact assessments required, covering purpose, data used, known discrimination risks, and post-deployment monitoring.",
       },
       {
         label: "Consumer disclosure",
-        detail: "Notify consumers when high-risk AI is used to make decisions about them.",
+        detail: "Notify consumers when high-risk AI is used in a consequential decision and inform them of their rights.",
       },
       {
         label: "Right to appeal",
-        detail: "Consumers can appeal automated decisions and request human review.",
+        detail: "Consumers can appeal consequential decisions and request human review where technically feasible.",
       },
       {
-        label: "Opt-out mechanism",
-        detail: "Provide consumers a way to opt out of profiling for consequential decisions.",
+        label: "Self-reporting obligation",
+        detail: "Deployers must notify the Colorado AG within 90 days if algorithmic discrimination is detected.",
       },
     ],
     highRisk: [
-      "Credit & insurance",
+      "Credit & lending",
       "Employment decisions",
       "Healthcare & diagnosis",
       "Housing & rentals",
       "Education access",
+      "Insurance",
       "Legal services",
+      "Essential government services",
     ],
     accentColor: "orange",
   },
@@ -123,10 +125,10 @@ const COMING_SOON = [
     color: "amber",
   },
   {
-    region: "15+ US States",
-    law: "State-level AI bills",
-    status: "In progress",
-    detail: "Texas, Illinois, Connecticut, Virginia and others are following Colorado's lead. A patchwork of state laws is emerging.",
+    region: "US States",
+    law: "State-level AI legislation",
+    status: "Rapidly expanding",
+    detail: "45 states introduced AI-related bills in 2025, with 145 enacted into law. Most address specific use cases — biometrics, deepfakes, hiring — rather than comprehensive frameworks like Colorado's.",
     color: "red",
   },
 ];
