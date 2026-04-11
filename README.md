@@ -352,6 +352,8 @@ All config is via environment variables. Set in `.env` file or export directly.
 | `MAX_BATCH_SIZE` | `100` | Max records per batch request |
 | `MAX_JSON_FIELD_SIZE` | `1000000` | Max bytes per JSON field (1 MB) |
 | `API_KEY_PREFIX` | `al_live_` | Prefix for generated API keys |
+| `RESEND_API_KEY` | — | Resend API key for tamper-alert emails. If empty, emails are skipped with a log warning (graceful degradation) |
+| `ALERT_FROM_EMAIL` | `alerts@usevera.xyz` | From address used for tamper-alert emails |
 
 Copy the table above into a `.env` file in the `backend/` directory and set at minimum `SECRET_KEY` and `DATABASE_URL` before running in production.
 
@@ -386,6 +388,7 @@ The live instance at [usevera.xyz](https://usevera.xyz) runs on:
 | `SECRET_KEY` | Random hex string |
 | `ENVIRONMENT` | `production` |
 | `CORS_ORIGINS` | `https://usevera.xyz,https://www.usevera.xyz` |
+| `RESEND_API_KEY` | Resend API key (get from resend.com — free tier is 3,000 emails/month) |
 
 **Required Vercel environment variables:**
 
@@ -725,15 +728,15 @@ Frontend (Next.js 16)                SDK (Python)
 
 ## Roadmap
 
-**Step 4 of 6 in progress. Live at [usevera.xyz](https://usevera.xyz).**
+**Step 5 of 6 in progress. Live at [usevera.xyz](https://usevera.xyz).**
 
 | Step | What | Status | Effort |
 |------|------|--------|--------|
 | 1 | Frontend Dashboard | **Done** | -- |
 | 2 | PDF/CSV Export | **Done** | -- |
 | 3 | Deploy (Railway + Vercel) | **Done** | -- |
-| 4 | Self-serve signup + hardening | **In progress** | -- |
-| 5 | S3 WORM + Webhook/Alerting | Next | Medium |
+| 4 | Self-serve signup + hardening | **Done** | -- |
+| 5 | Tamper alerting + Policy Enforcement Engine | **In progress** | Medium |
 | 6 | Enterprise + Scale | Future | XL |
 
 <details>
@@ -770,14 +773,27 @@ Both endpoints accept the same filters: `start_date`, `end_date`, `agent_name`, 
 </details>
 
 <details>
-<summary><strong>Step 4 — Webhook/Alerting on Chain Break</strong></summary>
+<summary><strong>Step 5 — Tamper Alerting + Policy Enforcement Engine (In progress)</strong></summary>
 
-**What to build:**
-- `POST /v1/webhooks` — register URLs for alerts
-- On chain verification failure → POST to registered webhooks
-- Optional Slack/email integration
+**What was built (tamper alerting):**
+- `PATCH /v1/organizations/me/alert-email` — set a tamper-alert email address per org
+- `GET /v1/verify` → fires an email via Resend when `is_valid=False`
+- `POST /v1/verify/checkpoints/verify` → fires an email when any checkpoint fails signature verification
+- Email includes org name, first invalid sequence number, timestamp, and EU AI Act Art. 73 action guidance
+- Fire-and-forget (`asyncio.create_task`) — never blocks the API response
+- Graceful degradation: if `RESEND_API_KEY` is not set, skips with a log warning
+- Settings page: "Tamper Alert Email" card lets admins set/clear the address
+- 26 new tests covering schema validation, Resend API mock, graceful degradation, and route-level email triggering
 
-**Regulatory driver:** EU AI Act Art. 26 (deployers must "immediately inform" on risk), FINRA supervision rules.
+**What's next (Policy Enforcement Engine):**
+- Per-org policy rules stored in DB (`condition_type`, `threshold`, `action`, `severity`)
+- Policy evaluation runs after every record write — fire-and-forget, never slows audit trail
+- Built-in condition types: `chain_tampered`, `failure_rate`, `unknown_agent`, `missing_reasoning`, `high_failure_burst`
+- Actions: EMAIL, FLAG (mark record with `policy_violation=true`), BLOCK (future), WEBHOOK (future)
+- `POST /v1/policies`, `GET /v1/policies`, `GET /v1/violations`
+- Maps word-for-word to EU AI Act Art. 9 (risk management system) and NIST AI RMF GOVERN/MANAGE functions
+
+**Regulatory driver:** EU AI Act Art. 26/73 (incident notification within 2–15 days), EU AI Act Art. 9 (continuous risk monitoring), FINRA supervision rules.
 </details>
 
 <details>
@@ -842,7 +858,8 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 
 | Requirement | Regulation | Gap | Priority |
 |---|---|---|---|
-| Alerting on tampering | EU AI Act Art. 26, FINRA | No webhooks/notifications | P0 (Step 4) |
+| ~~Alerting on tampering~~ | ~~EU AI Act Art. 26, FINRA~~ | **Shipped** — email alert fires on chain/checkpoint failure | ✅ Done |
+| Policy enforcement engine | EU AI Act Art. 9, NIST AI RMF | Rules engine not yet live | P0 (Step 5) |
 | Impact assessment templates | Colorado AI Act, ISO 42001 | Not generated or stored | P1 |
 | Training data provenance | ISO 42001 A.8.5, EU AI Act Annex IV | Logs actions, not training data lineage | P2 |
 | Bias/fairness metrics | NYC LL 144, Colorado | Data exists, analysis layer doesn't | P2 |
@@ -888,7 +905,7 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 
 ## Changelog
 
-**21 bugs + 3 pre-deploy fixes + product round + 3 production fixes across 7 rounds. 2 open issues remain.**
+**21 bugs + 3 pre-deploy fixes + product round + 3 production fixes + 1 feature round across 8 rounds. 2 open issues remain.**
 
 <details>
 <summary><strong>Production fixes — 3 critical bugs resolved</strong> (Railway PostgreSQL, asyncpg timezone, Anthropic SDK)</summary>
@@ -966,6 +983,21 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 </details>
 
 <details>
+<summary><strong>Feature round — tamper alerting + compliance UI</strong></summary>
+
+| # | Area | Change |
+|---|------|--------|
+| 1 | **Tamper-alert email** | When `GET /v1/verify` returns `is_valid=False`, Vera immediately sends an email to the org's configured alert address via Resend. Same trigger on `POST /v1/verify/checkpoints/verify` for invalid checkpoints. Fire-and-forget (`asyncio.create_task`) — never blocks the response. Graceful degradation: skipped with log warning if `RESEND_API_KEY` is unset. |
+| 2 | **Alert email management** | `PATCH /v1/organizations/me/alert-email` (admin only) sets or clears the alert address. `OrganizationResponse` now includes `alert_email`. Settings page has a "Tamper Alert Email" card with save/clear. |
+| 3 | **Email schema validation** | `AlertEmailUpdate` schema validates format (must contain `@` and domain TLD) without requiring an extra dependency. Empty string treated as clear. |
+| 4 | **Alembic migration** | `c3d4e5f6a7b8` adds `alert_email TEXT NULL` to the `organizations` table. |
+| 5 | **Compliance guide (dashboard)** | `/compliance` page covers EU AI Act (5 articles), Colorado AI Act (5 obligations), regulatory timeline, How Vera Covers It (6 cards), What's Coming (4 regions). |
+| 6 | **Regulations section (landing page)** | Interactive tabbed component (`RegulationsTabs`) on landing page: EU AI Act, Colorado AI Act, What's Coming tabs. All legal claims fact-checked: Colorado effective date corrected to June 30, 2026; AG-only enforcement; no private right of action; self-reporting obligation (not opt-out); EU AI Act penalty tiers clarified (€35M/7% = prohibited AI; €15M/3% = high-risk). |
+| 7 | **FinFast Bank demo** | `demo_leapyear.py` — real OpenAI (`gpt-4o-mini`) loan decisioning demo with 3 agents (analysis, risk, decision) × 3 applicants (Sarah Chen, Marcus Johnson, Alex Rivera). Shows 9 real LLM calls, GDPR subject access request, chain verification, KMS checkpoint. |
+| 8 | **26 new tests** | `tests/test_email_alerts.py` covers: `AlertEmailUpdate` schema validation (6), `OrganizationResponse.alert_email` (1), `PATCH` endpoint (6), `email._send()` unit tests (4), `send_tamper_alert` content tests (3), `send_checkpoint_alert` content tests (1), route-level email triggering (6). 114 tests total, all passing. |
+</details>
+
+<details>
 <summary><strong>Pre-deploy fixes — 3 product gaps closed</strong> (agents, data subject, key expiry)</summary>
 
 | # | Severity | Fix | Files |
@@ -987,9 +1019,11 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 | Database | Railway PostgreSQL | FK cascade constraints, append-only triggers, Alembic-managed |
 | KMS | Local HMAC-SHA256 | AWS KMS available but not yet connected |
 | External store | Local JSON Lines file | S3 WORM available but not yet connected |
+| Email alerts | Resend (async, fire-and-forget) | Set `RESEND_API_KEY` in Railway env vars to activate |
 | Frontend | Vercel (Next.js) | usevera.xyz, SITE_PASSWORD protected |
 | CI/CD | None | Manual push to deploy |
 | Domain/TLS | usevera.xyz (Vercel) | TLS via Vercel |
+| Tests | 114 passing | `cd backend && python -m pytest -v` |
 
 ---
 

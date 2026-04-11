@@ -118,6 +118,13 @@ export function getOrganization(): Promise<Organization> {
   return request("/v1/organizations/me");
 }
 
+export function updateAlertEmail(alert_email: string | null): Promise<Organization> {
+  return request("/v1/organizations/me/alert-email", {
+    method: "PATCH",
+    body: JSON.stringify({ alert_email }),
+  });
+}
+
 // API Keys
 export function getApiKeys(): Promise<ApiKey[]> {
   return request("/v1/api-keys");

@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     rate_limit_rpm: int = 120  # requests per minute per key
     rate_limit_burst: int = 20  # max burst per second
 
+    # Email alerting via Resend (https://resend.com)
+    resend_api_key: str = ""
+    alert_from_email: str = "alerts@usevera.xyz"
+
     model_config = {"env_file": ".env"}
 
 

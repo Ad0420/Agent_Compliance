@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAuth } from "@/hooks/use-auth";
 import { useOrganization } from "@/hooks/use-organization";
 import { useApiKeys, useCreateApiKey, useRevokeApiKey } from "@/hooks/use-api-keys";
@@ -13,8 +14,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { formatDate } from "@/lib/utils";
 import { getKeyPrefix } from "@/lib/auth";
 import { PERMISSION_COLORS } from "@/lib/constants";
-import { Plus, Trash2, Copy, Check, AlertTriangle, Loader2 } from "lucide-react";
+import { Plus, Trash2, Copy, Check, AlertTriangle, Loader2, Bell } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { updateAlertEmail } from "@/lib/api-client";
 
 export default function SettingsPage() {
   const { isAdmin } = useAuth();
@@ -22,6 +24,29 @@ export default function SettingsPage() {
   const { data: apiKeys, isLoading: keysLoading } = useApiKeys();
   const createApiKey = useCreateApiKey();
   const revokeApiKey = useRevokeApiKey();
+  const queryClient = useQueryClient();
+
+  const [alertEmailInput, setAlertEmailInput] = useState<string>("");
+  const [alertEmailSaved, setAlertEmailSaved] = useState(false);
+
+  const alertEmailMutation = useMutation({
+    mutationFn: (email: string | null) => updateAlertEmail(email),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["organization"] });
+      setAlertEmailSaved(true);
+      setTimeout(() => setAlertEmailSaved(false), 2500);
+    },
+  });
+
+  const handleSaveAlertEmail = () => {
+    const trimmed = alertEmailInput.trim();
+    alertEmailMutation.mutate(trimmed || null);
+  };
+
+  const handleClearAlertEmail = () => {
+    setAlertEmailInput("");
+    alertEmailMutation.mutate(null);
+  };
 
   const [createOpen, setCreateOpen] = useState(false);
   const [newKeyName, setNewKeyName] = useState("");
@@ -115,6 +140,63 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Tamper alert email */}
+      {isAdmin && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center gap-2">
+              <Bell className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-base">Tamper Alert Email</CardTitle>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              Vera will send an email here if chain verification or checkpoint verification detects tampering.
+              Required for EU AI Act Art. 73 incident notification readiness.
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {org?.alert_email && (
+              <div className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm">
+                <Check className="h-4 w-4 text-emerald-400 shrink-0" />
+                <span className="text-emerald-400 font-mono text-xs">{org.alert_email}</span>
+              </div>
+            )}
+            <div className="flex gap-2">
+              <Input
+                type="email"
+                value={alertEmailInput}
+                onChange={(e) => setAlertEmailInput(e.target.value)}
+                placeholder={org?.alert_email ?? "security@yourcompany.com"}
+                className="text-sm"
+              />
+              <Button
+                size="sm"
+                onClick={handleSaveAlertEmail}
+                disabled={!alertEmailInput.trim() || alertEmailMutation.isPending}
+              >
+                {alertEmailMutation.isPending ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : alertEmailSaved ? (
+                  <><Check className="mr-1 h-4 w-4 text-emerald-400" /> Saved</>
+                ) : (
+                  "Save"
+                )}
+              </Button>
+              {org?.alert_email && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleClearAlertEmail}
+                  disabled={alertEmailMutation.isPending}
+                  className="text-muted-foreground"
+                >
+                  Clear
+                </Button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* API Keys management (admin only) */}
       {isAdmin && (
