@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
 from ..models import Organization, ChainState, APIKey
-from ..schemas.organization import OrganizationCreate, OrganizationResponse
+from ..schemas.organization import AlertEmailUpdate, OrganizationCreate, OrganizationResponse
 from ..services.auth import require_permission
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
@@ -26,11 +26,7 @@ async def create_organization(
 
     await session.commit()
     await session.refresh(org)
-    return OrganizationResponse(
-        id=org.id,
-        name=org.name,
-        created_at=org.created_at,
-    )
+    return OrganizationResponse.model_validate(org)
 
 
 @router.get("/me", response_model=OrganizationResponse)
@@ -42,8 +38,21 @@ async def get_current_organization(
     org = await session.get(Organization, org_id)
     if org is None:
         raise HTTPException(status_code=404, detail="Organization not found")
-    return OrganizationResponse(
-        id=org.id,
-        name=org.name,
-        created_at=org.created_at,
-    )
+    return OrganizationResponse.model_validate(org)
+
+
+@router.patch("/me/alert-email", response_model=OrganizationResponse)
+async def update_alert_email(
+    data: AlertEmailUpdate,
+    session: AsyncSession = Depends(get_db),
+    auth: tuple[str, APIKey] = Depends(require_permission("admin")),
+):
+    """Set or clear the tamper-alert email address for this organization."""
+    org_id, _ = auth
+    org = await session.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    org.alert_email = str(data.alert_email) if data.alert_email else None
+    await session.commit()
+    await session.refresh(org)
+    return OrganizationResponse.model_validate(org)
