@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -9,9 +10,24 @@ class OrganizationCreate(BaseModel):
 class OrganizationResponse(BaseModel):
     id: str
     name: str
+    alert_email: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class AlertEmailUpdate(BaseModel):
+    alert_email: Optional[str] = None
+
+    @field_validator("alert_email")
+    @classmethod
+    def validate_email_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v == "":
+            return None
+        v = v.strip()
+        if "@" not in v or "." not in v.split("@")[-1]:
+            raise ValueError("Invalid email address")
+        return v
 
 
 class RegisterRequest(BaseModel):

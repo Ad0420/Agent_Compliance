@@ -9,6 +9,7 @@ export interface HealthResponse {
 export interface Organization {
   id: string;
   name: string;
+  alert_email: string | null;
   created_at: string;
 }
 
