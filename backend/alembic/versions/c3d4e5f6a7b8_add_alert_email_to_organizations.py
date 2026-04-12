@@ -18,10 +18,16 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "organizations",
-        sa.Column("alert_email", sa.Text(), nullable=True),
-    )
+    # Guard against the column already existing (e.g. if SQLAlchemy's create_all
+    # ran before alembic was initialized and created the table with the new model).
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    existing = [c["name"] for c in inspector.get_columns("organizations")]
+    if "alert_email" not in existing:
+        op.add_column(
+            "organizations",
+            sa.Column("alert_email", sa.Text(), nullable=True),
+        )
 
 
 def downgrade() -> None:
