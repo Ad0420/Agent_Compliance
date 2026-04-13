@@ -14,6 +14,13 @@ import type {
   ApiKey,
   ApiKeyCreateResponse,
   ApiKeyCreateInput,
+  Policy,
+  PolicyListResponse,
+  PolicyCreateInput,
+  PolicyUpdateInput,
+  PolicyViolation,
+  ViolationListResponse,
+  ViolationQueryParams,
 } from "./api-types";
 
 export class ApiError extends Error {
@@ -136,6 +143,35 @@ export function createApiKeyRequest(input: ApiKeyCreateInput): Promise<ApiKeyCre
 
 export function revokeApiKey(id: string): Promise<{ detail: string }> {
   return request(`/v1/api-keys/${id}`, { method: "DELETE" });
+}
+
+// Policies
+export function getPolicies(is_active?: boolean): Promise<PolicyListResponse> {
+  return request(`/v1/policies${buildQuery({ is_active: is_active === undefined ? undefined : String(is_active) })}`);
+}
+
+export function createPolicy(input: PolicyCreateInput): Promise<Policy> {
+  return request("/v1/policies", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function updatePolicy(id: string, input: PolicyUpdateInput): Promise<Policy> {
+  return request(`/v1/policies/${id}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export function deletePolicy(id: string): Promise<void> {
+  return request(`/v1/policies/${id}`, { method: "DELETE" });
+}
+
+// Violations
+export function getViolations(params?: ViolationQueryParams): Promise<ViolationListResponse> {
+  return request(`/v1/policies/violations${buildQuery(params as Record<string, string | number | undefined>)}`);
+}
+
+export function resolveViolation(id: string, resolved_by?: string): Promise<PolicyViolation> {
+  return request(`/v1/policies/violations/${id}/resolve`, {
+    method: "PATCH",
+    body: JSON.stringify({ resolved_by: resolved_by ?? null }),
+  });
 }
 
 // Register
