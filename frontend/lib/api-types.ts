@@ -149,3 +149,79 @@ export interface ApiKeyCreateInput {
   permissions: string[];
   expires_at?: string;
 }
+
+// Policies
+export type ConditionType =
+  | "unknown_agent"
+  | "missing_reasoning"
+  | "failure_rate"
+  | "high_failure_burst"
+  | "consecutive_failures";
+
+export type PolicyAction = "flag" | "email";
+export type PolicySeverity = "critical" | "high" | "medium" | "low";
+
+export interface Policy {
+  id: string;
+  org_id: string;
+  name: string;
+  description: string | null;
+  condition_type: ConditionType;
+  condition_params: Record<string, unknown>;
+  action: PolicyAction;
+  severity: PolicySeverity;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PolicyListResponse {
+  policies: Policy[];
+  total: number;
+}
+
+export interface PolicyCreateInput {
+  name: string;
+  description?: string;
+  condition_type: ConditionType;
+  condition_params: Record<string, unknown>;
+  action: PolicyAction;
+  severity: PolicySeverity;
+  is_active?: boolean;
+}
+
+export interface PolicyUpdateInput {
+  name?: string;
+  description?: string;
+  condition_params?: Record<string, unknown>;
+  action?: PolicyAction;
+  severity?: PolicySeverity;
+  is_active?: boolean;
+}
+
+// Violations
+export interface PolicyViolation {
+  id: string;
+  org_id: string;
+  policy_id: string | null;
+  record_id: string | null;
+  triggered_at: string;
+  severity: PolicySeverity;
+  context: Record<string, unknown>;
+  resolved_at: string | null;
+  resolved_by: string | null;
+}
+
+export interface ViolationListResponse {
+  violations: PolicyViolation[];
+  total: number;
+}
+
+export interface ViolationQueryParams {
+  severity?: PolicySeverity;
+  resolved?: boolean;
+  policy_id?: string;
+  record_id?: string;
+  limit?: number;
+  offset?: number;
+}
