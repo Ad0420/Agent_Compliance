@@ -30,3 +30,9 @@ class Organization(Base):
     checkpoints: Mapped[list["Checkpoint"]] = relationship(
         "Checkpoint", back_populates="organization"
     )
+    policies: Mapped[list["Policy"]] = relationship(
+        "Policy", back_populates="organization"
+    )
+    policy_violations: Mapped[list["PolicyViolation"]] = relationship(
+        "PolicyViolation", back_populates="organization"
+    )

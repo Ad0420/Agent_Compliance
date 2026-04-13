@@ -6,6 +6,7 @@ from .api_keys import router as api_keys_router
 from .checkpoints import router as checkpoints_router
 from .export import router as export_router
 from .register import router as register_router
+from .policies import router as policies_router
 
 __all__ = [
     "actions_router",
@@ -16,4 +17,5 @@ __all__ = [
     "checkpoints_router",
     "export_router",
     "register_router",
+    "policies_router",
 ]
