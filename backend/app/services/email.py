@@ -105,6 +105,82 @@ async def send_tamper_alert(
     await _send(subject=subject, html=html, to=alert_email)
 
 
+async def send_policy_violation_alert(
+    *,
+    org_name: str,
+    org_id: str,
+    alert_email: str,
+    policy_name: str,
+    condition_type: str,
+    severity: str,
+    record_id: str,
+    context: dict,
+) -> None:
+    """Send an email when a policy with action='email' is triggered."""
+    severity_colors = {
+        "critical": "#dc2626",
+        "high": "#ea580c",
+        "medium": "#d97706",
+        "low": "#65a30d",
+    }
+    color = severity_colors.get(severity, "#6b7280")
+    subject = f"[Vera] Policy Violation ({severity.upper()}): {policy_name} — {org_name}"
+
+    context_rows = ""
+    for k, v in context.items():
+        context_rows += f"""
+    <tr style="border-bottom:1px solid #e5e7eb">
+      <td style="padding:8px 0;color:#6b7280;width:160px">{k}</td>
+      <td style="padding:8px 0;font-family:monospace;font-size:13px">{v}</td>
+    </tr>"""
+
+    html = f"""
+<div style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px">
+  <div style="background:{color};color:#fff;border-radius:8px;padding:16px 20px;margin-bottom:24px">
+    <strong style="font-size:16px">&#x26A0;&#xFE0F; Policy Violation Detected ({severity.upper()})</strong>
+  </div>
+
+  <p style="margin:0 0 16px;color:#374151">
+    A policy rule was triggered for <strong>{org_name}</strong>.
+  </p>
+
+  <table style="width:100%;border-collapse:collapse;margin-bottom:24px">
+    <tr style="border-bottom:1px solid #e5e7eb">
+      <td style="padding:10px 0;color:#6b7280;width:160px">Policy</td>
+      <td style="padding:10px 0;font-weight:600">{policy_name}</td>
+    </tr>
+    <tr style="border-bottom:1px solid #e5e7eb">
+      <td style="padding:10px 0;color:#6b7280">Condition</td>
+      <td style="padding:10px 0">{condition_type}</td>
+    </tr>
+    <tr style="border-bottom:1px solid #e5e7eb">
+      <td style="padding:10px 0;color:#6b7280">Severity</td>
+      <td style="padding:10px 0;font-weight:600;color:{color}">{severity.upper()}</td>
+    </tr>
+    <tr style="border-bottom:1px solid #e5e7eb">
+      <td style="padding:10px 0;color:#6b7280">Record ID</td>
+      <td style="padding:10px 0;font-family:monospace;font-size:13px">{record_id}</td>
+    </tr>
+    <tr style="border-bottom:1px solid #e5e7eb">
+      <td style="padding:10px 0;color:#6b7280">Organization</td>
+      <td style="padding:10px 0">{org_name} ({org_id})</td>
+    </tr>
+  </table>
+
+  <p style="margin:0 0 8px;font-weight:600;color:#374151">Context</p>
+  <table style="width:100%;border-collapse:collapse;margin-bottom:24px">
+    {context_rows}
+  </table>
+
+  <p style="color:#6b7280;font-size:13px;margin:24px 0 0;border-top:1px solid #e5e7eb;padding-top:16px">
+    This alert was sent by <strong>Vera</strong> &mdash; AI Compliance Audit Trail.<br>
+    You are receiving this because {alert_email} is configured as the alert address for {org_name}.
+  </p>
+</div>
+"""
+    await _send(subject=subject, html=html, to=alert_email)
+
+
 async def send_checkpoint_alert(
     *,
     org_name: str,

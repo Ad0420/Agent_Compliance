@@ -6,9 +6,11 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import ActionRecord, Agent, ChainState
+from ..models import ActionRecord, Agent, ChainState, Organization, PolicyViolation
 from ..schemas.action import ActionRecordCreate
 from .hashing import canonicalize, compute_record_hash, extract_hashable_fields
+from .policy_engine import evaluate_policies
+from .email import send_policy_violation_alert
 
 # Per-org locks for concurrency safety — prevents Org A from blocking Org B.
 # NOTE: These are in-process only. For multi-instance deployments, the
@@ -125,6 +127,63 @@ def _create_record(
     return record
 
 
+async def _store_violations_and_notify(
+    session: AsyncSession,
+    org_id: str,
+    record_id: str,
+    policy_results: list[dict],
+) -> None:
+    """Insert PolicyViolation rows for triggered policies and fire alert emails.
+
+    This runs AFTER the main record commit, in a separate commit.
+    If this fails, the violation context is still encoded in policies_applied
+    inside the tamper-proof record — no audit data is truly lost.
+    """
+    triggered = [r for r in policy_results if r.get("triggered")]
+    if not triggered:
+        return
+
+    # Fetch org for alert_email
+    org = await session.get(Organization, org_id)
+
+    for result in triggered:
+        violation = PolicyViolation(
+            org_id=org_id,
+            policy_id=result.get("policy_id"),
+            record_id=record_id,
+            severity=result["severity"],
+            context=result.get("context", {}),
+        )
+        session.add(violation)
+
+    try:
+        await session.commit()
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception(
+            "Failed to store policy violations for record %s (org %s)", record_id, org_id
+        )
+        return
+
+    # Fire-and-forget emails for email-action policies
+    if org and org.alert_email:
+        for result in triggered:
+            if result.get("action") == "email":
+                asyncio.create_task(
+                    send_policy_violation_alert(
+                        org_name=org.name,
+                        org_id=org_id,
+                        alert_email=org.alert_email,
+                        policy_name=result["policy_name"],
+                        condition_type=result["condition_type"],
+                        severity=result["severity"],
+                        record_id=record_id,
+                        context=result.get("context", {}),
+                    )
+                )
+
+
+
 async def build_and_insert_record(
     session: AsyncSession, org_id: str, data: ActionRecordCreate
 ) -> ActionRecord:
@@ -138,6 +197,12 @@ async def build_and_insert_record(
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
         agent_id = await _get_or_create_agent(session, org_id, data.agent_name, data.agent_version)
+
+        # [POLICY ENGINE] Evaluate policies before hashing so results are tamper-proof
+        policy_results = await evaluate_policies(session, org_id, data)
+        if policy_results:
+            data = data.model_copy(update={"policies_applied": policy_results})
+
         record = _create_record(org_id, data, new_sequence, previous_hash, now, agent_id)
         session.add(record)
 
@@ -147,7 +212,12 @@ async def build_and_insert_record(
 
         await session.commit()
         await session.refresh(record)
-        return record
+
+    # [POLICY ENGINE] Store violations + send emails (outside lock, separate commit)
+    if policy_results:
+        await _store_violations_and_notify(session, org_id, record.id, policy_results)
+
+    return record
 
 
 async def build_and_insert_batch(
@@ -157,6 +227,9 @@ async def build_and_insert_batch(
 
     The entire batch is inserted under a single lock hold, ensuring
     no interleaving with concurrent requests for the same org.
+
+    TODO: Add policy evaluation for batch records in v2.
+    Batch records have policies_applied = [] (no policy results).
     """
     lock = await _get_org_lock(org_id)
     async with lock:
