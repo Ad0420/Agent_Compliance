@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, List, ShieldCheck, Bot, Settings, Scale } from "lucide-react";
+import { LayoutDashboard, List, ShieldCheck, Bot, Settings, Scale, Shield } from "lucide-react";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/actions", label: "Actions", icon: List },
   { href: "/verification", label: "Verification", icon: ShieldCheck },
   { href: "/agents", label: "Agents", icon: Bot },
+  { href: "/policies", label: "Policies", icon: Shield },
   { href: "/compliance", label: "Compliance", icon: Scale },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
