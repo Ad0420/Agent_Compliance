@@ -146,13 +146,13 @@ function PolicyFormDialog({
       if (isEditing) {
         await updatePolicy.mutateAsync({
           id: editPolicy.id,
-          input: { name, description: description || undefined, condition_params, action, severity },
+          input: { name: name.trim(), description: description.trim() || undefined, condition_params, action, severity },
         });
         toast.success("Policy updated");
       } else {
         await createPolicy.mutateAsync({
-          name,
-          description: description || undefined,
+          name: name.trim(),
+          description: description.trim() || undefined,
           condition_type: conditionType,
           condition_params,
           action,
@@ -331,6 +331,7 @@ function PoliciesTab({ isAdmin }: { isAdmin: boolean }) {
       setDeleteConfirm(null);
     } catch {
       toast.error("Failed to delete policy");
+      setDeleteConfirm(null);
     }
   };
 
@@ -551,6 +552,8 @@ function ViolationsTab({ isAdmin }: { isAdmin: boolean }) {
       setResolveNote("");
     } catch {
       toast.error("Failed to resolve violation");
+      setResolveId(null);
+      setResolveNote("");
     }
   };
 

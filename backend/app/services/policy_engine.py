@@ -92,14 +92,14 @@ async def _eval_failure_rate(
     condition_params: {"threshold": 0.5, "window": 50}
     """
     params = policy.condition_params
-    threshold = float(params.get("threshold", 0.5))
-    window = int(params.get("window", 50))
+    threshold = max(0.0, min(1.0, float(params.get("threshold", 0.5))))
+    window = max(1, min(10_000, int(params.get("window", 50))))
 
-    # Fetch the last N records for this org
+    # Fetch the last N records for this org (ordered by chain sequence for consistency)
     result = await session.execute(
         select(ActionRecord.result)
         .where(ActionRecord.org_id == org_id)
-        .order_by(ActionRecord.recorded_at.desc())
+        .order_by(ActionRecord.sequence_number.desc())
         .limit(window)
     )
     recent_results = [row[0] for row in result.fetchall()]
@@ -139,7 +139,7 @@ async def _eval_high_failure_burst(
     condition_params: {"threshold": 5}
     """
     params = policy.condition_params
-    threshold = int(params.get("threshold", 5))
+    threshold = max(1, int(params.get("threshold", 5)))
 
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=60)
     result = await session.execute(
@@ -179,12 +179,12 @@ async def _eval_consecutive_failures(
     condition_params: {"threshold": 3}
     """
     params = policy.condition_params
-    threshold = int(params.get("threshold", 3))
+    threshold = max(1, min(100, int(params.get("threshold", 3))))
 
     result = await session.execute(
         select(ActionRecord.result)
         .where(ActionRecord.org_id == org_id, ActionRecord.agent_name == data.agent_name)
-        .order_by(ActionRecord.recorded_at.desc())
+        .order_by(ActionRecord.sequence_number.desc())
         .limit(threshold)
     )
     recent = [row[0] for row in result.fetchall()]
