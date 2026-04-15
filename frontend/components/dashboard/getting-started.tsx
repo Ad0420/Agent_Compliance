@@ -33,21 +33,21 @@ function CodeBlock({ code, apiKey }: { code: string; apiKey: string }) {
   );
 }
 
-const PYTHON_SNIPPET = `pip install actionledger
+const PYTHON_SNIPPET = `# Python SDK — coming soon (pip install vera-sdk)
+# For now, use the HTTP API directly:
 
-from actionledger import ActionLedgerClient
+import requests
 
-client = ActionLedgerClient(
-    api_key="YOUR_API_KEY",
-    base_url="${API_URL}",
-)
-
-client.record_action(
-    agent_name="my-agent",
-    action_type="decision",
-    action_name="approve_loan",
-    result="success",
-    authorized_by="policy-engine-v1",
+requests.post(
+    "${API_URL}/v1/actions",
+    headers={"Authorization": "Bearer YOUR_API_KEY"},
+    json={
+        "agent_name": "my-agent",
+        "action_type": "decision",
+        "action_name": "approve_loan",
+        "result": "success",
+        "authorized_by": "policy-engine-v1",
+    },
 )`;
 
 const HTTP_SNIPPET = `curl -X POST ${API_URL}/v1/actions \\
@@ -66,7 +66,7 @@ type Tab = "python" | "http";
 
 export function GettingStarted() {
   const { apiKey } = useAuth();
-  const [tab, setTab] = useState<Tab>("python");
+  const [tab, setTab] = useState<Tab>("http");
 
   return (
     <Card className="border-blue-500/20 bg-blue-500/5">

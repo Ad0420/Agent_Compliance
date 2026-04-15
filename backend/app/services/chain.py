@@ -196,12 +196,14 @@ async def build_and_insert_record(
         previous_hash = chain_state.latest_hash
         now = datetime.now(timezone.utc).replace(tzinfo=None)
 
-        agent_id = await _get_or_create_agent(session, org_id, data.agent_name, data.agent_version)
-
-        # [POLICY ENGINE] Evaluate policies before hashing so results are tamper-proof
+        # [POLICY ENGINE] Evaluate policies BEFORE creating the agent.
+        # unknown_agent must see the pre-insertion state — if we create the agent first,
+        # the evaluator's SELECT finds the just-flushed row and reports registered=True.
         policy_results = await evaluate_policies(session, org_id, data)
         if policy_results:
             data = data.model_copy(update={"policies_applied": policy_results})
+
+        agent_id = await _get_or_create_agent(session, org_id, data.agent_name, data.agent_version)
 
         record = _create_record(org_id, data, new_sequence, previous_hash, now, agent_id)
         session.add(record)
