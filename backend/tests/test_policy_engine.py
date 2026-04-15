@@ -224,6 +224,42 @@ async def test_consecutive_failures_does_not_trigger_with_success_in_between(db_
 
 # ── 2. Integration: policies_applied in record ──────────────────────────────
 
+@pytest.mark.asyncio
+async def test_unknown_agent_triggers_via_build_and_insert(db_session, org_and_key):
+    """unknown_agent fires correctly when called through build_and_insert_record.
+
+    This is the integration-path regression test for the ordering bug where
+    _get_or_create_agent() was called before evaluate_policies(), causing the
+    evaluator to always find the newly-flushed agent and report triggered=False.
+    """
+    from sqlalchemy import select as sa_select
+
+    org, _, _ = org_and_key
+    await _create_policy(db_session, org.id, condition_type="unknown_agent", severity="high")
+
+    # First record — agent "new-rogue" does not exist yet in the DB
+    data = _make_action(agent_name="new-rogue", result="success")
+    record = await build_and_insert_record(db_session, org.id, data)
+
+    # policies_applied must show triggered=True
+    assert len(record.policies_applied) == 1
+    result = record.policies_applied[0]
+    assert result["triggered"] is True, (
+        "unknown_agent policy should trigger for a brand-new agent. "
+        "If False, evaluate_policies() is running after _get_or_create_agent()."
+    )
+    assert result["condition_type"] == "unknown_agent"
+    assert result["context"]["agent_name"] == "new-rogue"
+    assert result["context"]["registered"] is False
+
+    # A violation row must also be created
+    viol_result = await db_session.execute(
+        sa_select(PolicyViolation).where(PolicyViolation.record_id == record.id)
+    )
+    violations = viol_result.scalars().all()
+    assert len(violations) == 1
+    assert violations[0].severity == "high"
+
 
 @pytest.mark.asyncio
 async def test_policies_applied_in_record_on_trigger(db_session, org_and_key):
