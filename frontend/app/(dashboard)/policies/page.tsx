@@ -418,7 +418,7 @@ function PoliciesTab({ isAdmin }: { isAdmin: boolean }) {
                         className={cn(
                           "text-xs",
                           policy.action === "email"
-                            ? "bg-blue-500/15 text-blue-400"
+                            ? "bg-emerald-500/15 text-emerald-400"
                             : "bg-zinc-500/15 text-zinc-400"
                         )}
                       >
@@ -660,7 +660,7 @@ function ViolationsTab({ isAdmin }: { isAdmin: boolean }) {
                       {v.record_id ? (
                         <Link
                           href={`/actions/${v.record_id}`}
-                          className="flex items-center gap-1 text-xs text-blue-400 hover:underline font-mono"
+                          className="flex items-center gap-1 text-xs text-emerald-400 hover:underline font-mono"
                         >
                           {v.record_id.slice(0, 8)}…
                           <ExternalLink className="h-3 w-3" />
