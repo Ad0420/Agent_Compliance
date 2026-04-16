@@ -69,10 +69,10 @@ export function GettingStarted() {
   const [tab, setTab] = useState<Tab>("http");
 
   return (
-    <Card className="border-blue-500/20 bg-blue-500/5">
+    <Card className="border-emerald-500/20 bg-emerald-500/5">
       <CardHeader className="pb-3">
         <div className="flex items-center gap-2">
-          <Zap className="h-4 w-4 text-blue-400" />
+          <Zap className="h-4 w-4 text-emerald-400" />
           <CardTitle className="text-base">Send your first action</CardTitle>
         </div>
         <p className="text-sm text-muted-foreground">

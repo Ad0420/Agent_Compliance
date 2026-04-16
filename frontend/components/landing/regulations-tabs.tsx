@@ -12,7 +12,7 @@ const TABS = [
 const CONTENT = {
   eu: {
     badge: "Regulation (EU) 2024/1689",
-    badgeColor: "text-blue-400 border-blue-500/30 bg-blue-500/5",
+    badgeColor: "text-emerald-400 border-emerald-500/30 bg-emerald-500/5",
     effectiveDate: "Aug 2, 2026",
     penalty: "Prohibited AI (Art. 5): up to €35M or 7% revenue · High-risk AI: up to €15M or 3% revenue",
     penaltyColor: "text-red-400",

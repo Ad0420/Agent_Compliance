@@ -37,8 +37,8 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
-          <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-lg bg-blue-500/10">
-            <ShieldCheck className="h-7 w-7 text-blue-400" />
+          <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-lg bg-emerald-500/10">
+            <ShieldCheck className="h-7 w-7 text-emerald-400" />
           </div>
           <CardTitle className="text-xl">Vera</CardTitle>
           <CardDescription>
@@ -85,7 +85,7 @@ export default function LoginPage() {
 
             <p className="text-center text-sm text-muted-foreground">
               Don&apos;t have an account?{" "}
-              <Link href="/register" className="text-blue-400 hover:text-blue-300 underline underline-offset-4">
+              <Link href="/register" className="text-emerald-400 hover:text-emerald-300 underline underline-offset-4">
                 Create one
               </Link>
             </p>
