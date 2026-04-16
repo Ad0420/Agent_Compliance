@@ -157,10 +157,10 @@ export default function CompliancePage() {
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Globe className="h-5 w-5 text-blue-400" />
+                <Globe className="h-5 w-5 text-emerald-400" />
                 <CardTitle className="text-base">EU AI Act</CardTitle>
               </div>
-              <Badge variant="outline" className="text-xs border-blue-500/40 text-blue-400">
+              <Badge variant="outline" className="text-xs border-emerald-500/40 text-emerald-400">
                 Regulation (EU) 2024/1689
               </Badge>
             </div>
@@ -304,7 +304,7 @@ export default function CompliancePage() {
                     variant="outline"
                     className={`text-[10px] ml-auto shrink-0 ${
                       item.region === "EU"
-                        ? "border-blue-500/40 text-blue-400"
+                        ? "border-emerald-500/40 text-emerald-400"
                         : item.region === "US"
                         ? "border-orange-500/40 text-orange-400"
                         : "border-muted-foreground/40 text-muted-foreground"

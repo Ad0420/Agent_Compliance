@@ -14,7 +14,7 @@ export const ACTION_TYPE_LABELS: Record<string, string> = {
 };
 
 export const PERMISSION_COLORS: Record<string, string> = {
-  read: "bg-blue-500/15 text-blue-400",
+  read: "bg-sky-500/15 text-sky-400",
   write: "bg-emerald-500/15 text-emerald-400",
   admin: "bg-purple-500/15 text-purple-400",
 };
