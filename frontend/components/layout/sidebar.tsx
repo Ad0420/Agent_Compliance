@@ -3,11 +3,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, List, ShieldCheck, Bot, Settings, Scale, Shield } from "lucide-react";
+import { LayoutDashboard, List, ShieldCheck, Bot, Settings, Scale, Shield, UserCheck } from "lucide-react";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/actions", label: "Actions", icon: List },
+  { href: "/approvals", label: "Approvals", icon: UserCheck },
   { href: "/verification", label: "Verification", icon: ShieldCheck },
   { href: "/agents", label: "Agents", icon: Bot },
   { href: "/policies", label: "Policies", icon: Shield },

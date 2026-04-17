@@ -206,6 +206,81 @@ class AsyncActionLedgerClient:
         resp = await self._request_with_retry("post", "/v1/verify/checkpoints/verify")
         return resp.json()
 
+    # ── Human-in-the-Loop approvals ───────────────────────────────────────
+
+    async def request_approval(
+        self,
+        action_name: str,
+        risk_tier: str = "high",
+        action_summary: str | None = None,
+        data_subject_id: str | None = None,
+        context: dict | None = None,
+        approvers_required: int = 1,
+        expires_in_seconds: int | None = None,
+    ) -> dict:
+        """Ask a human to approve an action before the agent takes it."""
+        payload = {
+            "agent_name": self.agent_name,
+            "action_name": action_name,
+            "action_summary": action_summary,
+            "data_subject_id": data_subject_id,
+            "context": context or {},
+            "risk_tier": risk_tier,
+            "approvers_required": approvers_required,
+            "expires_in_seconds": expires_in_seconds,
+        }
+        payload = {k: v for k, v in payload.items() if v is not None}
+        resp = await self._request_with_retry("post", "/v1/approvals", json=payload)
+        return resp.json()
+
+    async def get_approval(self, approval_id: str) -> dict:
+        resp = await self._request_with_retry("get", f"/v1/approvals/{approval_id}")
+        return resp.json()
+
+    async def list_approvals(
+        self,
+        status: str | None = None,
+        risk_tier: str | None = None,
+        data_subject_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict:
+        params = {"limit": limit, "offset": offset}
+        if status is not None:
+            params["status"] = status
+        if risk_tier is not None:
+            params["risk_tier"] = risk_tier
+        if data_subject_id is not None:
+            params["data_subject_id"] = data_subject_id
+        resp = await self._request_with_retry("get", "/v1/approvals", params=params)
+        return resp.json()
+
+    async def wait_for_approval(
+        self,
+        approval_id: str,
+        timeout: float = 300.0,
+        poll_interval: float = 2.0,
+        raise_on_reject: bool = True,
+    ) -> dict:
+        """Await approval resolution. Raises ApprovalTimeoutError on timeout."""
+        from .client import ApprovalRejectedError, ApprovalTimeoutError
+
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+        while True:
+            approval = await self.get_approval(approval_id)
+            status = approval.get("status")
+            if status in ("approved", "rejected", "expired", "cancelled"):
+                if status != "approved" and raise_on_reject:
+                    raise ApprovalRejectedError(approval)
+                return approval
+            if loop.time() >= deadline:
+                raise ApprovalTimeoutError(
+                    f"Approval {approval_id} did not resolve within {timeout}s "
+                    f"(still {status!r})"
+                )
+            await asyncio.sleep(poll_interval)
+
     async def close(self):
         await self.stop_background_flush()
         await self._client.aclose()

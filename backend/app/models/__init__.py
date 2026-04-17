@@ -7,6 +7,7 @@ from .action_record import ActionRecord
 from .checkpoint import Checkpoint
 from .policy import Policy
 from .policy_violation import PolicyViolation
+from .approval import Approval
 
 __all__ = [
     "Base",
@@ -18,4 +19,5 @@ __all__ = [
     "Checkpoint",
     "Policy",
     "PolicyViolation",
+    "Approval",
 ]

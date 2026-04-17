@@ -36,3 +36,6 @@ class Organization(Base):
     policy_violations: Mapped[list["PolicyViolation"]] = relationship(
         "PolicyViolation", back_populates="organization"
     )
+    approvals: Mapped[list["Approval"]] = relationship(
+        "Approval", back_populates="organization"
+    )
