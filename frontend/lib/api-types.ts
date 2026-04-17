@@ -225,3 +225,70 @@ export interface ViolationQueryParams {
   limit?: number;
   offset?: number;
 }
+
+// Approvals (Human-in-the-Loop)
+export type RiskTier = "low" | "medium" | "high" | "critical";
+export type ApprovalStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "expired"
+  | "cancelled";
+
+export interface ApprovalDecisionRecord {
+  decision: "approve" | "reject" | "cancel";
+  approver: string;
+  note?: string | null;
+  decided_at: string;
+  signature?: string;
+  key_id?: string;
+}
+
+export interface Approval {
+  id: string;
+  org_id: string;
+  request_record_id: string | null;
+  resolution_record_id: string | null;
+  requested_by_agent: string;
+  data_subject_id: string | null;
+  action_name: string;
+  action_summary: string | null;
+  context: Record<string, unknown>;
+  risk_tier: RiskTier;
+  approvers_required: number;
+  status: ApprovalStatus;
+  decisions: ApprovalDecisionRecord[];
+  requested_at: string;
+  expires_at: string | null;
+  resolved_at: string | null;
+}
+
+export interface ApprovalListResponse {
+  approvals: Approval[];
+  total: number;
+}
+
+export interface ApprovalCreateInput {
+  agent_name: string;
+  action_name: string;
+  action_summary?: string;
+  data_subject_id?: string;
+  context?: Record<string, unknown>;
+  risk_tier?: RiskTier;
+  approvers_required?: number;
+  expires_in_seconds?: number;
+}
+
+export interface ApprovalDecisionInput {
+  decision: "approve" | "reject";
+  approver: string;
+  note?: string;
+}
+
+export interface ApprovalQueryParams {
+  status?: ApprovalStatus;
+  risk_tier?: RiskTier;
+  data_subject_id?: string;
+  limit?: number;
+  offset?: number;
+}

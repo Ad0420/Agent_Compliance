@@ -47,7 +47,7 @@ customer's dashboard immediately shows "Chain Broken." You cannot silently
 modify the audit trail. This is what makes Vera's logs valid as legal evidence,
 not just a dashboard for developers.
 
-## The six features
+## The seven features
 
 ### 1. Actions — the audit trail
 Every single thing your AI agent does, stored permanently with a cryptographic
@@ -81,6 +81,16 @@ didn't just detect a problem, you responded to it.
 A summary of which regulations apply and how your current Vera data maps to
 each legal requirement. Gives you something concrete to show a lawyer,
 investor, or regulator.
+
+### 7. Approvals — human-in-the-loop oversight
+For high-risk actions (e.g., deleting user data, approving large transactions,
+taking irreversible operational steps), the agent can pause and ask a human to
+approve before proceeding. The approval request is written to the chain as a
+pending record. A reviewer opens the Approvals page, approves or rejects with
+a note, and their decision is cryptographically signed and appended to the
+chain. Supports dual-verification (two approvers required) for the most
+sensitive actions. This is the mechanism that satisfies EU AI Act Article 14
+(human oversight of high-risk AI) — effective August 2026.
 
 ## The long-term vision
 
@@ -420,6 +430,45 @@ Go to usevera.xyz/policies and create these to start:
 | Unknown agent | Alert if an unregistered agent sends an action |
 
 Set action to "Flag + Email" and add your email in Settings → Alert Email.
+
+## Step 5 — Add human approval to high-risk actions
+
+For actions you shouldn't take without a human signing off (irreversible
+deletes, large transfers, GDPR erasure, sensitive data exports), wrap the
+call in an approval check:
+
+```python
+from actionledger import ActionLedgerClient, ApprovalRejectedError
+
+client = ActionLedgerClient(
+    api_url="https://agentcompliance-production.up.railway.app",
+    api_key="YOUR_API_KEY",
+    agent_name="my-agent",
+)
+
+def delete_user(user_id: str):
+    approval = client.request_approval(
+        action_name="delete_user",
+        risk_tier="critical",
+        action_summary=f"Hard-delete user {user_id}",
+        data_subject_id=user_id,
+        context={"requested_by": "support_ticket_1234"},
+        approvers_required=1,       # set to 2 for dual-verification
+        expires_in_seconds=3600,
+    )
+
+    try:
+        client.wait_for_approval(approval["id"], timeout=900)
+    except ApprovalRejectedError:
+        return {"status": "blocked_by_reviewer"}
+
+    # ... actually perform the deletion
+    return {"status": "deleted"}
+```
+
+A reviewer (with an admin API key) can then approve or reject from
+`usevera.xyz/approvals`. Every vote is cryptographically signed and appended
+to the audit chain, satisfying EU AI Act Art. 14 human-oversight requirements.
 
 ## What to send us as feedback
 

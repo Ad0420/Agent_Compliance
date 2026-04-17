@@ -190,6 +190,38 @@ result = client.verify_chain()
 # {"is_valid": true, "records_checked": 1, "message": "All 1 records verified successfully"}
 ```
 
+### Human-in-the-loop approvals (EU AI Act Art. 14)
+
+Agents pause on high-risk actions and wait for a human to approve:
+
+```python
+from actionledger import ActionLedgerClient, ApprovalRejectedError
+
+client = ActionLedgerClient(api_url="...", api_key="...", agent_name="dpo-agent")
+
+approval = client.request_approval(
+    action_name="delete_user_account",
+    risk_tier="critical",
+    action_summary="Hard-delete PII for user_42",
+    data_subject_id="user_42",
+    context={"reason": "GDPR Art. 17 request"},
+    approvers_required=2,       # Annex III 1(a) dual-verification
+    expires_in_seconds=3600,
+)
+
+try:
+    resolved = client.wait_for_approval(approval["id"], timeout=600)
+    # proceed with the action
+except ApprovalRejectedError as e:
+    # approval was rejected / expired / cancelled
+    print(e.approval["status"])
+```
+
+Every vote is KMS-signed and written to the audit chain — giving you cryptographic
+proof that a specific human approved a specific action at a specific time.
+Admins can approve or reject from the dashboard (`/approvals` page) or via
+`POST /v1/approvals/{id}/decide`.
+
 ### LangChain integration
 
 ```python
@@ -851,6 +883,7 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 | **Per-action accountability** | Colorado AI Act, NIST AI RMF | `agent_name`, `authorized_by`, `delegation_chain`, `reasoning` per record |
 | **Bias audit data availability** | NYC LL 144, Colorado | Historical data queryable by date range, agent, type |
 | **Data subject access / right to explanation** | EU AI Act Art. 86, GDPR, Colorado AI Act | `data_subject_id` field enables querying all decisions for a specific individual |
+| **Human oversight of high-risk AI** | EU AI Act Art. 14, Annex III 1(a) | `/v1/approvals` endpoints: agents request approval, humans decide, each vote KMS-signed and written to the chain. Dual-verification supported (`approvers_required=2`). |
 </details>
 
 <details>
@@ -859,6 +892,7 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 | Requirement | Regulation | Gap | Priority |
 |---|---|---|---|
 | ~~Alerting on tampering~~ | ~~EU AI Act Art. 26, FINRA~~ | **Shipped** — email alert fires on chain/checkpoint failure | ✅ Done |
+| ~~Human oversight / approval workflow~~ | ~~EU AI Act Art. 14~~ | **Shipped** — `/v1/approvals` HITL endpoints with signed decisions, dual-approval, chain integration | ✅ Done |
 | Policy enforcement engine | EU AI Act Art. 9, NIST AI RMF | Rules engine not yet live | P0 (Step 5) |
 | Impact assessment templates | Colorado AI Act, ISO 42001 | Not generated or stored | P1 |
 | Training data provenance | ISO 42001 A.8.5, EU AI Act Annex IV | Logs actions, not training data lineage | P2 |

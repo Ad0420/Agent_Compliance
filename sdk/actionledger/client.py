@@ -9,6 +9,19 @@ MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 0.5
 
 
+class ApprovalTimeoutError(Exception):
+    """Raised when wait_for_approval times out before a human decides."""
+
+
+class ApprovalRejectedError(Exception):
+    """Raised when an approval is rejected, expired, or cancelled."""
+
+    def __init__(self, approval: dict):
+        self.approval = approval
+        status = approval.get("status", "unknown")
+        super().__init__(f"Approval {approval.get('id')} resolved as '{status}'")
+
+
 class ActionLedgerClient:
     """Synchronous client for the Vera API."""
 
@@ -126,6 +139,95 @@ class ActionLedgerClient:
         """Verify all checkpoints for the organization."""
         resp = self._request_with_retry("post", "/v1/verify/checkpoints/verify")
         return resp.json()
+
+    # ── Human-in-the-Loop approvals ───────────────────────────────────────
+
+    def request_approval(
+        self,
+        action_name: str,
+        risk_tier: str = "high",
+        action_summary: str | None = None,
+        data_subject_id: str | None = None,
+        context: dict | None = None,
+        approvers_required: int = 1,
+        expires_in_seconds: int | None = None,
+    ) -> dict:
+        """Ask a human to approve an action before the agent takes it.
+
+        Writes a pending record to the audit chain and returns the approval row.
+        Use `wait_for_approval()` or `get_approval()` to poll for the decision.
+
+        Required for EU AI Act Article 14 (human oversight of high-risk AI).
+        """
+        payload = {
+            "agent_name": self.agent_name,
+            "action_name": action_name,
+            "action_summary": action_summary,
+            "data_subject_id": data_subject_id,
+            "context": context or {},
+            "risk_tier": risk_tier,
+            "approvers_required": approvers_required,
+            "expires_in_seconds": expires_in_seconds,
+        }
+        payload = {k: v for k, v in payload.items() if v is not None}
+        resp = self._request_with_retry("post", "/v1/approvals", json=payload)
+        return resp.json()
+
+    def get_approval(self, approval_id: str) -> dict:
+        """Fetch an approval's current status."""
+        resp = self._request_with_retry("get", f"/v1/approvals/{approval_id}")
+        return resp.json()
+
+    def list_approvals(
+        self,
+        status: str | None = None,
+        risk_tier: str | None = None,
+        data_subject_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict:
+        """List approvals with optional filters."""
+        params = {"limit": limit, "offset": offset}
+        if status is not None:
+            params["status"] = status
+        if risk_tier is not None:
+            params["risk_tier"] = risk_tier
+        if data_subject_id is not None:
+            params["data_subject_id"] = data_subject_id
+        resp = self._request_with_retry("get", "/v1/approvals", params=params)
+        return resp.json()
+
+    def wait_for_approval(
+        self,
+        approval_id: str,
+        timeout: float = 300.0,
+        poll_interval: float = 2.0,
+        raise_on_reject: bool = True,
+    ) -> dict:
+        """Block until an approval resolves or timeout elapses.
+
+        Polls GET /v1/approvals/{id} every `poll_interval` seconds.
+        Returns the approval dict once status is terminal.
+
+        Raises:
+          ApprovalTimeoutError: if no decision is made within `timeout` seconds.
+          ApprovalRejectedError: if the approval is rejected/expired/cancelled
+            and `raise_on_reject` is True.
+        """
+        deadline = time.time() + timeout
+        while True:
+            approval = self.get_approval(approval_id)
+            status = approval.get("status")
+            if status in ("approved", "rejected", "expired", "cancelled"):
+                if status != "approved" and raise_on_reject:
+                    raise ApprovalRejectedError(approval)
+                return approval
+            if time.time() >= deadline:
+                raise ApprovalTimeoutError(
+                    f"Approval {approval_id} did not resolve within {timeout}s "
+                    f"(still {status!r})"
+                )
+            time.sleep(poll_interval)
 
     def close(self):
         self._client.close()
