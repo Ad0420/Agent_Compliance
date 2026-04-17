@@ -21,6 +21,11 @@ import type {
   PolicyViolation,
   ViolationListResponse,
   ViolationQueryParams,
+  Approval,
+  ApprovalListResponse,
+  ApprovalCreateInput,
+  ApprovalDecisionInput,
+  ApprovalQueryParams,
 } from "./api-types";
 
 export class ApiError extends Error {
@@ -172,6 +177,30 @@ export function resolveViolation(id: string, resolved_by?: string): Promise<Poli
     method: "PATCH",
     body: JSON.stringify({ resolved_by: resolved_by ?? null }),
   });
+}
+
+// Approvals (Human-in-the-Loop)
+export function getApprovals(params?: ApprovalQueryParams): Promise<ApprovalListResponse> {
+  return request(`/v1/approvals${buildQuery(params as Record<string, string | number | undefined>)}`);
+}
+
+export function getApproval(id: string): Promise<Approval> {
+  return request(`/v1/approvals/${id}`);
+}
+
+export function createApproval(input: ApprovalCreateInput): Promise<Approval> {
+  return request("/v1/approvals", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function decideApproval(id: string, input: ApprovalDecisionInput): Promise<Approval> {
+  return request(`/v1/approvals/${id}/decide`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function cancelApproval(id: string): Promise<Approval> {
+  return request(`/v1/approvals/${id}/cancel`, { method: "POST" });
 }
 
 // Register
