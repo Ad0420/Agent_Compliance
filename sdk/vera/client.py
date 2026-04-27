@@ -1,5 +1,6 @@
 import logging
 import time
+import uuid
 
 import httpx
 
@@ -91,12 +92,21 @@ class VeraClient:
             "error_message": error_message,
             **kwargs,
         }
-        resp = self._request_with_retry("post", "/v1/actions", json=payload)
+        # The retry loop in _request_with_retry passes the same kwargs on
+        # every attempt, so the same Idempotency-Key is sent on retries —
+        # which is exactly what the server-side dedupe wants.
+        headers = {"Idempotency-Key": uuid.uuid4().hex}
+        resp = self._request_with_retry(
+            "post", "/v1/actions", json=payload, headers=headers
+        )
         return resp.json()
 
     def record_action_batch(self, records: list[dict]) -> list[dict]:
         """Record a batch of actions."""
-        resp = self._request_with_retry("post", "/v1/actions/batch", json={"records": records})
+        headers = {"Idempotency-Key": uuid.uuid4().hex}
+        resp = self._request_with_retry(
+            "post", "/v1/actions/batch", json={"records": records}, headers=headers
+        )
         return resp.json()
 
     def query_actions(self, **filters) -> dict:
