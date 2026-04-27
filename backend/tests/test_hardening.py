@@ -398,6 +398,109 @@ async def test_tampered_checkpoint_hash_fails(db_session, org_and_key):
     assert is_valid is False
 
 
+# ── Checkpoint / insert race ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_does_not_race_with_concurrent_inserts(
+    async_client, org_and_key, db_session
+):
+    """Concurrent action inserts and checkpoint creation must produce
+    a checkpoint whose hash matches the chain state at exactly the
+    sequence number recorded in the checkpoint.
+
+    Regression test for README "Known Issues" Open Issue #2: checkpoint
+    creation didn't acquire the per-org lock, so chain_state could mutate
+    between the read of latest_sequence and the read of latest_hash.
+    """
+    org, admin_key, _ = org_and_key
+    admin_headers = {"Authorization": f"Bearer {admin_key}"}
+
+    # Spread requests across multiple API keys so the per-key rate limiter
+    # (sliding-window, burst 20/sec) doesn't 429 us. Each key gets its own
+    # bucket; the race we care about is in the per-org chain lock, which
+    # is independent of the auth key.
+    NUM_KEYS = 5
+    INSERTS_PER_KEY = 10  # 50 total race inserts, 10/key — well under the burst
+    write_keys: list[str] = []
+    for i in range(NUM_KEYS):
+        raw, _ = await generate_api_key(
+            db_session, org.id, f"race-writer-{i}", ["read", "write"]
+        )
+        write_keys.append(raw)
+
+    def _payload(name: str) -> dict:
+        return {
+            "action_name": name,
+            "action_type": "function_call",
+            "agent_name": "race-agent",
+            "result": "success",
+        }
+
+    # Seed a few records first so the chain is non-empty when the race begins.
+    for i in range(5):
+        r = await async_client.post(
+            "/v1/actions",
+            json=_payload(f"seed_{i}"),
+            headers={"Authorization": f"Bearer {write_keys[0]}"},
+        )
+        assert r.status_code in (200, 201), r.text
+
+    # Race: 50 concurrent action inserts (across NUM_KEYS keys) + 1 checkpoint.
+    async def insert(key: str, idx: int):
+        return await async_client.post(
+            "/v1/actions",
+            json=_payload(f"race_{idx}"),
+            headers={"Authorization": f"Bearer {key}"},
+        )
+
+    async def checkpoint_call():
+        return await async_client.post(
+            "/v1/verify/checkpoints", headers=admin_headers
+        )
+
+    inserts = [
+        insert(write_keys[k], k * INSERTS_PER_KEY + i)
+        for k in range(NUM_KEYS)
+        for i in range(INSERTS_PER_KEY)
+    ]
+    results = await asyncio.gather(checkpoint_call(), *inserts)
+
+    cp_resp = results[0]
+    assert cp_resp.status_code == 200, cp_resp.text
+    insert_responses = results[1:]
+    # Sanity: all inserts succeeded (no 429s, no 5xx).
+    bad = [r for r in insert_responses if r.status_code not in (200, 201)]
+    assert not bad, f"Inserts failed: {[(r.status_code, r.text) for r in bad[:3]]}"
+
+    cp_body = cp_resp.json()
+    cp_seq = cp_body["sequence_at_checkpoint"]
+    cp_hash = cp_body["hash_at_checkpoint"]
+
+    # The action_record at sequence_number == cp_seq MUST have record_hash == cp_hash.
+    # If the lock is missing, the checkpoint can capture (seq=N, hash=hash_of_M)
+    # for some N != M, which fails this assertion.
+    record_result = await db_session.execute(
+        select(ActionRecord).where(
+            ActionRecord.org_id == org.id,
+            ActionRecord.sequence_number == cp_seq,
+        )
+    )
+    record = record_result.scalar_one()
+    assert record.record_hash == cp_hash, (
+        f"Checkpoint at seq {cp_seq} has hash {cp_hash} but the actual "
+        f"record at that sequence has hash {record.record_hash}. The lock "
+        f"is not serialising checkpoint creation against concurrent inserts."
+    )
+
+    # End-to-end: every checkpoint must verify cleanly.
+    verify_resp = await async_client.post(
+        "/v1/verify/checkpoints/verify", headers=admin_headers
+    )
+    assert verify_resp.status_code == 200, verify_resp.text
+    assert verify_resp.json()["all_valid"] is True
+
+
 # ── Hash consistency after DB round-trip ───────────────────
 
 

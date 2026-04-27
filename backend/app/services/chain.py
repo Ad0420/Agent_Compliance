@@ -11,20 +11,7 @@ from ..schemas.action import ActionRecordCreate
 from .hashing import canonicalize, compute_record_hash, extract_hashable_fields
 from .policy_engine import evaluate_policies
 from .email import send_policy_violation_alert
-
-# Per-org locks for concurrency safety — prevents Org A from blocking Org B.
-# NOTE: These are in-process only. For multi-instance deployments, the
-# SELECT FOR UPDATE on chain_state provides the real concurrency guarantee.
-_chain_locks: dict[str, asyncio.Lock] = {}
-_locks_lock = asyncio.Lock()
-
-
-async def _get_org_lock(org_id: str) -> asyncio.Lock:
-    """Get or create a per-org lock."""
-    async with _locks_lock:
-        if org_id not in _chain_locks:
-            _chain_locks[org_id] = asyncio.Lock()
-        return _chain_locks[org_id]
+from .locks import get_org_lock
 
 
 def _is_sqlite(session: AsyncSession) -> bool:
@@ -188,7 +175,7 @@ async def build_and_insert_record(
     session: AsyncSession, org_id: str, data: ActionRecordCreate
 ) -> ActionRecord:
     """Build a single chained action record and insert it."""
-    lock = await _get_org_lock(org_id)
+    lock = await get_org_lock(org_id)
     async with lock:
         chain_state = await _lock_chain_state(session, org_id)
 
@@ -233,7 +220,7 @@ async def build_and_insert_batch(
     TODO: Add policy evaluation for batch records in v2.
     Batch records have policies_applied = [] (no policy results).
     """
-    lock = await _get_org_lock(org_id)
+    lock = await get_org_lock(org_id)
     async with lock:
         chain_state = await _lock_chain_state(session, org_id)
 

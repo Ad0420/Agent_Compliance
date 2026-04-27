@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import ActionRecord, ChainState
 from ..models.checkpoint import Checkpoint
 from .kms import get_kms
+from .locks import get_org_lock
 from .merkle import build_tree_from_records
 from .external_store import get_external_store, ExternalProof
 
@@ -50,57 +51,65 @@ async def create_checkpoint(session: AsyncSession, org_id: str) -> Checkpoint:
       3. Sign the checkpoint with KMS
       4. Save to database
       5. Publish proof to external store (best-effort)
+
+    Steps 1-4 run under the per-org lock so they cannot interleave with
+    concurrent action inserts (which also hold the same lock). This
+    guarantees the recorded (sequence, hash) pair corresponds to a single
+    coherent moment in the chain. Step 5 is outside the lock — the
+    checkpoint row is already committed and the publish is idempotent.
     """
-    result = await session.execute(
-        select(ChainState).where(ChainState.org_id == org_id)
-    )
-    chain_state = result.scalar_one_or_none()
-    if chain_state is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Chain state not found for organization {org_id}. Was the org initialized correctly?",
+    lock = await get_org_lock(org_id)
+    async with lock:
+        result = await session.execute(
+            select(ChainState).where(ChainState.org_id == org_id)
         )
+        chain_state = result.scalar_one_or_none()
+        if chain_state is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Chain state not found for organization {org_id}. Was the org initialized correctly?",
+            )
 
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    timestamp = now.isoformat()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        timestamp = now.isoformat()
 
-    # Build Merkle root over records since last checkpoint
-    last_cp_seq = await _get_last_checkpoint_sequence(session, org_id)
-    records_result = await session.execute(
-        select(ActionRecord.record_hash)
-        .where(
-            ActionRecord.org_id == org_id,
-            ActionRecord.sequence_number > last_cp_seq,
-            ActionRecord.sequence_number <= chain_state.latest_sequence,
+        # Build Merkle root over records since last checkpoint
+        last_cp_seq = await _get_last_checkpoint_sequence(session, org_id)
+        records_result = await session.execute(
+            select(ActionRecord.record_hash)
+            .where(
+                ActionRecord.org_id == org_id,
+                ActionRecord.sequence_number > last_cp_seq,
+                ActionRecord.sequence_number <= chain_state.latest_sequence,
+            )
+            .order_by(ActionRecord.sequence_number)
         )
-        .order_by(ActionRecord.sequence_number)
-    )
-    record_hashes = [row for row in records_result.scalars().all()]
+        record_hashes = [row for row in records_result.scalars().all()]
 
-    merkle_root = None
-    if record_hashes:
-        tree = build_tree_from_records(record_hashes)
-        merkle_root = tree.root
+        merkle_root = None
+        if record_hashes:
+            tree = build_tree_from_records(record_hashes)
+            merkle_root = tree.root
 
-    # Sign with KMS
-    kms = get_kms()
-    message = _checkpoint_message(
-        org_id, chain_state.latest_sequence, chain_state.latest_hash, timestamp
-    )
-    signature = kms.sign(message)
+        # Sign with KMS
+        kms = get_kms()
+        message = _checkpoint_message(
+            org_id, chain_state.latest_sequence, chain_state.latest_hash, timestamp
+        )
+        signature = kms.sign(message)
 
-    checkpoint = Checkpoint(
-        org_id=org_id,
-        sequence_at_checkpoint=chain_state.latest_sequence,
-        hash_at_checkpoint=chain_state.latest_hash,
-        merkle_root=merkle_root,
-        key_id=kms.get_key_id(),
-        created_at=now,
-        signature=signature,
-    )
-    session.add(checkpoint)
-    await session.commit()
-    await session.refresh(checkpoint)
+        checkpoint = Checkpoint(
+            org_id=org_id,
+            sequence_at_checkpoint=chain_state.latest_sequence,
+            hash_at_checkpoint=chain_state.latest_hash,
+            merkle_root=merkle_root,
+            key_id=kms.get_key_id(),
+            created_at=now,
+            signature=signature,
+        )
+        session.add(checkpoint)
+        await session.commit()
+        await session.refresh(checkpoint)
 
     # Publish to external store (best-effort — failure doesn't roll back checkpoint)
     try:
