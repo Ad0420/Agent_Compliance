@@ -8,6 +8,7 @@ from .export import router as export_router
 from .register import router as register_router
 from .policies import router as policies_router
 from .approvals import router as approvals_router
+from .webhooks import router as webhooks_router
 
 __all__ = [
     "actions_router",
@@ -20,4 +21,5 @@ __all__ = [
     "register_router",
     "policies_router",
     "approvals_router",
+    "webhooks_router",
 ]
