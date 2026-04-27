@@ -20,7 +20,7 @@ import argparse
 
 import openai
 
-from actionledger import ActionLedgerClient
+from vera import VeraClient
 
 
 # ── Loan applicants ──────────────────────────────────────────────────────────
@@ -241,9 +241,9 @@ def main():
         framework="finfast-demo",
         model_id=MODEL,
     )
-    analysis_cl = ActionLedgerClient(**common, agent_name="analysis-agent", agent_version="1.0.0")
-    risk_cl     = ActionLedgerClient(**common, agent_name="risk-agent",     agent_version="1.0.0")
-    decision_cl = ActionLedgerClient(**common, agent_name="decision-agent", agent_version="1.0.0")
+    analysis_cl = VeraClient(**common, agent_name="analysis-agent", agent_version="1.0.0")
+    risk_cl     = VeraClient(**common, agent_name="risk-agent",     agent_version="1.0.0")
+    decision_cl = VeraClient(**common, agent_name="decision-agent", agent_version="1.0.0")
     oc = openai.OpenAI(api_key=openai_key)
 
     # ── Process applicants ────────────────────────────────────

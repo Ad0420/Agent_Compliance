@@ -99,11 +99,14 @@ docker compose exec api python setup_local.py
 ### Option C: Install just the SDK
 
 ```bash
+pip install vera-sdk
+
+# Or from this repo for local development:
 cd sdk
 pip install -e .
 
 # With framework integrations:
-pip install -e ".[langchain,openai,crewai]"
+pip install "vera-sdk[langchain,openai,anthropic,crewai]"
 ```
 
 ---
@@ -151,9 +154,9 @@ record_hash = SHA-256(previous_hash + canonical_json(all_fields))
 ### Record an action (direct)
 
 ```python
-from actionledger import ActionLedgerClient
+from vera import VeraClient
 
-client = ActionLedgerClient(
+client = VeraClient(
     api_url="http://localhost:8000",
     api_key="al_live_...",        # from setup_local.py
     agent_name="my-agent",
@@ -173,7 +176,7 @@ client.record_action(
 ### Use the decorator (zero-code auditing)
 
 ```python
-from actionledger import audit, set_default_client
+from vera import audit, set_default_client
 
 set_default_client(client)
 
@@ -195,9 +198,9 @@ result = client.verify_chain()
 Agents pause on high-risk actions and wait for a human to approve:
 
 ```python
-from actionledger import ActionLedgerClient, ApprovalRejectedError
+from vera import VeraClient, ApprovalRejectedError
 
-client = ActionLedgerClient(api_url="...", api_key="...", agent_name="dpo-agent")
+client = VeraClient(api_url="...", api_key="...", agent_name="dpo-agent")
 
 approval = client.request_approval(
     action_name="delete_user_account",
@@ -225,9 +228,9 @@ Admins can approve or reject from the dashboard (`/approvals` page) or via
 ### LangChain integration
 
 ```python
-from actionledger.integrations.langchain import ActionLedgerCallbackHandler
+from vera.integrations.langchain import VeraCallbackHandler
 
-handler = ActionLedgerCallbackHandler(client=client)
+handler = VeraCallbackHandler(client=client)
 chain.invoke(inputs, config={"callbacks": [handler]})
 # Records: LLM calls (with tokens), chain executions, tool uses, agent decisions
 ```
@@ -237,7 +240,7 @@ Hooks: `on_llm_start/end/error`, `on_chain_start/end/error`, `on_tool_start/end/
 ### OpenAI integration
 
 ```python
-from actionledger.integrations.openai import AuditedOpenAI
+from vera.integrations.openai import AuditedOpenAI
 import openai
 
 audited = AuditedOpenAI(openai.OpenAI(), ledger_client=client)
@@ -252,7 +255,7 @@ response = audited.chat.completions.create(
 ### CrewAI integration
 
 ```python
-from actionledger.integrations.crewai import enable_crewai_auditing
+from vera.integrations.crewai import enable_crewai_auditing
 
 enable_crewai_auditing(client=client)
 # All CrewAI tool executions are automatically recorded
@@ -262,7 +265,7 @@ enable_crewai_auditing(client=client)
 
 ```python
 import anthropic
-from actionledger.integrations.anthropic import AuditedAnthropic
+from vera.integrations.anthropic import AuditedAnthropic
 
 audited = AuditedAnthropic(anthropic.Anthropic(), ledger_client=client)
 response = audited.messages.create(
@@ -280,9 +283,9 @@ Thread-safe (`threading.local()`). Idempotent — safe to call multiple times.
 ### Async SDK
 
 ```python
-from actionledger import AsyncActionLedgerClient, async_audit, set_default_async_client
+from vera import AsyncVeraClient, async_audit, set_default_async_client
 
-async with AsyncActionLedgerClient(
+async with AsyncVeraClient(
     api_url="http://localhost:8000",
     api_key="al_live_...",
     agent_name="fast-agent",
@@ -642,8 +645,10 @@ cd frontend && npm run build
 │   └── tests/                       88 tests (test_api, test_auth, test_chain, test_hardening, test_hashing, test_register)
 │
 ├── sdk/
+│   ├── pyproject.toml               PyPI metadata (name=vera-sdk, build backend)
 │   ├── setup.py                     Package definition (pip install -e .)
-│   └── actionledger/
+│   ├── README.md                    PyPI-facing readme
+│   └── vera/
 │       ├── __init__.py              Public API exports
 │       ├── client.py                Sync client (retry + exponential backoff)
 │       ├── async_client.py          Async client (background queue, batch flush)
@@ -652,6 +657,7 @@ cd frontend && npm run build
 │       └── integrations/
 │           ├── langchain.py         BaseCallbackHandler (LLM, chain, tool, agent)
 │           ├── openai.py            AuditedOpenAI wrapper (non-streaming only)
+│           ├── anthropic.py         AuditedAnthropic wrapper (non-streaming only)
 │           └── crewai.py            BaseTool monkey-patch
 │
 └── frontend/
@@ -709,7 +715,7 @@ Frontend (Next.js 16)                SDK (Python)
   Verification, Agents, Settings       LangChain | OpenAI | CrewAI integrations
        |                                    |
        | HTTP (Bearer token)                v
-       |                              ActionLedgerClient / AsyncClient
+       |                              VeraClient / AsyncVeraClient
        |                              - Retry with exponential backoff
        |                              - Background queue + batch flush
        |                                    |
@@ -948,7 +954,7 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 |---|----------|-----|-------|
 | 1 | CRITICAL | **asyncpg timezone rejection** — `POST /v1/actions` and all write endpoints returned 500 in production. Root cause: `datetime.now(timezone.utc)` produces a tz-aware datetime; SQLAlchemy's `DateTime` column has no bind processor for asyncpg and passes it raw; asyncpg raises `DataError` when a tz-aware datetime is passed to a `TIMESTAMP WITHOUT TIME ZONE` column. Local tests passed because SQLite silently strips tzinfo. Fix: `.replace(tzinfo=None)` at all four write sites (`chain.py` ×2, `checkpoint.py` ×2, `api_keys.py`, `auth.py`). No schema migration needed. | `services/chain.py`, `services/checkpoint.py`, `routes/api_keys.py`, `services/auth.py` |
 | 2 | HIGH | **Railway PostgreSQL dialect mismatch** — Railway injects `DATABASE_URL` as `postgresql://` (bare), but SQLAlchemy async requires `postgresql+asyncpg://`. Auto-conversion added in `config.py` on startup. | `app/config.py` |
-| 3 | HIGH | **Anthropic/Claude SDK integration** — `AuditedAnthropic` wrapper records every `messages.create()` call: model, token usage (input/output/total), stop_reason, last message, duration_ms. Handles content blocks format. Streaming passes through with warning. | `sdk/actionledger/integrations/anthropic.py`, `sdk/setup.py` |
+| 3 | HIGH | **Anthropic/Claude SDK integration** — `AuditedAnthropic` wrapper records every `messages.create()` call: model, token usage (input/output/total), stop_reason, last message, duration_ms. Handles content blocks format. Streaming passes through with warning. | `sdk/vera/integrations/anthropic.py`, `sdk/setup.py` |
 </details>
 
 <details>
