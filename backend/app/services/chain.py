@@ -11,6 +11,7 @@ from ..schemas.action import ActionRecordCreate
 from .hashing import canonicalize, compute_record_hash, extract_hashable_fields
 from .policy_engine import evaluate_policies
 from .email import send_policy_violation_alert
+from .webhooks import dispatch_event
 
 # Per-org locks for concurrency safety — prevents Org A from blocking Org B.
 # NOTE: These are in-process only. For multi-instance deployments, the
@@ -181,6 +182,24 @@ async def _store_violations_and_notify(
                         context=result.get("context", {}),
                     )
                 )
+
+    # Fire webhook events for every triggered policy. dispatch_event is itself
+    # fire-and-forget (it schedules tasks and returns), so this loop does not
+    # block the request.
+    for result in triggered:
+        await dispatch_event(
+            session,
+            org_id,
+            "policy.violation",
+            {
+                "policy_id": result.get("policy_id"),
+                "policy_name": result["policy_name"],
+                "condition_type": result["condition_type"],
+                "severity": result["severity"],
+                "context": result.get("context", {}),
+                "record_id": record_id,
+            },
+        )
 
 
 
