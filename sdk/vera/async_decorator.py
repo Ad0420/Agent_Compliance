@@ -13,7 +13,7 @@ _default_async_client = None
 
 
 def set_default_async_client(client):
-    """Set the default AsyncActionLedgerClient used by the @async_audit decorator."""
+    """Set the default AsyncVeraClient used by the @async_audit decorator."""
     global _default_async_client
     _default_async_client = client
 
@@ -26,7 +26,7 @@ def async_audit(action_name: str = "", action_type: str = "function_call", clien
     Args:
         action_name: Name for the action record. Defaults to function name.
         action_type: Type of action. Defaults to "function_call".
-        client: AsyncActionLedgerClient instance. Falls back to default.
+        client: AsyncVeraClient instance. Falls back to default.
         blocking: If True, waits for the API call. If False (default), uses
                   the background queue for zero-latency auditing.
     """

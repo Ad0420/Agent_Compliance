@@ -33,21 +33,22 @@ function CodeBlock({ code, apiKey }: { code: string; apiKey: string }) {
   );
 }
 
-const PYTHON_SNIPPET = `# Python SDK — coming soon (pip install vera-sdk)
-# For now, use the HTTP API directly:
+const PYTHON_SNIPPET = `# Python SDK
+# pip install vera-sdk
 
-import requests
+from vera import VeraClient
 
-requests.post(
-    "${API_URL}/v1/actions",
-    headers={"Authorization": "Bearer YOUR_API_KEY"},
-    json={
-        "agent_name": "my-agent",
-        "action_type": "decision",
-        "action_name": "approve_loan",
-        "result": "success",
-        "authorized_by": "policy-engine-v1",
-    },
+client = VeraClient(
+    api_url="${API_URL}",
+    api_key="YOUR_API_KEY",
+    agent_name="my-agent",
+)
+
+client.record_action(
+    action_type="decision",
+    action_name="approve_loan",
+    result="success",
+    authorized_by="policy-engine-v1",
 )`;
 
 const HTTP_SNIPPET = `curl -X POST ${API_URL}/v1/actions \\

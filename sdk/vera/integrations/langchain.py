@@ -10,18 +10,18 @@ try:
 except ImportError:
     raise ImportError(
         "langchain-core is required for LangChain integration. "
-        "Install it with: pip install actionledger[langchain]"
+        "Install it with: pip install vera-sdk[langchain]"
     )
 
-logger = logging.getLogger("actionledger.integrations.langchain")
+logger = logging.getLogger("vera.integrations.langchain")
 
 
-class ActionLedgerCallbackHandler(BaseCallbackHandler):
+class VeraCallbackHandler(BaseCallbackHandler):
     """LangChain callback handler that records all LLM/chain/tool/agent actions
     to the Vera.
 
     Usage:
-        handler = ActionLedgerCallbackHandler(client=ledger_client)
+        handler = VeraCallbackHandler(client=ledger_client)
         chain.invoke(inputs, config={"callbacks": [handler]})
     """
 

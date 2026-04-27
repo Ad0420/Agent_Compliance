@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from actionledger.decorator import audit, set_default_client
+from vera.decorator import audit, set_default_client
 
 
 class TestAuditDecorator:

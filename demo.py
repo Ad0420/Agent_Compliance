@@ -14,7 +14,7 @@ import os
 import sys
 import time
 
-from actionledger import ActionLedgerClient, audit, set_default_client
+from vera import VeraClient, audit, set_default_client
 
 
 def main():
@@ -29,7 +29,7 @@ def main():
     print()
 
     # ── 1. Initialize client ──────────────────────────────
-    client = ActionLedgerClient(
+    client = VeraClient(
         api_url=args.url,
         api_key=args.api_key,
         agent_name="demo-agent",
@@ -119,7 +119,7 @@ def main():
     if anthropic_key:
         try:
             import anthropic
-            from actionledger.integrations.anthropic import AuditedAnthropic
+            from vera.integrations.anthropic import AuditedAnthropic
 
             raw_client = anthropic.Anthropic(api_key=anthropic_key)
             audited_anthropic = AuditedAnthropic(raw_client, ledger_client=client)
@@ -141,29 +141,29 @@ def main():
     # ── 9. Other framework stubs ──────────────────────────
     print("[9/9] Framework availability check...")
     try:
-        from actionledger.integrations.langchain import ActionLedgerCallbackHandler
+        from vera.integrations.langchain import VeraCallbackHandler
         print("  LangChain: ready  (chain.invoke(inputs, config={'callbacks': [handler]}))")
     except ImportError:
-        print("  LangChain: not installed  (pip install actionledger[langchain])")
+        print("  LangChain: not installed  (pip install vera-sdk[langchain])")
 
     try:
         import openai
-        from actionledger.integrations.openai import AuditedOpenAI
+        from vera.integrations.openai import AuditedOpenAI
         print("  OpenAI:    ready  (AuditedOpenAI(openai.OpenAI(), ledger_client=client))")
     except ImportError:
-        print("  OpenAI:    not installed  (pip install actionledger[openai])")
+        print("  OpenAI:    not installed  (pip install vera-sdk[openai])")
 
     try:
-        from actionledger.integrations.crewai import enable_crewai_auditing
+        from vera.integrations.crewai import enable_crewai_auditing
         print("  CrewAI:    ready  (enable_crewai_auditing(client=client))")
     except ImportError:
-        print("  CrewAI:    not installed  (pip install actionledger[crewai])")
+        print("  CrewAI:    not installed  (pip install vera-sdk[crewai])")
 
     try:
-        from actionledger.integrations.anthropic import AuditedAnthropic
+        from vera.integrations.anthropic import AuditedAnthropic
         print("  Anthropic: ready  (AuditedAnthropic(anthropic.Anthropic(), ledger_client=client))")
     except ImportError:
-        print("  Anthropic: not installed  (pip install actionledger[anthropic])")
+        print("  Anthropic: not installed  (pip install vera-sdk[anthropic])")
 
     # ── Summary ───────────────────────────────────────────
     print()

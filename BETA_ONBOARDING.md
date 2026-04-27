@@ -284,7 +284,7 @@ themselves.
 | Feature | Status |
 |---|---|
 | Human-in-the-loop checkpoints | Not built — next major feature |
-| Python/Node SDK (pip install vera) | Not built — currently raw HTTP |
+| Python SDK (`pip install vera-sdk`) | Shipping — see Step 5 below for a worked example |
 | SOC 2 certification | Not yet — needed for enterprise |
 | Data Processing Agreement | Not yet — needed for EU enterprise |
 | EU data residency | Not yet — needed for some EU customers |
@@ -438,9 +438,9 @@ deletes, large transfers, GDPR erasure, sensitive data exports), wrap the
 call in an approval check:
 
 ```python
-from actionledger import ActionLedgerClient, ApprovalRejectedError
+from vera import VeraClient, ApprovalRejectedError
 
-client = ActionLedgerClient(
+client = VeraClient(
     api_url="https://agentcompliance-production.up.railway.app",
     api_key="YOUR_API_KEY",
     agent_name="my-agent",

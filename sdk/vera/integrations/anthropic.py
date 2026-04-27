@@ -2,7 +2,7 @@
 
 Usage:
     import anthropic
-    from actionledger.integrations.anthropic import AuditedAnthropic
+    from vera.integrations.anthropic import AuditedAnthropic
 
     client = AuditedAnthropic(anthropic.Anthropic(), ledger_client=ledger)
     response = client.messages.create(
@@ -18,7 +18,7 @@ Use client.messages.create() for audited calls.
 import logging
 import time
 
-logger = logging.getLogger("actionledger.integrations.anthropic")
+logger = logging.getLogger("vera.integrations.anthropic")
 
 
 class _AuditedMessages:
@@ -121,7 +121,7 @@ class _AuditedMessages:
     def stream(self):
         """Streaming is not audited. Calls are passed through with a warning."""
         logger.warning(
-            "ActionLedger: streaming (client.messages.stream()) is not yet "
+            "Vera: streaming (client.messages.stream()) is not yet "
             "supported for auditing. These calls will NOT be recorded in the "
             "audit trail. Use client.messages.create() for audited calls."
         )
@@ -136,9 +136,9 @@ class AuditedAnthropic:
 
     Usage:
         import anthropic
-        from actionledger.integrations.anthropic import AuditedAnthropic
+        from vera.integrations.anthropic import AuditedAnthropic
 
-        ledger = ActionLedgerClient(api_url=..., api_key=..., agent_name="my-agent")
+        ledger = VeraClient(api_url=..., api_key=..., agent_name="my-agent")
         client = AuditedAnthropic(anthropic.Anthropic(), ledger_client=ledger)
 
         response = client.messages.create(

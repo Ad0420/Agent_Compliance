@@ -8,7 +8,7 @@ _default_client = None
 
 
 def set_default_client(client):
-    """Set the default ActionLedgerClient used by the @audit decorator."""
+    """Set the default VeraClient used by the @audit decorator."""
     global _default_client
     _default_client = client
 
