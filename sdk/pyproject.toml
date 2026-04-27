@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vera-sdk"
+version = "0.3.0"
+description = "Vera — runtime trust layer SDK for AI agents (immutable audit trail, HITL approvals, policy enforcement)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Vera" },
+]
+keywords = ["ai", "audit", "compliance", "trust", "agents", "hitl", "eu-ai-act", "gdpr"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+dependencies = [
+    "httpx>=0.25.0",
+]
+
+[project.optional-dependencies]
+langchain = ["langchain-core>=0.1.0"]
+openai = ["openai>=1.0.0"]
+crewai = ["crewai>=0.1.0"]
+anthropic = ["anthropic>=0.40.0"]
+all = [
+    "langchain-core>=0.1.0",
+    "openai>=1.0.0",
+    "crewai>=0.1.0",
+    "anthropic>=0.40.0",
+]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-httpx",
+    "build",
+]
+
+[tool.setuptools.packages.find]
+include = ["vera*"]
+exclude = ["tests*"]

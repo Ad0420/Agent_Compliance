@@ -1,7 +1,7 @@
 """OpenAI integration — wraps chat completions to audit all LLM calls.
 
 Usage:
-    from actionledger.integrations.openai import AuditedOpenAI
+    from vera.integrations.openai import AuditedOpenAI
     client = AuditedOpenAI(openai.OpenAI(), ledger_client=ledger)
     response = client.chat.completions.create(model="gpt-4o", messages=[...])
 
@@ -11,7 +11,7 @@ Note: streaming (stream=True) is not handled in v1.
 import logging
 import time
 
-logger = logging.getLogger("actionledger.integrations.openai")
+logger = logging.getLogger("vera.integrations.openai")
 
 
 class _AuditedCompletions:
@@ -31,7 +31,7 @@ class _AuditedCompletions:
     def create(self, **kwargs):
         if kwargs.get("stream"):
             logger.warning(
-                "ActionLedger: stream=True is not yet supported for auditing. "
+                "Vera: stream=True is not yet supported for auditing. "
                 "This call will NOT be recorded in the audit trail."
             )
             return self._original.create(**kwargs)
@@ -164,7 +164,7 @@ def patch_openai(ledger_client):
     except ImportError:
         raise ImportError(
             "openai is required for OpenAI integration. "
-            "Install it with: pip install actionledger[openai]"
+            "Install it with: pip install vera-sdk[openai]"
         )
 
     _openai_original_init = openai_module.OpenAI.__init__

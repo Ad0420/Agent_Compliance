@@ -3,7 +3,7 @@ import time
 
 import httpx
 
-logger = logging.getLogger("actionledger.client")
+logger = logging.getLogger("vera.client")
 
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 0.5
@@ -22,7 +22,7 @@ class ApprovalRejectedError(Exception):
         super().__init__(f"Approval {approval.get('id')} resolved as '{status}'")
 
 
-class ActionLedgerClient:
+class VeraClient:
     """Synchronous client for the Vera API."""
 
     def __init__(

@@ -1,7 +1,7 @@
 """CrewAI integration — monkey-patches BaseTool._run to audit all tool calls.
 
 Usage:
-    from actionledger.integrations.crewai import enable_crewai_auditing
+    from vera.integrations.crewai import enable_crewai_auditing
     enable_crewai_auditing(client=ledger_client)
 """
 
@@ -9,7 +9,7 @@ import logging
 import threading
 import time
 
-logger = logging.getLogger("actionledger.integrations.crewai")
+logger = logging.getLogger("vera.integrations.crewai")
 
 # Thread-local storage for per-thread client references
 _local = threading.local()
@@ -23,7 +23,7 @@ def enable_crewai_auditing(client):
     Idempotent — calling multiple times updates the client without double-wrapping.
 
     Args:
-        client: ActionLedgerClient instance used for recording.
+        client: VeraClient instance used for recording.
     """
     global _original_run, _patched
 
@@ -32,7 +32,7 @@ def enable_crewai_auditing(client):
     except ImportError:
         raise ImportError(
             "crewai is required for CrewAI integration. "
-            "Install it with: pip install actionledger[crewai]"
+            "Install it with: pip install vera-sdk[crewai]"
         )
 
     _local.client = client

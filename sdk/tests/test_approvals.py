@@ -4,9 +4,9 @@ from unittest.mock import MagicMock, AsyncMock
 
 import pytest
 
-from actionledger import (
-    ActionLedgerClient,
-    AsyncActionLedgerClient,
+from vera import (
+    VeraClient,
+    AsyncVeraClient,
     ApprovalRejectedError,
     ApprovalTimeoutError,
 )
@@ -24,7 +24,7 @@ def _make_resp(payload: dict) -> MagicMock:
 
 class TestSyncApprovals:
     def test_request_approval_sends_correct_payload(self):
-        client = ActionLedgerClient(api_key="test", agent_name="dpo-agent")
+        client = VeraClient(api_key="test", agent_name="dpo-agent")
         client._client = MagicMock()
         client._client.post.return_value = _make_resp(
             {"id": "app_1", "status": "pending"}
@@ -52,7 +52,7 @@ class TestSyncApprovals:
         assert body["context"] == {"table": "users"}
 
     def test_request_approval_strips_none_fields(self):
-        client = ActionLedgerClient(api_key="test", agent_name="a")
+        client = VeraClient(api_key="test", agent_name="a")
         client._client = MagicMock()
         client._client.post.return_value = _make_resp({"id": "a1", "status": "pending"})
 
@@ -66,7 +66,7 @@ class TestSyncApprovals:
         assert "expires_in_seconds" not in body
 
     def test_get_approval(self):
-        client = ActionLedgerClient(api_key="test")
+        client = VeraClient(api_key="test")
         client._client = MagicMock()
         client._client.get.return_value = _make_resp(
             {"id": "a1", "status": "approved"}
@@ -77,7 +77,7 @@ class TestSyncApprovals:
         client._client.get.assert_called_with("/v1/approvals/a1")
 
     def test_list_approvals_passes_filters(self):
-        client = ActionLedgerClient(api_key="test")
+        client = VeraClient(api_key="test")
         client._client = MagicMock()
         client._client.get.return_value = _make_resp({"approvals": [], "total": 0})
 
@@ -90,7 +90,7 @@ class TestSyncApprovals:
         assert params["limit"] == 10
 
     def test_wait_for_approval_returns_on_approved(self):
-        client = ActionLedgerClient(api_key="test")
+        client = VeraClient(api_key="test")
         client._client = MagicMock()
         client._client.get.side_effect = [
             _make_resp({"id": "a1", "status": "pending"}),
@@ -102,7 +102,7 @@ class TestSyncApprovals:
         assert client._client.get.call_count == 2
 
     def test_wait_for_approval_raises_on_reject(self):
-        client = ActionLedgerClient(api_key="test")
+        client = VeraClient(api_key="test")
         client._client = MagicMock()
         client._client.get.return_value = _make_resp(
             {"id": "a1", "status": "rejected"}
@@ -113,7 +113,7 @@ class TestSyncApprovals:
         assert exc_info.value.approval["status"] == "rejected"
 
     def test_wait_for_approval_returns_rejection_when_raise_disabled(self):
-        client = ActionLedgerClient(api_key="test")
+        client = VeraClient(api_key="test")
         client._client = MagicMock()
         client._client.get.return_value = _make_resp(
             {"id": "a1", "status": "rejected"}
@@ -125,7 +125,7 @@ class TestSyncApprovals:
         assert result["status"] == "rejected"
 
     def test_wait_for_approval_timeout(self):
-        client = ActionLedgerClient(api_key="test")
+        client = VeraClient(api_key="test")
         client._client = MagicMock()
         client._client.get.return_value = _make_resp(
             {"id": "a1", "status": "pending"}
@@ -141,7 +141,7 @@ class TestSyncApprovals:
 class TestAsyncApprovals:
     @pytest.mark.asyncio
     async def test_request_approval(self):
-        client = AsyncActionLedgerClient(api_key="test", agent_name="async-agent")
+        client = AsyncVeraClient(api_key="test", agent_name="async-agent")
         client._client = MagicMock()
         client._client.post = AsyncMock(return_value=_make_resp(
             {"id": "a1", "status": "pending"}
@@ -158,7 +158,7 @@ class TestAsyncApprovals:
 
     @pytest.mark.asyncio
     async def test_wait_for_approval_async_approved(self):
-        client = AsyncActionLedgerClient(api_key="test")
+        client = AsyncVeraClient(api_key="test")
         client._client = MagicMock()
         client._client.get = AsyncMock(
             side_effect=[
@@ -172,7 +172,7 @@ class TestAsyncApprovals:
 
     @pytest.mark.asyncio
     async def test_wait_for_approval_async_rejected(self):
-        client = AsyncActionLedgerClient(api_key="test")
+        client = AsyncVeraClient(api_key="test")
         client._client = MagicMock()
         client._client.get = AsyncMock(
             return_value=_make_resp({"id": "a1", "status": "rejected"})
@@ -183,7 +183,7 @@ class TestAsyncApprovals:
 
     @pytest.mark.asyncio
     async def test_wait_for_approval_async_timeout(self):
-        client = AsyncActionLedgerClient(api_key="test")
+        client = AsyncVeraClient(api_key="test")
         client._client = MagicMock()
         client._client.get = AsyncMock(
             return_value=_make_resp({"id": "a1", "status": "pending"})

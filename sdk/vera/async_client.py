@@ -12,14 +12,14 @@ from collections import deque
 
 import httpx
 
-logger = logging.getLogger("actionledger.async_client")
+logger = logging.getLogger("vera.async_client")
 
 # Retry config
 MAX_RETRIES = 3
 RETRY_BACKOFF_BASE = 0.5  # seconds, doubles each retry
 
 
-class AsyncActionLedgerClient:
+class AsyncVeraClient:
     """Async client for the Vera API."""
 
     def __init__(

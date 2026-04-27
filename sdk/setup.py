@@ -1,8 +1,8 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="actionledger",
-    version="0.2.0",
+    name="vera-sdk",
+    version="0.3.0",
     packages=find_packages(),
     install_requires=[
         "httpx>=0.25.0",
@@ -24,6 +24,6 @@ setup(
             "pytest-httpx",
         ],
     },
-    description="SDK for the Vera — immutable audit trail for AI agents",
+    description="Vera — runtime trust layer SDK for AI agents (immutable audit trail, HITL approvals, policy enforcement)",
     python_requires=">=3.10",
 )
