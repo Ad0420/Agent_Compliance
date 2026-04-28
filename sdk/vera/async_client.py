@@ -8,6 +8,7 @@ import asyncio
 import atexit
 import logging
 import time
+import uuid
 from collections import deque
 
 import httpx
@@ -96,7 +97,12 @@ class AsyncVeraClient:
             "error_message": error_message,
             **kwargs,
         }
-        resp = await self._request_with_retry("post", "/v1/actions", json=payload)
+        # The retry loop reuses kwargs across attempts so the same
+        # Idempotency-Key is sent on retries.
+        headers = {"Idempotency-Key": uuid.uuid4().hex}
+        resp = await self._request_with_retry(
+            "post", "/v1/actions", json=payload, headers=headers
+        )
         return resp.json()
 
     def enqueue_action(self, **kwargs) -> None:
@@ -135,9 +141,17 @@ class AsyncVeraClient:
         while self._queue and len(batch) < 100:  # API max batch size
             batch.append(self._queue.popleft())
 
+        # Generate one Idempotency-Key per flush call. The same key is
+        # reused across the 3-attempt retry loop inside _request_with_retry
+        # (so a network-blip retry of THIS batch dedupes server-side).
+        # When the batch is re-queued and a later _flush() picks it up,
+        # a fresh key is generated — duplicate writes are still possible
+        # across that batch boundary, which is the right tradeoff for a
+        # fire-and-forget queue.
+        headers = {"Idempotency-Key": uuid.uuid4().hex}
         try:
             await self._request_with_retry(
-                "post", "/v1/actions/batch", json={"records": batch}
+                "post", "/v1/actions/batch", json={"records": batch}, headers=headers
             )
             logger.debug(f"Flushed {len(batch)} queued actions")
         except Exception:
@@ -180,8 +194,9 @@ class AsyncVeraClient:
             await self._flush()
 
     async def record_action_batch(self, records: list[dict]) -> list[dict]:
+        headers = {"Idempotency-Key": uuid.uuid4().hex}
         resp = await self._request_with_retry(
-            "post", "/v1/actions/batch", json={"records": records}
+            "post", "/v1/actions/batch", json={"records": records}, headers=headers
         )
         return resp.json()
 

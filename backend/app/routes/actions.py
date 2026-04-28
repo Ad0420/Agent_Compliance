@@ -1,12 +1,16 @@
-from datetime import datetime
+import asyncio
+import hashlib
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from sqlalchemy import select, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import Optional
 
 from ..database import get_db
-from ..models import ActionRecord, APIKey
+from ..models import ActionRecord, APIKey, IdempotencyRecord
 from ..schemas.action import (
     ActionRecordCreate,
     ActionRecordResponse,
@@ -15,8 +19,127 @@ from ..schemas.action import (
 )
 from ..services.auth import require_permission
 from ..services.chain import build_and_insert_record, build_and_insert_batch
+from ..services.hashing import canonicalize
 
 router = APIRouter(prefix="/actions", tags=["actions"])
+
+
+# ── Idempotency helpers ──────────────────────────────────────────────────
+IDEMPOTENCY_TTL = timedelta(hours=24)
+
+# Per-(org_id, key) asyncio locks serialize duplicate-key requests within a
+# single process — the first request in does the real work, subsequent
+# requests block, then find the cached response. This is the in-process
+# guarantee. Across processes, the UniqueConstraint on (org_id, key) plus
+# the IntegrityError handler in _store_idempotent_response is the fallback.
+_idem_locks: dict[tuple[str, str], asyncio.Lock] = {}
+_idem_locks_lock = asyncio.Lock()
+
+
+async def _get_idem_lock(org_id: str, key: str) -> asyncio.Lock:
+    """Get or create a lock for the (org_id, key) pair."""
+    async with _idem_locks_lock:
+        composite = (org_id, key)
+        if composite not in _idem_locks:
+            _idem_locks[composite] = asyncio.Lock()
+        return _idem_locks[composite]
+
+
+def _validate_idempotency_key(key: str) -> None:
+    """Reject malformed Idempotency-Key headers with 400."""
+    if not (1 <= len(key) <= 64) or not key.isascii():
+        raise HTTPException(
+            status_code=400,
+            detail="Idempotency-Key must be 1-64 ASCII characters",
+        )
+
+
+def _request_hash(payload: dict) -> str:
+    """SHA-256 of canonical JSON of the request body."""
+    canonical = canonicalize(payload)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+async def _lookup_cached_response(
+    session: AsyncSession,
+    org_id: str,
+    key: str,
+    request_hash: str,
+) -> Optional[IdempotencyRecord]:
+    """Find an existing idempotency row for (org_id, key).
+
+    Returns:
+      - The cached row if it's still fresh and the request_hash matches.
+      - None if there is no row, or if the row was expired (caller should
+        fall through to fresh processing — the expired row has been deleted).
+
+    Raises:
+      HTTPException(409) if the row is fresh but the request body differs.
+    """
+    result = await session.execute(
+        select(IdempotencyRecord).where(
+            IdempotencyRecord.org_id == org_id,
+            IdempotencyRecord.key == key,
+        )
+    )
+    cached = result.scalar_one_or_none()
+    if cached is None:
+        return None
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if cached.expires_at < now:
+        # Stale — drop it and fall through to fresh processing
+        await session.delete(cached)
+        await session.commit()
+        return None
+
+    if cached.request_hash != request_hash:
+        raise HTTPException(
+            status_code=409,
+            detail="Idempotency-Key reused with different request body",
+        )
+
+    return cached
+
+
+async def _store_idempotent_response(
+    session: AsyncSession,
+    org_id: str,
+    key: str,
+    request_hash: str,
+    status_code: int,
+    response_body: dict | list,
+) -> dict | list:
+    """Insert an IdempotencyRecord. On UniqueViolation (concurrent insert won),
+    re-read the winning row and return its response_body so both racers see
+    the same answer.
+    """
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    expires_at = now + IDEMPOTENCY_TTL
+
+    record = IdempotencyRecord(
+        org_id=org_id,
+        key=key,
+        request_hash=request_hash,
+        status_code=status_code,
+        response_body=response_body,
+        expires_at=expires_at,
+    )
+    session.add(record)
+    try:
+        await session.commit()
+        return response_body
+    except IntegrityError:
+        await session.rollback()
+        # Concurrent insert won the race — return the winning response.
+        result = await session.execute(
+            select(IdempotencyRecord).where(
+                IdempotencyRecord.org_id == org_id,
+                IdempotencyRecord.key == key,
+            )
+        )
+        winner = result.scalar_one()
+        return winner.response_body
 
 
 def _record_to_response(record: ActionRecord) -> ActionRecordResponse:
@@ -56,26 +179,114 @@ def _record_to_response(record: ActionRecord) -> ActionRecordResponse:
     )
 
 
-@router.post("", response_model=ActionRecordResponse)
+async def _create_action_impl(
+    session: AsyncSession,
+    org_id: str,
+    data: ActionRecordCreate,
+) -> dict:
+    record = await build_and_insert_record(session, org_id, data)
+    return _record_to_response(record).model_dump(mode="json")
+
+
+async def _create_batch_impl(
+    session: AsyncSession,
+    org_id: str,
+    data: ActionRecordBatchCreate,
+) -> list[dict]:
+    records = await build_and_insert_batch(session, org_id, data.records)
+    return [_record_to_response(r).model_dump(mode="json") for r in records]
+
+
+async def _run_with_idempotency(
+    session: AsyncSession,
+    org_id: str,
+    idempotency_key: Optional[str],
+    payload_for_hash: dict,
+    do_work,
+):
+    """Wrap a write operation with idempotency dedupe.
+
+    Cache lookups + the actual write + cache write all run under a per-
+    (org_id, key) lock so concurrent retries within a single process are
+    serialized: first request wins and inserts, second sees the cached
+    response. Across processes, the UniqueConstraint on (org_id, key) is
+    the fallback (see _store_idempotent_response).
+    """
+    if idempotency_key is None:
+        # Plain path — no cache, no lock
+        body = await do_work()
+        return JSONResponse(status_code=200, content=body)
+
+    _validate_idempotency_key(idempotency_key)
+    request_hash = _request_hash(payload_for_hash)
+
+    lock = await _get_idem_lock(org_id, idempotency_key)
+    async with lock:
+        cached = await _lookup_cached_response(
+            session, org_id, idempotency_key, request_hash
+        )
+        if cached is not None:
+            return JSONResponse(
+                status_code=cached.status_code,
+                content=cached.response_body,
+            )
+
+        # Do the real work. If this raises (validation/policy/DB error),
+        # the exception bubbles up and we do NOT cache anything — the
+        # client is free to retry with a fixed payload using the same key.
+        body = await do_work()
+
+        body = await _store_idempotent_response(
+            session,
+            org_id=org_id,
+            key=idempotency_key,
+            request_hash=request_hash,
+            status_code=200,
+            response_body=body,
+        )
+        return JSONResponse(status_code=200, content=body)
+
+
+@router.post("")
 async def create_action(
     data: ActionRecordCreate,
     session: AsyncSession = Depends(get_db),
     auth: tuple[str, APIKey] = Depends(require_permission("write")),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     org_id, _ = auth
-    record = await build_and_insert_record(session, org_id, data)
-    return _record_to_response(record)
+
+    async def do_work() -> dict:
+        return await _create_action_impl(session, org_id, data)
+
+    return await _run_with_idempotency(
+        session=session,
+        org_id=org_id,
+        idempotency_key=idempotency_key,
+        payload_for_hash=data.model_dump(mode="json"),
+        do_work=do_work,
+    )
 
 
-@router.post("/batch", response_model=list[ActionRecordResponse])
+@router.post("/batch")
 async def create_action_batch(
     data: ActionRecordBatchCreate,
     session: AsyncSession = Depends(get_db),
     auth: tuple[str, APIKey] = Depends(require_permission("write")),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     org_id, _ = auth
-    records = await build_and_insert_batch(session, org_id, data.records)
-    return [_record_to_response(r) for r in records]
+
+    async def do_work() -> list[dict]:
+        return await _create_batch_impl(session, org_id, data)
+
+    return await _run_with_idempotency(
+        session=session,
+        org_id=org_id,
+        idempotency_key=idempotency_key,
+        payload_for_hash=data.model_dump(mode="json"),
+        do_work=do_work,
+    )
 
 
 def _escape_like(s: str) -> str:
