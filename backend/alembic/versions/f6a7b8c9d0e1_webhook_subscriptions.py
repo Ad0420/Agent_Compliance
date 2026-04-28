@@ -1,7 +1,7 @@
 """add webhook_subscriptions table
 
 Revision ID: f6a7b8c9d0e1
-Revises: e5f6a7b8c9d0
+Revises: ac5d1cf8f9d4
 Create Date: 2026-04-26
 
 Adds the `webhook_subscriptions` table backing outbound webhook delivery
@@ -13,7 +13,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "f6a7b8c9d0e1"
-down_revision = "e5f6a7b8c9d0"
+down_revision = "ac5d1cf8f9d4"
 branch_labels = None
 depends_on = None
 

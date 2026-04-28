@@ -2,9 +2,17 @@ import functools
 import time
 import traceback
 
+from .redaction import Redactor
+
 
 # Module-level client reference — set by the user
 _default_client = None
+
+# Module-level redactor — used unless the caller passes ``redactor=`` to
+# ``@audit``. A fresh ``Redactor()`` is permissive enough that plain
+# strings/numbers without secrets round-trip unchanged, so existing
+# callers see no behavioural change.
+_default_redactor = Redactor()
 
 
 def set_default_client(client):
@@ -13,7 +21,26 @@ def set_default_client(client):
     _default_client = client
 
 
-def audit(action_name: str = "", action_type: str = "function_call", client=None):
+def set_default_redactor(redactor: Redactor) -> None:
+    """Replace the module-level default :class:`Redactor`.
+
+    Useful for app-wide policy (e.g. tenant-specific block_keys).
+    """
+    global _default_redactor
+    _default_redactor = redactor
+
+
+def get_default_redactor() -> Redactor:
+    """Return the module-level default :class:`Redactor`."""
+    return _default_redactor
+
+
+def audit(
+    action_name: str = "",
+    action_type: str = "function_call",
+    client=None,
+    redactor: Redactor | None = None,
+):
     """
     Decorator that records function calls as action records.
 
@@ -23,10 +50,18 @@ def audit(action_name: str = "", action_type: str = "function_call", client=None
             return x + y
 
     The decorator captures:
-    - Function inputs as input_data
-    - Return value in outcome
+    - Function inputs as input_data (redacted via ``redactor``)
+    - Return value in outcome (redacted)
     - Timing as duration_ms
-    - Exceptions as result="failure"
+    - Exceptions as result="failure" (traceback redacted)
+
+    Args:
+        action_name: Name for the action record. Defaults to function name.
+        action_type: Type of action. Defaults to "function_call".
+        client: VeraClient instance. Falls back to the module default.
+        redactor: :class:`Redactor` used to scrub input_data, outcome,
+            and tracebacks. Falls back to the module default. Pass
+            ``Redactor(...)`` to customise per-decorator.
     """
 
     def decorator(func):
@@ -37,10 +72,11 @@ def audit(action_name: str = "", action_type: str = "function_call", client=None
                 # No client configured — just run the function
                 return func(*args, **kwargs)
 
+            effective_redactor = redactor or _default_redactor
             resolved_name = action_name or func.__name__
 
-            # Capture inputs
-            input_data = {"args": [repr(a) for a in args], "kwargs": {k: repr(v) for k, v in kwargs.items()}}
+            # Capture inputs (redacted)
+            input_data = effective_redactor.serialize_args(args, kwargs)
 
             start = time.perf_counter()
             try:
@@ -52,7 +88,7 @@ def audit(action_name: str = "", action_type: str = "function_call", client=None
                     action_type=action_type,
                     result="success",
                     input_data=input_data,
-                    outcome={"return_value": repr(result_value)},
+                    outcome={"return_value": effective_redactor.serialize(result_value)},
                     duration_ms=elapsed_ms,
                 )
                 return result_value
@@ -66,7 +102,9 @@ def audit(action_name: str = "", action_type: str = "function_call", client=None
                     result="failure",
                     input_data=input_data,
                     error_message=str(exc),
-                    outcome={"traceback": traceback.format_exc()},
+                    outcome={
+                        "traceback": effective_redactor.serialize(traceback.format_exc())
+                    },
                     duration_ms=elapsed_ms,
                 )
                 raise

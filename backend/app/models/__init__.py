@@ -8,6 +8,7 @@ from .checkpoint import Checkpoint
 from .policy import Policy
 from .policy_violation import PolicyViolation
 from .approval import Approval
+from .idempotency_record import IdempotencyRecord
 from .webhook_subscription import WebhookSubscription
 
 __all__ = [
@@ -21,5 +22,6 @@ __all__ = [
     "Policy",
     "PolicyViolation",
     "Approval",
+    "IdempotencyRecord",
     "WebhookSubscription",
 ]
