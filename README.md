@@ -1,7 +1,11 @@
 # Vera
 
+[![PyPI](https://img.shields.io/pypi/v/vera-sdk.svg)](https://pypi.org/project/vera-sdk/)
+[![Python](https://img.shields.io/pypi/pyversions/vera-sdk.svg)](https://pypi.org/project/vera-sdk/)
+
 Tamper-proof audit trail for AI agents. Cryptographic hash chain with tamper-proof verification, built for teams that need to prove what their AI agents did, when, and why.
 
+**Install:** `pip install vera-sdk`
 **Live:** [usevera.xyz](https://usevera.xyz) (password-protected testing environment)
 
 **The problem:** AI agents are taking consequential actions — approving loans, flagging transactions, making hiring recommendations — with no verifiable record. Regulators (EU AI Act Art. 12, GDPR, Colorado AI Act, SEC Rule 17a-4) are requiring tamper-proof logs. When something goes wrong, teams cannot answer: what did the agent do, did a human approve it, and has the log been touched since? AWS QLDB (the only comparable managed service) was deprecated July 2025. Vera fills that gap.
