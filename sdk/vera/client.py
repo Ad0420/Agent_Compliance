@@ -1,8 +1,12 @@
 import logging
 import time
 import uuid
+from typing import TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:
+    from .redaction import Redactor
 
 logger = logging.getLogger("vera.client")
 
@@ -35,17 +39,44 @@ class VeraClient:
         model_id: str | None = None,
         framework: str | None = None,
         timeout: float = 30.0,
+        redactor: "Redactor | None" = None,
     ):
         self.api_url = api_url.rstrip("/")
         self.agent_name = agent_name
         self.agent_version = agent_version
         self.model_id = model_id
         self.framework = framework
+        # Opt-in redaction. When set, record_action / record_action_batch
+        # routes input_data, outcome, reasoning, and error_message through
+        # the redactor before sending. Default None preserves the current
+        # pass-through behaviour for direct callers who construct their
+        # own payloads — opt-in by design (no surprises).
+        self._redactor = redactor
         self._client = httpx.Client(
             base_url=self.api_url,
             headers={"Authorization": f"Bearer {api_key}"},
             timeout=timeout,
         )
+
+    def _redact_payload_fields(self, payload: dict) -> dict:
+        """Apply ``self._redactor`` (if set) to user-supplied JSON-blob fields.
+
+        Redacted fields: ``input_data``, ``outcome``, ``reasoning``,
+        ``error_message``. Identifying fields (``action_name``,
+        ``agent_name``, ``model_id``, ``target_system`` etc.) are
+        preserved as-is — those are operational metadata, not user data.
+        """
+        if self._redactor is None:
+            return payload
+        redacted = dict(payload)  # shallow copy — we replace values, not keys
+        for k in ("input_data", "outcome", "reasoning"):
+            if redacted.get(k) is not None:
+                redacted[k] = self._redactor.serialize(redacted[k])
+        if redacted.get("error_message") is not None:
+            redacted["error_message"] = self._redactor.serialize(
+                redacted["error_message"]
+            )
+        return redacted
 
     def _request_with_retry(self, method: str, path: str, **kwargs) -> httpx.Response:
         """Make an HTTP request with exponential backoff retry."""
@@ -92,6 +123,7 @@ class VeraClient:
             "error_message": error_message,
             **kwargs,
         }
+        payload = self._redact_payload_fields(payload)
         # The retry loop in _request_with_retry passes the same kwargs on
         # every attempt, so the same Idempotency-Key is sent on retries —
         # which is exactly what the server-side dedupe wants.
@@ -103,6 +135,8 @@ class VeraClient:
 
     def record_action_batch(self, records: list[dict]) -> list[dict]:
         """Record a batch of actions."""
+        if self._redactor is not None:
+            records = [self._redact_payload_fields(r) for r in records]
         headers = {"Idempotency-Key": uuid.uuid4().hex}
         resp = self._request_with_retry(
             "post", "/v1/actions/batch", json={"records": records}, headers=headers
