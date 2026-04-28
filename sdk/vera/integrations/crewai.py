@@ -1,5 +1,9 @@
 """CrewAI integration — monkey-patches BaseTool._run to audit all tool calls.
 
+All captured args/kwargs/results are passed through a :class:`Redactor`
+so PII / secrets do not leak into the audit trail. Pass ``redactor=`` to
+override the default.
+
 Usage:
     from vera.integrations.crewai import enable_crewai_auditing
     enable_crewai_auditing(client=ledger_client)
@@ -9,21 +13,27 @@ import logging
 import threading
 import time
 
+from vera.redaction import Redactor
+
 logger = logging.getLogger("vera.integrations.crewai")
 
-# Thread-local storage for per-thread client references
+# Thread-local storage for per-thread client / redactor references
 _local = threading.local()
 _original_run = None
 _patched = False
 
 
-def enable_crewai_auditing(client):
-    """Monkey-patch crewai.tools.BaseTool._run to record all tool calls.
+def enable_crewai_auditing(client, redactor: Redactor | None = None):
+    """Monkey-patch ``crewai.tools.BaseTool._run`` to record all tool calls.
 
-    Idempotent — calling multiple times updates the client without double-wrapping.
+    Idempotent — calling multiple times updates the client / redactor
+    without double-wrapping.
 
     Args:
         client: VeraClient instance used for recording.
+        redactor: Optional :class:`Redactor` used to scrub args/kwargs
+            and results. Falls back to
+            :func:`vera.decorator.get_default_redactor`.
     """
     global _original_run, _patched
 
@@ -36,9 +46,14 @@ def enable_crewai_auditing(client):
         )
 
     _local.client = client
+    if redactor is not None:
+        _local.redactor = redactor
+    else:
+        from vera.decorator import get_default_redactor
+        _local.redactor = get_default_redactor()
 
     if _patched:
-        logger.info("CrewAI auditing already enabled — updated client reference")
+        logger.info("CrewAI auditing already enabled — updated client/redactor reference")
         return
 
     _original_run = BaseTool._run
@@ -48,14 +63,21 @@ def enable_crewai_auditing(client):
         if ledger_client is None:
             return _original_run(self, *args, **kwargs)
 
+        redactor = getattr(_local, "redactor", None)
+        # Defensive: another thread might call into the patched _run before
+        # `_local.redactor` is initialised on that thread.
+        if redactor is None:
+            from vera.decorator import get_default_redactor
+            redactor = get_default_redactor()
+
         tool_name = getattr(self, "name", self.__class__.__name__)
         tool_description = getattr(self, "description", "")
 
         input_data = {
             "tool_name": tool_name,
-            "tool_description": tool_description[:500] if tool_description else "",
-            "args": [repr(a)[:1000] for a in args],
-            "kwargs": {k: repr(v)[:1000] for k, v in kwargs.items()},
+            "tool_description": redactor.serialize(tool_description) if tool_description else "",
+            "args": [redactor.serialize(a) for a in args],
+            "kwargs": {k: redactor.serialize(v) for k, v in kwargs.items()},
         }
 
         start = time.perf_counter()
@@ -70,7 +92,7 @@ def enable_crewai_auditing(client):
                     result="success",
                     duration_ms=elapsed_ms,
                     input_data=input_data,
-                    outcome={"output": repr(result)[:10000]},
+                    outcome={"output": redactor.serialize(result)},
                     framework="crewai",
                 )
             except Exception:
@@ -99,7 +121,7 @@ def enable_crewai_auditing(client):
 
 
 def disable_crewai_auditing():
-    """Restore the original BaseTool._run method."""
+    """Restore the original BaseTool._run method and clear thread-local state."""
     global _original_run, _patched
 
     if not _patched or _original_run is None:
@@ -114,3 +136,4 @@ def disable_crewai_auditing():
     _original_run = None
     _patched = False
     _local.client = None
+    _local.redactor = None
