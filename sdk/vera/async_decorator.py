@@ -9,7 +9,13 @@ import functools
 import time
 import traceback
 
+from .redaction import Redactor
+
 _default_async_client = None
+
+# Module-level redactor — used unless the caller passes ``redactor=`` to
+# ``@async_audit``. Mirrors the sync decorator.
+_default_redactor = Redactor()
 
 
 def set_default_async_client(client):
@@ -18,7 +24,24 @@ def set_default_async_client(client):
     _default_async_client = client
 
 
-def async_audit(action_name: str = "", action_type: str = "function_call", client=None, blocking: bool = False):
+def set_default_redactor(redactor: Redactor) -> None:
+    """Replace the module-level default :class:`Redactor` for async audits."""
+    global _default_redactor
+    _default_redactor = redactor
+
+
+def get_default_redactor() -> Redactor:
+    """Return the module-level default :class:`Redactor` for async audits."""
+    return _default_redactor
+
+
+def async_audit(
+    action_name: str = "",
+    action_type: str = "function_call",
+    client=None,
+    blocking: bool = False,
+    redactor: Redactor | None = None,
+):
     """Decorator that records function calls as action records (async-aware).
 
     Works with both sync and async functions.
@@ -29,6 +52,9 @@ def async_audit(action_name: str = "", action_type: str = "function_call", clien
         client: AsyncVeraClient instance. Falls back to default.
         blocking: If True, waits for the API call. If False (default), uses
                   the background queue for zero-latency auditing.
+        redactor: :class:`Redactor` used to scrub input_data, outcome,
+            and tracebacks. Falls back to the module default. Pass
+            ``Redactor(...)`` to customise per-decorator.
     """
 
     def decorator(func):
@@ -39,11 +65,9 @@ def async_audit(action_name: str = "", action_type: str = "function_call", clien
                 if effective_client is None:
                     return await func(*args, **kwargs)
 
+                effective_redactor = redactor or _default_redactor
                 resolved_name = action_name or func.__name__
-                input_data = {
-                    "args": [repr(a) for a in args],
-                    "kwargs": {k: repr(v) for k, v in kwargs.items()},
-                }
+                input_data = effective_redactor.serialize_args(args, kwargs)
 
                 start = time.perf_counter()
                 try:
@@ -55,7 +79,7 @@ def async_audit(action_name: str = "", action_type: str = "function_call", clien
                         action_type=action_type,
                         result="success",
                         input_data=input_data,
-                        outcome={"return_value": repr(result_value)},
+                        outcome={"return_value": effective_redactor.serialize(result_value)},
                         duration_ms=elapsed_ms,
                     )
 
@@ -75,7 +99,9 @@ def async_audit(action_name: str = "", action_type: str = "function_call", clien
                         result="failure",
                         input_data=input_data,
                         error_message=str(exc),
-                        outcome={"traceback": traceback.format_exc()},
+                        outcome={
+                            "traceback": effective_redactor.serialize(traceback.format_exc())
+                        },
                         duration_ms=elapsed_ms,
                     )
 
@@ -94,11 +120,9 @@ def async_audit(action_name: str = "", action_type: str = "function_call", clien
                 if effective_client is None:
                     return func(*args, **kwargs)
 
+                effective_redactor = redactor or _default_redactor
                 resolved_name = action_name or func.__name__
-                input_data = {
-                    "args": [repr(a) for a in args],
-                    "kwargs": {k: repr(v) for k, v in kwargs.items()},
-                }
+                input_data = effective_redactor.serialize_args(args, kwargs)
 
                 start = time.perf_counter()
                 try:
@@ -110,7 +134,7 @@ def async_audit(action_name: str = "", action_type: str = "function_call", clien
                         action_type=action_type,
                         result="success",
                         input_data=input_data,
-                        outcome={"return_value": repr(result_value)},
+                        outcome={"return_value": effective_redactor.serialize(result_value)},
                         duration_ms=elapsed_ms,
                     )
                     return result_value
@@ -124,7 +148,9 @@ def async_audit(action_name: str = "", action_type: str = "function_call", clien
                         result="failure",
                         input_data=input_data,
                         error_message=str(exc),
-                        outcome={"traceback": traceback.format_exc()},
+                        outcome={
+                            "traceback": effective_redactor.serialize(traceback.format_exc())
+                        },
                         duration_ms=elapsed_ms,
                     )
                     raise
