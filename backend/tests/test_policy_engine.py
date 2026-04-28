@@ -736,11 +736,15 @@ async def test_create_policy_invalid_condition_type(async_client, org_and_key):
 
 @pytest.mark.asyncio
 async def test_create_policy_invalid_action(async_client, org_and_key):
-    """POST /v1/policies with invalid action returns 422."""
+    """POST /v1/policies with invalid action returns 422.
+
+    ``block`` was added as a valid action in PR-zeta — see
+    ``test_policy_block.test_create_block_policy_via_api`` for that path.
+    """
     _, raw_key, _ = org_and_key
     resp = await async_client.post(
         "/v1/policies",
-        json={"name": "Bad", "condition_type": "unknown_agent", "condition_params": {}, "action": "block", "severity": "low"},
+        json={"name": "Bad", "condition_type": "unknown_agent", "condition_params": {}, "action": "ignore", "severity": "low"},
         headers={"Authorization": f"Bearer {raw_key}"},
     )
     assert resp.status_code == 422

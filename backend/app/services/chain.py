@@ -193,7 +193,13 @@ async def _store_violations_and_notify(
 async def build_and_insert_record(
     session: AsyncSession, org_id: str, data: ActionRecordCreate
 ) -> ActionRecord:
-    """Build a single chained action record and insert it."""
+    """Build a single chained action record and insert it.
+
+    Returns the inserted ``ActionRecord``. Raises ``HTTPException(409)``
+    if a policy with ``action="block"`` fires — but only **after** the
+    record has been committed with ``result="blocked"`` so the audit
+    trail captures the attempted action and the chain stays intact.
+    """
     lock = await get_org_lock(org_id)
     async with lock:
         chain_state = await _lock_chain_state(session, org_id)
@@ -208,6 +214,18 @@ async def build_and_insert_record(
         policy_results = await evaluate_policies(session, org_id, data)
         if policy_results:
             data = data.model_copy(update={"policies_applied": policy_results})
+
+        # [POLICY ENGINE] Detect any triggered BLOCK policies. The action
+        # record is still inserted (so the regulator/dashboard can see what
+        # was attempted) but with ``result="blocked"`` — the field is part
+        # of the hashable payload, so the override must happen before
+        # ``_create_record``.
+        blocking_policies = [
+            r for r in policy_results
+            if r.get("triggered") and r.get("action") == "block"
+        ]
+        if blocking_policies:
+            data = data.model_copy(update={"result": "blocked"})
 
         agent_id = await _get_or_create_agent(session, org_id, data.agent_name, data.agent_version)
 
@@ -224,6 +242,29 @@ async def build_and_insert_record(
     # [POLICY ENGINE] Store violations + send emails (outside lock, separate commit)
     if policy_results:
         await _store_violations_and_notify(session, org_id, record.id, policy_results)
+
+    # [POLICY ENGINE] If a BLOCK fired, raise AFTER the audit record is
+    # durably committed and violations have been written. The 409 reaches
+    # the SDK caller; the audit row + violation row stay behind.
+    if blocking_policies:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "policy_block",
+                "message": "Action blocked by policy",
+                "record_id": record.id,
+                "blocking_policies": [
+                    {
+                        "policy_id": r.get("policy_id"),
+                        "policy_name": r.get("policy_name"),
+                        "condition_type": r.get("condition_type"),
+                        "severity": r.get("severity"),
+                        "context": r.get("context", {}),
+                    }
+                    for r in blocking_policies
+                ],
+            },
+        )
 
     return record
 

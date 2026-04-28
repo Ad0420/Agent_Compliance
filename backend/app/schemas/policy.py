@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 # ── Policy schemas ──────────────────────────────────────────────────────────
 
 CONDITION_TYPES = ("unknown_agent", "missing_reasoning", "failure_rate", "high_failure_burst", "consecutive_failures")
-ACTION_TYPES = ("flag", "email")
+ACTION_TYPES = ("flag", "email", "block")
 SEVERITY_LEVELS = ("critical", "high", "medium", "low")
 
 
@@ -16,7 +16,7 @@ class PolicyCreate(BaseModel):
     description: Optional[str] = None
     condition_type: str = Field(..., pattern="^(unknown_agent|missing_reasoning|failure_rate|high_failure_burst|consecutive_failures)$")
     condition_params: dict = Field(default_factory=dict)
-    action: str = Field(..., pattern="^(flag|email)$")
+    action: str = Field(..., pattern="^(flag|email|block)$")
     severity: str = Field(default="medium", pattern="^(critical|high|medium|low)$")
     is_active: bool = True
 
@@ -25,7 +25,7 @@ class PolicyUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     description: Optional[str] = None
     condition_params: Optional[dict] = None
-    action: Optional[str] = Field(default=None, pattern="^(flag|email)$")
+    action: Optional[str] = Field(default=None, pattern="^(flag|email|block)$")
     severity: Optional[str] = Field(default=None, pattern="^(critical|high|medium|low)$")
     is_active: Optional[bool] = None
 

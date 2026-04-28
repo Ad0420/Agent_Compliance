@@ -6,7 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base
 
 CONDITION_TYPES = ("unknown_agent", "missing_reasoning", "failure_rate", "high_failure_burst", "consecutive_failures")
-ACTION_TYPES = ("flag", "email")
+ACTION_TYPES = ("flag", "email", "block")
 SEVERITY_LEVELS = ("critical", "high", "medium", "low")
 
 
@@ -18,7 +18,7 @@ class Policy(Base):
             name="ck_policy_condition_type",
         ),
         CheckConstraint(
-            "action IN ('flag','email')",
+            "action IN ('flag','email','block')",
             name="ck_policy_action",
         ),
         CheckConstraint(
