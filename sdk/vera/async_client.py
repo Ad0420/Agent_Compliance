@@ -10,8 +10,12 @@ import logging
 import time
 import uuid
 from collections import deque
+from typing import TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:
+    from .redaction import Redactor
 
 logger = logging.getLogger("vera.async_client")
 
@@ -35,6 +39,7 @@ class AsyncVeraClient:
         batch_size: int = 50,
         flush_interval: float = 5.0,
         max_queue_size: int = 10_000,
+        redactor: "Redactor | None" = None,
     ):
         self.api_url = api_url.rstrip("/")
         self.agent_name = agent_name
@@ -44,6 +49,11 @@ class AsyncVeraClient:
         self._batch_size = batch_size
         self._flush_interval = flush_interval
         self._max_queue_size = max_queue_size
+        # Opt-in redaction. When set, record_action / record_action_batch /
+        # enqueue_action route input_data, outcome, reasoning, and
+        # error_message through the redactor before sending. Default None
+        # preserves the current pass-through behaviour for direct callers.
+        self._redactor = redactor
         self._client = httpx.AsyncClient(
             base_url=self.api_url,
             headers={"Authorization": f"Bearer {api_key}"},
@@ -51,6 +61,26 @@ class AsyncVeraClient:
         )
         self._queue: deque[dict] = deque()
         self._flush_task: asyncio.Task | None = None
+
+    def _redact_payload_fields(self, payload: dict) -> dict:
+        """Apply ``self._redactor`` (if set) to user-supplied JSON-blob fields.
+
+        Redacted fields: ``input_data``, ``outcome``, ``reasoning``,
+        ``error_message``. Identifying fields (``action_name``,
+        ``agent_name``, ``model_id``, ``target_system`` etc.) are
+        preserved as-is — those are operational metadata, not user data.
+        """
+        if self._redactor is None:
+            return payload
+        redacted = dict(payload)  # shallow copy — we replace values, not keys
+        for k in ("input_data", "outcome", "reasoning"):
+            if redacted.get(k) is not None:
+                redacted[k] = self._redactor.serialize(redacted[k])
+        if redacted.get("error_message") is not None:
+            redacted["error_message"] = self._redactor.serialize(
+                redacted["error_message"]
+            )
+        return redacted
 
     async def _request_with_retry(self, method: str, path: str, **kwargs) -> httpx.Response:
         """Make an HTTP request with exponential backoff retry."""
@@ -97,6 +127,7 @@ class AsyncVeraClient:
             "error_message": error_message,
             **kwargs,
         }
+        payload = self._redact_payload_fields(payload)
         # The retry loop reuses kwargs across attempts so the same
         # Idempotency-Key is sent on retries.
         headers = {"Idempotency-Key": uuid.uuid4().hex}
@@ -118,6 +149,10 @@ class AsyncVeraClient:
             "framework": self.framework,
             **kwargs,
         }
+        # Redact at enqueue time so _flush sends already-redacted payloads
+        # — no double work on the flush path.
+        if self._redactor is not None:
+            payload = self._redact_payload_fields(payload)
         # Drop oldest if queue is at capacity
         if len(self._queue) >= self._max_queue_size:
             dropped = self._queue.popleft()
@@ -194,6 +229,8 @@ class AsyncVeraClient:
             await self._flush()
 
     async def record_action_batch(self, records: list[dict]) -> list[dict]:
+        if self._redactor is not None:
+            records = [self._redact_payload_fields(r) for r in records]
         headers = {"Idempotency-Key": uuid.uuid4().hex}
         resp = await self._request_with_retry(
             "post", "/v1/actions/batch", json={"records": records}, headers=headers
