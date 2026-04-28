@@ -12,6 +12,7 @@ from .hashing import canonicalize, compute_record_hash, extract_hashable_fields
 from .policy_engine import evaluate_policies
 from .email import send_policy_violation_alert
 from .locks import get_org_lock
+from .webhooks import dispatch_event
 
 
 def _is_sqlite(session: AsyncSession) -> bool:
@@ -168,6 +169,24 @@ async def _store_violations_and_notify(
                         context=result.get("context", {}),
                     )
                 )
+
+    # Fire webhook events for every triggered policy. dispatch_event is itself
+    # fire-and-forget (it schedules tasks and returns), so this loop does not
+    # block the request.
+    for result in triggered:
+        await dispatch_event(
+            session,
+            org_id,
+            "policy.violation",
+            {
+                "policy_id": result.get("policy_id"),
+                "policy_name": result["policy_name"],
+                "condition_type": result["condition_type"],
+                "severity": result["severity"],
+                "context": result.get("context", {}),
+                "record_id": record_id,
+            },
+        )
 
 
 

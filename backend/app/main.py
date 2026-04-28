@@ -19,6 +19,7 @@ from .routes import (
     register_router,
     policies_router,
     approvals_router,
+    webhooks_router,
 )
 from .middleware import RateLimitMiddleware
 from .services.immutability import install_sqlite_triggers
@@ -81,3 +82,4 @@ app.include_router(export_router, prefix="/v1")
 app.include_router(register_router, prefix="/v1")
 app.include_router(policies_router, prefix="/v1")
 app.include_router(approvals_router, prefix="/v1")
+app.include_router(webhooks_router, prefix="/v1")

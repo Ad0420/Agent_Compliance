@@ -23,6 +23,7 @@ from ..schemas.action import ActionRecordCreate
 from ..schemas.approval import ApprovalCreate, ApprovalDecision
 from .chain import build_and_insert_record
 from .kms import get_kms
+from .webhooks import dispatch_event
 
 logger = logging.getLogger("vera.approvals")
 
@@ -89,6 +90,22 @@ async def request_approval(
     session.add(approval)
     await session.commit()
     await session.refresh(approval)
+
+    await dispatch_event(
+        session,
+        org_id,
+        "approval.requested",
+        {
+            "approval_id": approval.id,
+            "action_name": approval.action_name,
+            "agent_name": approval.requested_by_agent,
+            "risk_tier": approval.risk_tier,
+            "data_subject_id": approval.data_subject_id,
+            "requested_at": approval.requested_at.isoformat()
+            if approval.requested_at
+            else None,
+        },
+    )
     return approval
 
 
@@ -129,6 +146,21 @@ async def _resolve_and_record(
     approval.resolution_record_id = resolution_record.id
     await session.commit()
     await session.refresh(approval)
+
+    await dispatch_event(
+        session,
+        approval.org_id,
+        "approval.resolved",
+        {
+            "approval_id": approval.id,
+            "action_name": approval.action_name,
+            "final_status": final_status,
+            "decisions": approval.decisions,
+            "resolved_at": approval.resolved_at.isoformat()
+            if approval.resolved_at
+            else None,
+        },
+    )
     return approval
 
 
@@ -244,6 +276,20 @@ async def cancel_approval(
 
     await session.commit()
     await session.refresh(approval)
+
+    await dispatch_event(
+        session,
+        org_id,
+        "approval.cancelled",
+        {
+            "approval_id": approval.id,
+            "action_name": approval.action_name,
+            "cancelled_by": canceller,
+            "resolved_at": approval.resolved_at.isoformat()
+            if approval.resolved_at
+            else None,
+        },
+    )
     return approval
 
 
