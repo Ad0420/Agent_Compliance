@@ -14,7 +14,7 @@ class ActionRecord(Base):
     __table_args__ = (
         UniqueConstraint("org_id", "sequence_number", name="uq_ar_org_sequence"),
         CheckConstraint(
-            "result IN ('success', 'failure', 'partial', 'pending')",
+            "result IN ('success', 'failure', 'partial', 'pending', 'blocked')",
             name="ck_ar_result"
         ),
     )

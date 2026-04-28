@@ -8,6 +8,11 @@ from pydantic import BaseModel, Field, field_validator
 # Max size for individual JSON fields (serialized)
 _MAX_JSON_BYTES = 1_000_000  # 1 MB
 
+# Valid result values a client may submit. "blocked" is engine-set only —
+# the policy engine assigns it when a block-action policy fires; clients are
+# not allowed to claim a record was blocked themselves.
+_CLIENT_RESULT_VALUES = ("success", "failure", "partial", "pending")
+
 
 def _validate_json_size(v: dict | list, field_name: str) -> dict | list:
     """Reject JSON blobs larger than 1 MB when serialized."""
@@ -45,6 +50,24 @@ class ActionRecordCreate(BaseModel):
     reasoning: dict = Field(default_factory=dict)
     outcome: dict = Field(default_factory=dict)
     metadata: dict = Field(default_factory=dict)
+
+    @field_validator("result")
+    @classmethod
+    def check_result_value(cls, v: str) -> str:
+        """Reject engine-only result values from client submissions.
+
+        ``blocked`` is reserved for the policy engine: when a policy with
+        ``action="block"`` fires inside ``build_and_insert_record``, the
+        engine overrides the client's ``result`` to ``"blocked"`` before
+        the row is hashed. Allowing clients to send it directly would let
+        callers self-attest a block without a policy actually firing.
+        """
+        if v not in _CLIENT_RESULT_VALUES:
+            raise ValueError(
+                f"result must be one of {_CLIENT_RESULT_VALUES}; "
+                f"'{v}' is not a valid client-submitted value"
+            )
+        return v
 
     @field_validator("input_data", "environment", "reasoning", "outcome", "metadata")
     @classmethod

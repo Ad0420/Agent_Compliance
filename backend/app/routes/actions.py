@@ -211,6 +211,11 @@ async def _run_with_idempotency(
     serialized: first request wins and inserts, second sees the cached
     response. Across processes, the UniqueConstraint on (org_id, key) is
     the fallback (see _store_idempotent_response).
+
+    Policy BLOCK note: ``do_work`` may raise ``HTTPException(409)`` after
+    the audit record is committed (a block-action policy fired). When that
+    happens we still cache the 409 response — replays of the same
+    Idempotency-Key must observe the same outcome.
     """
     if idempotency_key is None:
         # Plain path — no cache, no lock
@@ -231,10 +236,29 @@ async def _run_with_idempotency(
                 content=cached.response_body,
             )
 
-        # Do the real work. If this raises (validation/policy/DB error),
-        # the exception bubbles up and we do NOT cache anything — the
-        # client is free to retry with a fixed payload using the same key.
-        body = await do_work()
+        # Do the real work. We only cache deterministic outcomes:
+        #   - 200 success (record inserted)
+        #   - 409 policy block (record inserted with result="blocked",
+        #     then HTTPException raised to surface the block)
+        # Any other exception (validation, DB error, transient failure)
+        # bubbles up uncached so the client can retry with the same key.
+        try:
+            body = await do_work()
+        except HTTPException as exc:
+            if exc.status_code == 409 and isinstance(exc.detail, dict) \
+                    and exc.detail.get("error") == "policy_block":
+                # Cache the policy_block response. The audit record is
+                # already committed; replays must surface the same 409.
+                cached_body = await _store_idempotent_response(
+                    session,
+                    org_id=org_id,
+                    key=idempotency_key,
+                    request_hash=request_hash,
+                    status_code=409,
+                    response_body=exc.detail,
+                )
+                return JSONResponse(status_code=409, content=cached_body)
+            raise
 
         body = await _store_idempotent_response(
             session,

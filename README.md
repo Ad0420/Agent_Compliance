@@ -831,7 +831,7 @@ Both endpoints accept the same filters: `start_date`, `end_date`, `agent_name`, 
 - Per-org policy rules stored in DB (`condition_type`, `threshold`, `action`, `severity`)
 - Policy evaluation runs after every record write — fire-and-forget, never slows audit trail
 - Built-in condition types: `chain_tampered`, `failure_rate`, `unknown_agent`, `missing_reasoning`, `high_failure_burst`
-- Actions: EMAIL, FLAG (mark record with `policy_violation=true`), BLOCK (future), WEBHOOK (future)
+- Actions: EMAIL, FLAG (mark record with `policy_violation=true`), BLOCK (shipped — pre-action enforcement: 409 Conflict + audit record stored with `result="blocked"`), WEBHOOK (shipped — `policy.violation` event)
 - `POST /v1/policies`, `GET /v1/policies`, `GET /v1/violations`
 - Maps word-for-word to EU AI Act Art. 9 (risk management system) and NIST AI RMF GOVERN/MANAGE functions
 
