@@ -1,7 +1,6 @@
 import { HashStamp, PrototypeDisclaimer, Wordmark } from "./brand";
 
 const COLUMNS = [
-  { h: "Product", links: ["Docs", "Pricing", "Changelog", "Status"] },
   { h: "Regulations", links: ["EU AI Act", "Colorado", "GDPR", "SEC 17a-4"] },
   { h: "Company", links: ["About", "Blog", "Contact", "Press"] },
   { h: "Legal", links: ["Privacy", "Terms", "Security", "DPA"] },
@@ -20,7 +19,7 @@ export function V4Footer() {
         style={{
           padding: "32px 0",
           display: "grid",
-          gridTemplateColumns: "2fr repeat(4, 1fr)",
+          gridTemplateColumns: "2fr repeat(3, 1fr)",
           gap: 32,
           borderTop: "1px solid var(--night-edge)",
         }}
