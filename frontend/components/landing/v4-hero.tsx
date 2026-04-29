@@ -1,4 +1,7 @@
+"use client";
+
 import Link from "next/link";
+import { HeroAnimation } from "./v4-hero-animation";
 
 export function V4Hero() {
   return (
@@ -146,32 +149,7 @@ export function V4Hero() {
           overflow: "hidden",
         }}
       >
-        <div
-          className="imgslot"
-          style={{
-            minHeight: 560,
-            border: "none",
-            borderRadius: 14,
-          }}
-        >
-          <span className="imgslot__tag">IMG·01</span>
-          <div className="imgslot__body">
-            <span
-              style={{
-                fontFamily: "var(--mono)",
-                fontSize: 12,
-                letterSpacing: 1.4,
-                fontWeight: 700,
-                color: "var(--ink-2)",
-              }}
-            >
-              HERO ANIMATION · LANDS IN PHASE 2
-            </span>
-          </div>
-          <span className="imgslot__caption">
-            Hero animation placeholder — the forensic chain centerpiece arrives in phase 2.
-          </span>
-        </div>
+        <HeroAnimation />
       </div>
     </section>
   );
