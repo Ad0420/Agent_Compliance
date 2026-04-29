@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400;1,6..72,500&display=swap");
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
@@ -125,4 +126,128 @@
   body {
     @apply bg-background text-foreground;
   }
+}
+
+/* Vera landing — warm paper design tokens (additive; dashboard dark theme above is untouched) */
+:root {
+  --paper: #f3efe7;
+  --paper-2: #ebe6db;
+  --paper-3: #ddd6c5;
+  --ink: #15140f;
+  --ink-2: rgba(21, 20, 15, 0.66);
+  --ink-3: rgba(21, 20, 15, 0.42);
+  --ink-4: rgba(21, 20, 15, 0.16);
+  --ink-5: rgba(21, 20, 15, 0.08);
+
+  --emerald: #0a7a4f;
+  --emerald-ink: #064a30;
+  --emerald-soft: #d3e8dc;
+  --emerald-paper: #e8f1ea;
+
+  --amber: #9a5d12;
+  --amber-ink: #5e3905;
+  --amber-soft: #ecd9b1;
+  --amber-paper: #f3e7c8;
+
+  --red: #a82a1d;
+  --red-soft: #ecccc4;
+
+  --sans: "Inter Tight", system-ui, sans-serif;
+  --serif: "Newsreader", "Iowan Old Style", Georgia, serif;
+  --mono: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+
+  --ease: cubic-bezier(.2, .7, .2, 1);
+
+  --shadow-1: 0 1px 2px rgba(21,20,15,.04), 0 1px 1px rgba(21,20,15,.03);
+  --shadow-2: 0 2px 6px rgba(21,20,15,.05), 0 8px 24px rgba(21,20,15,.06);
+  --shadow-3: 0 4px 12px rgba(21,20,15,.08), 0 24px 48px rgba(21,20,15,.10);
+  --shadow-glow-em: 0 0 0 1px rgba(10,122,79,.18), 0 24px 60px -16px rgba(10,122,79,.25);
+
+  --night: #0e0d0a;
+  --night-2: #16140f;
+  --night-3: #211e17;
+  --night-edge: rgba(243,239,231,.08);
+  --night-edge-2: rgba(243,239,231,.16);
+  --night-text: #e9e3d4;
+  --night-text-2: rgba(233,227,212,.66);
+  --night-text-3: rgba(233,227,212,.42);
+}
+
+.imgslot {
+  position: relative;
+  background:
+    repeating-linear-gradient(45deg,
+      var(--paper-2) 0 12px,
+      var(--paper-3) 12px 13px);
+  border: 1px solid var(--ink-4);
+  display: flex; flex-direction: column; align-items: stretch; justify-content: stretch;
+  font-family: var(--mono);
+  color: var(--ink-2);
+  overflow: hidden;
+}
+.imgslot--dark {
+  background:
+    repeating-linear-gradient(45deg,
+      var(--night-2) 0 12px,
+      var(--night-3) 12px 13px);
+  border-color: var(--night-edge);
+  color: var(--night-text-2);
+}
+.imgslot__tag {
+  align-self: flex-start;
+  margin: 14px 0 0 14px;
+  padding: 4px 10px;
+  background: var(--ink);
+  color: var(--paper);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+}
+.imgslot__body {
+  flex: 1;
+  display: flex; align-items: center; justify-content: center;
+  padding: 28px;
+  text-align: center;
+}
+.imgslot__caption {
+  margin: 0 0 14px 14px;
+  align-self: flex-start;
+  max-width: 90%;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.4px;
+  line-height: 1.45;
+  color: var(--ink-3);
+}
+.imgslot--dark .imgslot__caption { color: var(--night-text-3); }
+.imgslot--dark .imgslot__tag { background: var(--paper); color: var(--ink); }
+
+.brackets {
+  font-family: var(--mono);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.brackets::before { content: "[ "; color: var(--ink-3); }
+.brackets::after  { content: " ]"; color: var(--ink-3); }
+
+.hash {
+  font-family: var(--mono);
+  font-size: 0.78em;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+.hash--em { color: var(--emerald); }
+.hash--am { color: var(--amber); }
+
+.tick {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1em; height: 1em;
+  border-radius: 999px;
+  background: var(--emerald);
+  color: var(--paper);
+  font-size: 0.7em;
+  flex-shrink: 0;
 }
