@@ -36,6 +36,12 @@ backend/checkpoints.json
 # ── Internal documents ────────────────────────────────────────────────────────
 vera_product_document.txt
 
+# ── Simulator (mock-customer demo bench) ──────────────────────────────────────
+simulator/.env.local
+simulator/.env
+simulator/tests/cassettes/**/*.tmp.json
+simulator/**/__pycache__/
+
 # ── OS / editor ───────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
