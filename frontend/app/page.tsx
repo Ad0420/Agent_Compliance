@@ -22,8 +22,8 @@ export default function LandingPage() {
       <V4Nav />
       <V4Hero />
       <V4Customers />
-      <V4Problem />
       <V4Deadline />
+      <V4Problem />
       <V4Compare />
       <V4Code />
       <V4Artifact />
