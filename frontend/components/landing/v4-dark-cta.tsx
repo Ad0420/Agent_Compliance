@@ -70,25 +70,12 @@ export function V4DarkCTA() {
         </h2>
         <div
           style={{
-            display: "grid",
-            gridTemplateColumns: "1.4fr 1fr",
-            gap: 64,
-            alignItems: "end",
+            display: "flex",
+            justifyContent: "flex-end",
+            alignItems: "flex-end",
             marginTop: 56,
           }}
         >
-          <p
-            style={{
-              fontSize: 19,
-              color: "var(--night-text-2)",
-              margin: 0,
-              lineHeight: 1.5,
-              maxWidth: 560,
-            }}
-          >
-            No credit card. Self-serve free tier. The first signed action lands
-            in your chain before your coffee gets cold.
-          </p>
           <div
             style={{
               display: "flex",
