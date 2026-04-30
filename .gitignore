@@ -41,6 +41,18 @@ simulator/.env.local
 simulator/.env
 simulator/tests/cassettes/**/*.tmp.json
 simulator/**/__pycache__/
+simulator/**/*.db
+simulator/**/*.db-shm
+simulator/**/*.db-wal
+simulator/customers/*/frontend/node_modules/
+simulator/customers/*/frontend/.next/
+simulator/customers/*/frontend/out/
+simulator/customers/*/frontend/.vercel/
+simulator/customers/*/frontend/*.tsbuildinfo
+simulator/customers/*/frontend/.env.local
+simulator/customers/*/frontend/.env*.local
+simulator/customers/*/backend/*.db
+simulator/customers/*/backend/scribemd_backend.db
 
 # ── OS / editor ───────────────────────────────────────────────────────────────
 .DS_Store

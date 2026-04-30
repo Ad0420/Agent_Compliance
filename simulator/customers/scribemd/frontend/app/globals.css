@@ -1,0 +1,127 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/*
+ * ScribeMD globals.
+ *
+ * Light, warm, clinical surface. The contrast brief (LOOK.md) requires this
+ * file to read NOTHING like Vera's dark-slate + emerald landing. If you find
+ * yourself reaching for emerald/teal or a near-black background, stop — that's
+ * Vera's vocabulary, not ScribeMD's.
+ */
+
+@theme inline {
+  --color-background: var(--paper);
+  --color-foreground: var(--ink);
+  --color-card: var(--surface);
+  --color-card-foreground: var(--ink);
+  --color-muted: var(--paper-2);
+  --color-muted-foreground: var(--ink-3);
+  --color-border: var(--hairline);
+  --color-input: var(--hairline);
+  --color-ring: var(--cobalt);
+
+  --color-primary: var(--cobalt);
+  --color-primary-foreground: #ffffff;
+  --color-secondary: var(--paper-2);
+  --color-secondary-foreground: var(--ink);
+  --color-accent: var(--cobalt-soft);
+  --color-accent-foreground: var(--cobalt-ink);
+  --color-destructive: var(--coral);
+  --color-destructive-foreground: #ffffff;
+
+  --font-sans: var(--font-sans);
+  --font-serif: var(--font-serif);
+  --font-mono: var(--font-mono);
+
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.25rem;
+  --radius-2xl: 1.5rem;
+  --radius-3xl: 2rem;
+}
+
+:root {
+  /* Surfaces — warm cream paper. Never falls below oklch(0.95 ...) on the page. */
+  --paper: #faf7f2;          /* approx oklch(0.969 0.012 85) */
+  --paper-2: #f1ece2;        /* card base / muted band */
+  --paper-3: #e6dfd0;        /* divider tint */
+  --surface: #ffffff;        /* raised cards */
+  --hairline: #e2dccd;
+
+  /* Ink — warm near-black, NOT Vera's cool slate. */
+  --ink: #1b1a17;            /* AAA on paper, ratio ~16.5:1 */
+  --ink-2: #3f3d38;
+  --ink-3: #6e6a60;
+  --ink-4: #a09b8e;
+
+  /* Cobalt primary — clinical, trustworthy, distinctly NOT emerald/teal. */
+  --cobalt: #2e5bd8;         /* AAA on white, AA on paper (~5.4:1) */
+  --cobalt-deep: #1e3fa8;
+  --cobalt-soft: #e5ecfb;
+  --cobalt-ink: #15296a;
+  --indigo: #4338ca;
+
+  /* Risk palette — warm peach + coral. */
+  --amber: #c2410c;
+  --amber-soft: #fbe6cf;
+  --amber-paper: #fdf2e2;
+  --coral: #b42318;
+  --coral-soft: #fcd9d2;
+  --sage: #4f7c5a;
+  --sage-soft: #dcead8;
+
+  /* Type stacks — overridden by next/font CSS variables on <html>. */
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-serif: "Source Serif 4", "Source Serif Pro", "Iowan Old Style", Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--hairline);
+  }
+  html,
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  :focus-visible {
+    outline: 2px solid var(--cobalt);
+    outline-offset: 2px;
+    border-radius: 0.25rem;
+  }
+  ::selection {
+    background: var(--cobalt-soft);
+    color: var(--cobalt-ink);
+  }
+}
+
+/* Subtle pulse used by the active EncounterStep. Slower + softer than a generic
+   blink — it should feel like a heartbeat, not a notification. */
+@keyframes scribemd-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(46, 91, 216, 0.32);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(46, 91, 216, 0);
+  }
+}
+
+.scribemd-pulse {
+  animation: scribemd-pulse 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Soft "paper grain" overlay — used by the look book to anchor the brand on
+   pages without imagery. Optional; pages can opt in with className="paper-grain". */
+.paper-grain {
+  background-image:
+    radial-gradient(rgba(27, 26, 23, 0.025) 1px, transparent 1px);
+  background-size: 22px 22px;
+  background-position: 0 0;
+}
