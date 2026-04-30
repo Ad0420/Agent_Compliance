@@ -68,7 +68,9 @@ describe("useEncounter", () => {
   });
 
   it("fetches once on mount and exposes data", async () => {
-    const fetchFn = vi.fn(async () => jsonResponse(snapshot({ status: "committed" })));
+    const fetchFn = vi.fn<typeof fetch>(
+      async () => jsonResponse(snapshot({ status: "committed" })),
+    );
     globalThis.fetch = fetchFn as unknown as typeof fetch;
 
     const { result } = renderHook(() => useEncounter("enc_123"));
@@ -78,7 +80,7 @@ describe("useEncounter", () => {
     expect(result.current.data?.id).toBe("enc_123");
     expect(result.current.error).toBeNull();
     expect(fetchFn).toHaveBeenCalledTimes(1);
-    const call = fetchFn.mock.calls[0]?.[0] as string;
+    const call = String(fetchFn.mock.calls[0]?.[0] ?? "");
     expect(call).toContain("/api/encounters/enc_123");
   });
 
@@ -164,11 +166,12 @@ describe("useEncounter", () => {
 
 describe("useStartEncounter", () => {
   it("POSTs the input and returns { id }", async () => {
-    const fetchFn = vi.fn(async () =>
-      new Response(JSON.stringify({ id: "enc_new", status: "running" }), {
-        status: 201,
-        headers: { "content-type": "application/json" },
-      }),
+    const fetchFn = vi.fn<typeof fetch>(
+      async () =>
+        new Response(JSON.stringify({ id: "enc_new", status: "running" }), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        }),
     );
     globalThis.fetch = fetchFn as unknown as typeof fetch;
 
@@ -181,7 +184,10 @@ describe("useStartEncounter", () => {
 
     expect(res).toEqual({ id: "enc_new" });
     expect(fetchFn).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+    const firstCall = fetchFn.mock.calls[0];
+    expect(firstCall).toBeDefined();
+    const url = String(firstCall![0]);
+    const init = firstCall![1] as RequestInit;
     expect(url).toContain("/api/encounters");
     expect(init.method).toBe("POST");
     expect(JSON.parse(init.body as string)).toEqual({ fixture: "pancreatitis" });

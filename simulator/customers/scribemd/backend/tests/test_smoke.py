@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import threading
 import time
 import uuid
@@ -258,6 +259,12 @@ def test_full_flow_approve(app_with_stubs):
             break
         time.sleep(0.05)
     assert approval_id, "workflow never reached approval_requested"
+
+    # patient_summary should carry an MRN shaped MRN-<8 digits>
+    assert body["patient_summary"] is not None
+    mrn = body["patient_summary"].get("mrn")
+    assert mrn is not None, "patient_summary.mrn missing"
+    assert re.fullmatch(r"MRN-\d{8}", mrn), f"unexpected mrn shape: {mrn!r}"
 
     # 5. (SSE assertion lives in test_sse_replay below — TestClient's portal
     #    can hang if a streaming response is short-circuited mid-iteration,

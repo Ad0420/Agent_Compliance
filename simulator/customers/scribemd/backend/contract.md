@@ -104,6 +104,7 @@ exists; poll-friendly.
   "fixture_key": "pancreatitis" | null,
   "patient_summary": {
     "subject_id": "pt_xxxxxxx",
+    "mrn": "MRN-12345678",
     "name": "Jane Doe",
     "dob": "1972-03-04",
     "sex": "F",

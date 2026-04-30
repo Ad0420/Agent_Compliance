@@ -41,6 +41,7 @@ class Patient:
         """Subset that's always safe to print on a demo screenshare."""
         return {
             "subject_id": self.subject_id,
+            "mrn": self.mrn,
             "name": self.name,
             "dob": self.date_of_birth,
             "sex": self.sex,
