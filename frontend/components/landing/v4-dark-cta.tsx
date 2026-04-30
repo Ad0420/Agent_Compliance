@@ -85,44 +85,24 @@ export function V4DarkCTA() {
               flexShrink: 0,
             }}
           >
-            <div style={{ display: "flex", gap: 12 }}>
-              <Link
-                href="/register"
-                style={{
-                  background: "var(--paper)",
-                  color: "var(--ink)",
-                  border: "1px solid var(--paper)",
-                  padding: "16px 26px",
-                  fontSize: 15,
-                  fontWeight: 600,
-                  fontFamily: "var(--sans)",
-                  cursor: "pointer",
-                  borderRadius: 8,
-                  textDecoration: "none",
-                  display: "inline-block",
-                }}
-              >
-                Get started →
-              </Link>
-              <a
-                href="#"
-                style={{
-                  background: "transparent",
-                  color: "var(--paper)",
-                  border: "1px solid var(--night-edge-2)",
-                  padding: "16px 26px",
-                  fontSize: 15,
-                  fontWeight: 600,
-                  fontFamily: "var(--sans)",
-                  cursor: "pointer",
-                  borderRadius: 8,
-                  textDecoration: "none",
-                  display: "inline-block",
-                }}
-              >
-                Talk to us
-              </a>
-            </div>
+            <Link
+              href="/register"
+              style={{
+                background: "var(--paper)",
+                color: "var(--ink)",
+                border: "1px solid var(--paper)",
+                padding: "16px 26px",
+                fontSize: 15,
+                fontWeight: 600,
+                fontFamily: "var(--sans)",
+                cursor: "pointer",
+                borderRadius: 8,
+                textDecoration: "none",
+                display: "inline-block",
+              }}
+            >
+              Get started →
+            </Link>
             <span
               style={{
                 fontFamily: "var(--mono)",
