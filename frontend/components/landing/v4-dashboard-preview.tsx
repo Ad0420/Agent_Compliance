@@ -27,24 +27,13 @@ const NAV: NavItem[] = [
 
 export function DashboardPreview() {
   return (
-    <div
-      style={{
-        borderRadius: 12,
-        overflow: "hidden",
-        background: "var(--paper)",
-        border: "1px solid var(--ink-4)",
-        boxShadow: "var(--shadow-3)",
-        display: "grid",
-        gridTemplateColumns: "180px 1fr",
-        aspectRatio: "16/10",
-      }}
-    >
+    <div className="v4-dashboard-preview">
       <aside
+        className="v4-dashboard-sidebar"
         style={{
           background: "var(--paper-2)",
           borderRight: "1px solid var(--ink-4)",
           padding: "20px 16px",
-          display: "flex",
           flexDirection: "column",
           gap: 14,
         }}

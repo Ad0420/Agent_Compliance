@@ -130,10 +130,8 @@ export function ForensicChainExhibit() {
       </div>
 
       <div
+        className="v4-forensic-header"
         style={{
-          display: "grid",
-          gridTemplateColumns: "44px 1fr 110px 150px 28px",
-          gap: 12,
           padding: "10px 22px",
           fontSize: 9.5,
           fontWeight: 700,
@@ -142,11 +140,11 @@ export function ForensicChainExhibit() {
           borderBottom: "1px solid var(--ink)",
         }}
       >
-        <span>#</span>
-        <span>ACTION</span>
-        <span>AGENT</span>
-        <span>SHA-256</span>
-        <span></span>
+        <span className="v4-forensic-cell-num">#</span>
+        <span className="v4-forensic-cell-action">ACTION</span>
+        <span className="v4-forensic-cell-agent">AGENT</span>
+        <span className="v4-forensic-cell-hash">SHA-256</span>
+        <span className="v4-forensic-cell-status"></span>
       </div>
 
       <div style={{ position: "relative" }}>
@@ -158,13 +156,10 @@ export function ForensicChainExhibit() {
           return (
             <React.Fragment key={r.n}>
               <div
+                className="v4-forensic-row"
                 onClick={() => handleRowClick(i)}
                 style={{
-                  display: "grid",
-                  gridTemplateColumns: "44px 1fr 110px 150px 28px",
-                  gap: 12,
                   padding: "11px 22px",
-                  alignItems: "center",
                   fontSize: 11.5,
                   borderBottom:
                     i < BASE_ROWS.length - 1
@@ -182,6 +177,7 @@ export function ForensicChainExhibit() {
                 }}
               >
                 <span
+                  className="v4-forensic-cell-num"
                   style={{
                     fontWeight: 700,
                     color: isBrokenDownstream ? "var(--red)" : "var(--ink-3)",
@@ -190,6 +186,7 @@ export function ForensicChainExhibit() {
                   {r.n}
                 </span>
                 <span
+                  className="v4-forensic-cell-action"
                   style={{
                     fontFamily: "var(--mono)",
                     fontWeight: 600,
@@ -199,6 +196,7 @@ export function ForensicChainExhibit() {
                   {r.action}
                 </span>
                 <span
+                  className="v4-forensic-cell-agent"
                   style={{
                     color: isBrokenDownstream ? "var(--red)" : "var(--ink-2)",
                   }}
@@ -206,6 +204,7 @@ export function ForensicChainExhibit() {
                   {r.agent}
                 </span>
                 <span
+                  className="v4-forensic-cell-hash"
                   style={{
                     fontFamily: "var(--mono)",
                     color: isTamperedRow
@@ -220,6 +219,7 @@ export function ForensicChainExhibit() {
                   sha256:{showHash}
                 </span>
                 <span
+                  className="v4-forensic-cell-status"
                   style={{
                     width: 18,
                     height: 18,
@@ -240,12 +240,12 @@ export function ForensicChainExhibit() {
 
                 {isTamperedRow && (
                   <div
+                    className="v4-forensic-tampered-tag"
                     style={{
                       position: "absolute",
                       right: -6,
                       top: "50%",
                       transform: "translate(100%, -50%) rotate(-2deg)",
-                      display: "flex",
                       alignItems: "center",
                       gap: 8,
                       pointerEvents: "none",
@@ -288,7 +288,8 @@ export function ForensicChainExhibit() {
                       i < BASE_ROWS.length - 1
                         ? "1px solid var(--ink-4)"
                         : "none",
-                    padding: "12px 22px 14px 66px",
+                    padding:
+                      "12px 22px 14px clamp(22px, 6vw, 66px)",
                     display: "grid",
                     gridTemplateColumns: "auto 1fr",
                     rowGap: 5,

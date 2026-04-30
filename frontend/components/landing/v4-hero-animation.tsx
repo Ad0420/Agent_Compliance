@@ -1,6 +1,6 @@
 "use client";
 
-import type { CSSProperties } from "react";
+import { Fragment, type CSSProperties } from "react";
 import { Easing, Stage, clamp, useTime } from "./animations";
 
 const HERO_W = 1600;
@@ -751,28 +751,65 @@ function HeroScene() {
   );
 }
 
+function HeroPipelineMobile() {
+  return (
+    <div className="v4-hero-pipe">
+      <div className="v4-hero-pipe-meta">
+        <span>FIG. 01 · RUNTIME TRUST PIPELINE</span>
+        <span>v1.4 · 6 STAGES</span>
+      </div>
+      {STATIONS.map((s, i) => {
+        const isLast = i === STATIONS.length - 1;
+        return (
+          <Fragment key={s.label}>
+            <div
+              className="v4-hero-pipe-stage"
+              data-tone={s.kind === "sink" ? "sink" : undefined}
+            >
+              <span className="v4-hero-pipe-num">
+                {String(i).padStart(2, "0")}
+              </span>
+              <div>
+                <span className="v4-hero-pipe-label">{s.label}</span>
+                <span className="v4-hero-pipe-sub">{s.sub}</span>
+              </div>
+              <span className="v4-hero-pipe-tick">✓</span>
+            </div>
+            {!isLast && <div className="v4-hero-pipe-arrow" aria-hidden />}
+          </Fragment>
+        );
+      })}
+      <div className="v4-hero-pipe-stat">
+        <span className="v4-hero-pipe-stat-label">MEDIAN OVERHEAD · p50</span>
+        <span className="v4-hero-pipe-stat-value">
+          8<span>ms</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function HeroAnimation() {
   return (
-    <div
-      className="hero-anim-host"
-      style={{
-        width: "100%",
-        aspectRatio: "16/9",
-        position: "relative",
-        overflow: "hidden",
-        background: HC.paper,
-      }}
-    >
-      <Stage
-        width={HERO_W}
-        height={HERO_H}
-        duration={HERO_DURATION}
-        loop
-        autoplay
-        background={HC.paper}
+    <>
+      <div
+        className="v4-hero-anim-desktop"
+        style={{ background: HC.paper }}
       >
-        <HeroScene />
-      </Stage>
-    </div>
+        <Stage
+          width={HERO_W}
+          height={HERO_H}
+          duration={HERO_DURATION}
+          loop
+          autoplay
+          background={HC.paper}
+        >
+          <HeroScene />
+        </Stage>
+      </div>
+      <div className="v4-hero-anim-mobile">
+        <HeroPipelineMobile />
+      </div>
+    </>
   );
 }
