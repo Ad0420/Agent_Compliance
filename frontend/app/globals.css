@@ -251,3 +251,102 @@
   font-size: 0.7em;
   flex-shrink: 0;
 }
+
+/* === Vera landing — responsive tokens (Phase 1) === */
+/* Mobile-first defaults; media queries scale up at 768 and 1024. */
+:root {
+  --gutter: 20px;
+  --section-y: 64px;
+  --gap: 24px;
+  --gap-lg: 32px;
+
+  --h1: clamp(2.25rem, 9vw, 6rem);
+  --h2-cta: clamp(2rem, 11vw, 7rem);
+  --h2-section: clamp(1.75rem, 5vw, 3.5rem);
+  --h3: clamp(1.25rem, 3vw, 1.75rem);
+  --body-lg: clamp(1rem, 1.6vw, 1.3125rem);
+}
+
+@media (min-width: 768px) {
+  :root {
+    --gutter: 40px;
+    --section-y: 96px;
+    --gap: 32px;
+    --gap-lg: 40px;
+  }
+}
+
+@media (min-width: 1024px) {
+  :root {
+    --gutter: 88px;
+    --section-y: 120px;
+    --gap: 48px;
+    --gap-lg: 56px;
+  }
+}
+
+/* === Vera landing — responsive layout utilities === */
+.v4-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--gap);
+}
+@media (min-width: 1024px) {
+  .v4-grid-2 {
+    grid-template-columns: 1fr 1fr;
+    gap: var(--gap-lg);
+  }
+}
+
+.v4-grid-hero {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--gap);
+}
+@media (min-width: 1024px) {
+  .v4-grid-hero {
+    grid-template-columns: 1.3fr 1fr;
+    gap: var(--gap-lg);
+  }
+}
+
+.v4-grid-4 {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--gap);
+}
+@media (min-width: 640px) {
+  .v4-grid-4 {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+@media (min-width: 1024px) {
+  .v4-grid-4 {
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--gap-lg);
+  }
+}
+
+.v4-row-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--gap);
+}
+@media (min-width: 1024px) {
+  .v4-row-stack {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: flex-end;
+    gap: var(--gap-lg);
+  }
+}
+
+.v4-section {
+  padding: var(--section-y) var(--gutter) 0;
+}
+
+.v4-scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
