@@ -1,0 +1,35 @@
+name: TriageGuard Frontend CI
+
+on:
+  pull_request:
+
+jobs:
+  triageguard-frontend:
+    name: Frontend checks (TriageGuard)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: simulator/customers/triageguard/frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: simulator/customers/triageguard/frontend
+        run: npm ci
+
+      - name: Lint
+        working-directory: simulator/customers/triageguard/frontend
+        run: npm run lint
+
+      - name: Type-check
+        working-directory: simulator/customers/triageguard/frontend
+        run: npx tsc --noEmit
+
+      - name: Build
+        working-directory: simulator/customers/triageguard/frontend
+        run: npm run build
