@@ -5,7 +5,7 @@ export function V4DarkCTA() {
   return (
     <section
       style={{
-        marginTop: 144,
+        marginTop: 80,
         background: "var(--night)",
         color: "var(--night-text)",
         position: "relative",
@@ -16,7 +16,7 @@ export function V4DarkCTA() {
       <div
         style={{
           position: "relative",
-          padding: "144px 88px 96px",
+          padding: "80px 88px",
           background:
             "linear-gradient(90deg, rgba(14,13,10,.92) 0%, rgba(14,13,10,.78) 60%, rgba(14,13,10,.55) 100%)",
         }}
@@ -44,44 +44,45 @@ export function V4DarkCTA() {
             SHIP IT
           </span>
         </div>
-        <h2
-          style={{
-            fontFamily: "var(--sans)",
-            fontSize: 112,
-            fontWeight: 700,
-            letterSpacing: "-0.045em",
-            lineHeight: 0.92,
-            margin: 0,
-            maxWidth: 1100,
-          }}
-        >
-          Set up in
-          <br />
-          <span
-            style={{
-              fontFamily: "var(--serif)",
-              fontStyle: "italic",
-              fontWeight: 500,
-              color: "var(--night-text-2)",
-            }}
-          >
-            thirty seconds.
-          </span>
-        </h2>
         <div
           style={{
             display: "flex",
-            justifyContent: "flex-end",
+            justifyContent: "space-between",
             alignItems: "flex-end",
-            marginTop: 56,
+            gap: 48,
           }}
         >
+          <h2
+            style={{
+              fontFamily: "var(--sans)",
+              fontSize: 112,
+              fontWeight: 700,
+              letterSpacing: "-0.045em",
+              lineHeight: 0.92,
+              margin: 0,
+              maxWidth: 1100,
+            }}
+          >
+            Set up in
+            <br />
+            <span
+              style={{
+                fontFamily: "var(--serif)",
+                fontStyle: "italic",
+                fontWeight: 500,
+                color: "var(--night-text-2)",
+              }}
+            >
+              thirty seconds.
+            </span>
+          </h2>
           <div
             style={{
               display: "flex",
               flexDirection: "column",
               alignItems: "flex-start",
               gap: 16,
+              flexShrink: 0,
             }}
           >
             <div style={{ display: "flex", gap: 12 }}>
