@@ -5,7 +5,7 @@ const TABS: string[] = ["Sync", "Async", "LangChain", "OpenAI", "Anthropic"];
 
 export function V4Code() {
   return (
-    <section style={{ padding: "120px 88px 0" }}>
+    <section className="v4-section">
       <V4SectionHeader
         kicker="INTEGRATION"
         title={
@@ -16,44 +16,18 @@ export function V4Code() {
         }
         sub="One decorator, one import. No infra to provision, no schemas to design."
       />
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: 48,
-          alignItems: "stretch",
-        }}
-      >
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "180px 1fr",
-            border: "1px solid var(--ink)",
-            borderRadius: 12,
-            overflow: "hidden",
-            boxShadow: "var(--shadow-2)",
-          }}
-        >
-          <div
-            style={{
-              background: "var(--paper-2)",
-              borderRight: "1px solid var(--ink-4)",
-            }}
-          >
+      <div className="v4-grid-2" style={{ alignItems: "stretch" }}>
+        <div className="v4-code-shell">
+          <div className="v4-code-tabs">
             {TABS.map((t, i) => (
               <button
                 key={t}
+                data-active={i === 0 ? "true" : undefined}
                 style={{
                   display: "block",
-                  width: "100%",
                   textAlign: "left",
                   padding: "14px 22px",
-                  border: "none",
                   background: "transparent",
-                  borderLeft:
-                    i === 0
-                      ? "3px solid var(--emerald)"
-                      : "3px solid transparent",
                   fontFamily: "var(--mono)",
                   fontSize: 13.5,
                   color: i === 0 ? "var(--emerald-ink)" : "var(--ink-2)",
@@ -72,6 +46,7 @@ export function V4Code() {
               fontFamily: "var(--mono)",
               fontSize: 14,
               lineHeight: 1.7,
+              overflowX: "auto",
             }}
           >
             <div style={{ color: "var(--ink-3)" }}># pip install vera-sdk</div>

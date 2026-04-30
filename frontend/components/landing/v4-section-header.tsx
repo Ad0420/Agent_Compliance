@@ -44,7 +44,7 @@ export function V4SectionHeader({
       <h2
         style={{
           fontFamily: "var(--sans)",
-          fontSize: 56,
+          fontSize: "var(--h2-section)",
           fontWeight: 700,
           letterSpacing: "-0.035em",
           lineHeight: 1.02,

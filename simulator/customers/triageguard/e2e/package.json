@@ -1,0 +1,16 @@
+{
+  "name": "triageguard-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Playwright end-to-end tests for the TriageGuard demo (boots stubbed backend + frontend, drives a browser).",
+  "scripts": {
+    "e2e": "playwright test",
+    "e2e:headed": "playwright test --headed",
+    "e2e:report": "playwright show-report",
+    "install-browsers": "playwright install chromium --with-deps"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "@types/node": "^20"
+  }
+}
