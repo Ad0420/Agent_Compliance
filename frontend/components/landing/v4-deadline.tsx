@@ -13,7 +13,7 @@ const MILESTONES: { d: string; n: string; live?: boolean; big?: string }[] = [
 
 export function V4Deadline() {
   return (
-    <section style={{ padding: "120px 88px 0" }}>
+    <section className="v4-section">
       <V4SectionHeader
         kicker="THE DEADLINE"
         accent="amber"
@@ -28,21 +28,12 @@ export function V4Deadline() {
         }
         sub="Four laws. Four hard deadlines. The first is already live; the rest land within 18 months."
       />
-      <div
-        style={{
-          background: "linear-gradient(180deg, var(--amber-paper), #f7eed3)",
-          border: "1px solid var(--amber)",
-          borderRadius: 14,
-          padding: "56px 44px 44px",
-          position: "relative",
-          boxShadow: "var(--shadow-2)",
-        }}
-      >
+      <div className="v4-deadline-card">
         <span
           style={{
             position: "absolute",
             top: -14,
-            left: 36,
+            left: "clamp(20px, 3vw, 36px)",
             background: "var(--amber)",
             color: "var(--paper)",
             padding: "6px 14px",
@@ -56,25 +47,8 @@ export function V4Deadline() {
         >
           STAMP · REGULATOR TIMELINE
         </span>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, 1fr)",
-            gap: 32,
-            alignItems: "start",
-            position: "relative",
-          }}
-        >
-          <div
-            style={{
-              position: "absolute",
-              left: 9,
-              right: 9,
-              top: 9,
-              height: 1,
-              background: "var(--amber)",
-            }}
-          />
+        <div className="v4-grid-4" style={{ alignItems: "start", position: "relative" }}>
+          <div className="v4-deadline-line" />
           {MILESTONES.map((m) => (
             <div
               key={m.d}

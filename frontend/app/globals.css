@@ -350,3 +350,240 @@
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
 }
+
+/* === Vera landing — Phase 2 supporting utilities === */
+
+/* Nav: desktop links inline; mobile shows a hamburger that toggles a drawer. */
+.v4-nav-desktop {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+}
+.v4-nav-trigger {
+  display: none;
+}
+.v4-nav-drawer {
+  display: none;
+}
+.v4-nav-cta-mobile {
+  display: none;
+}
+@media (max-width: 1023px) {
+  .v4-nav-desktop {
+    display: none;
+  }
+  .v4-nav-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border: 1px solid var(--ink-4);
+    border-radius: 8px;
+    background: transparent;
+    cursor: pointer;
+    color: var(--ink);
+    padding: 0;
+  }
+  .v4-nav-drawer {
+    display: flex;
+    flex-direction: column;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: var(--paper);
+    border-bottom: 1px solid var(--ink-4);
+    padding: 16px var(--gutter) 24px;
+    gap: 16px;
+  }
+  .v4-nav-cta-mobile {
+    display: inline-block;
+  }
+}
+
+/* Customers row: dividers flip from horizontal (stacked) to vertical (4-col). */
+.v4-customers-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  border-top: 1px solid var(--ink);
+  border-bottom: 1px solid var(--ink);
+}
+.v4-customers-row > * + * {
+  border-top: 1px solid var(--ink-4);
+}
+@media (min-width: 640px) {
+  .v4-customers-row {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .v4-customers-row > * {
+    border-top: 0;
+  }
+  .v4-customers-row > *:nth-child(n + 3) {
+    border-top: 1px solid var(--ink-4);
+  }
+  .v4-customers-row > *:nth-child(odd) {
+    border-right: 1px solid var(--ink-4);
+  }
+}
+@media (min-width: 1024px) {
+  .v4-customers-row {
+    grid-template-columns: repeat(4, 1fr);
+  }
+  .v4-customers-row > * {
+    border-top: 0;
+    border-right: 0;
+  }
+  .v4-customers-row > *:not(:last-child) {
+    border-right: 1px solid var(--ink-4);
+  }
+}
+
+/* Customers headline strip: hide divider line when wrapped. */
+.v4-customers-headline {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  margin-bottom: 36px;
+  flex-wrap: wrap;
+}
+.v4-customers-headline-line {
+  flex: 1;
+  height: 1px;
+  background: var(--ink-4);
+  min-width: 0;
+}
+@media (max-width: 767px) {
+  .v4-customers-headline-line {
+    display: none;
+  }
+}
+
+/* Compare card: 1-col on mobile, 2-col on desktop. Divider on bad column flips with stacking. */
+.v4-compare-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+@media (min-width: 1024px) {
+  .v4-compare-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.v4-compare-divider {
+  border-bottom: 1px solid var(--ink);
+}
+@media (min-width: 1024px) {
+  .v4-compare-divider {
+    border-bottom: 0;
+    border-right: 1px solid var(--ink);
+  }
+}
+
+/* Code section: tabs are a horizontal scroll row on mobile, vertical sidebar on desktop. */
+.v4-code-shell {
+  display: grid;
+  grid-template-columns: 1fr;
+  border: 1px solid var(--ink);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: var(--shadow-2);
+}
+.v4-code-tabs {
+  background: var(--paper-2);
+  border-bottom: 1px solid var(--ink-4);
+  display: flex;
+  flex-direction: row;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.v4-code-tabs button {
+  border: 0;
+  border-bottom: 3px solid transparent;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.v4-code-tabs button[data-active="true"] {
+  border-bottom-color: var(--emerald);
+}
+@media (min-width: 1024px) {
+  .v4-code-shell {
+    grid-template-columns: 180px 1fr;
+  }
+  .v4-code-tabs {
+    flex-direction: column;
+    border-bottom: 0;
+    border-right: 1px solid var(--ink-4);
+    overflow-x: visible;
+  }
+  .v4-code-tabs button {
+    border-bottom: 0;
+    border-left: 3px solid transparent;
+  }
+  .v4-code-tabs button[data-active="true"] {
+    border-bottom-color: transparent;
+    border-left-color: var(--emerald);
+  }
+}
+
+/* Problem row: badge moves below text on mobile, sits at row end on desktop. */
+.v4-problem-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+    "qnum text"
+    "badge badge";
+  align-items: baseline;
+  padding: 26px 0;
+  gap: 8px 16px;
+}
+.v4-problem-row > .v4-problem-qnum {
+  grid-area: qnum;
+}
+.v4-problem-row > .v4-problem-text {
+  grid-area: text;
+}
+.v4-problem-row > .v4-problem-badge {
+  grid-area: badge;
+  justify-self: start;
+  margin-top: 8px;
+}
+@media (min-width: 1024px) {
+  .v4-problem-row {
+    grid-template-columns: 80px 1fr auto;
+    grid-template-areas: "qnum text badge";
+    gap: 24px;
+  }
+  .v4-problem-row > .v4-problem-badge {
+    justify-self: end;
+    margin-top: 0;
+  }
+}
+
+/* Deadline card: relax inner padding on mobile; hide horizontal timeline line when stacked. */
+.v4-deadline-card {
+  background: linear-gradient(180deg, var(--amber-paper), #f7eed3);
+  border: 1px solid var(--amber);
+  border-radius: 14px;
+  padding: 40px 24px 32px;
+  position: relative;
+  box-shadow: var(--shadow-2);
+}
+@media (min-width: 1024px) {
+  .v4-deadline-card {
+    padding: 56px 44px 44px;
+  }
+}
+.v4-deadline-line {
+  display: none;
+}
+@media (min-width: 1024px) {
+  .v4-deadline-line {
+    display: block;
+    position: absolute;
+    left: 9px;
+    right: 9px;
+    top: 9px;
+    height: 1px;
+    background: var(--amber);
+  }
+}

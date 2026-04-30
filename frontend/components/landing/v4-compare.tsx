@@ -11,12 +11,12 @@ function V4CompareCol({ title, kicker, rows, tone }: V4CompareColProps) {
   const isGood = tone === "good";
   return (
     <div
+      className={!isGood ? "v4-compare-divider" : undefined}
       style={{
         background: isGood
           ? "linear-gradient(180deg, var(--emerald-paper), #dee9df)"
           : "var(--paper-2)",
-        borderRight: !isGood ? "1px solid var(--ink)" : "none",
-        padding: "36px 40px",
+        padding: "clamp(24px, 4vw, 36px) clamp(24px, 4vw, 40px)",
       }}
     >
       <div
@@ -94,7 +94,7 @@ function V4CompareCol({ title, kicker, rows, tone }: V4CompareColProps) {
 
 export function V4Compare() {
   return (
-    <section style={{ padding: "120px 88px 0" }}>
+    <section className="v4-section">
       <V4SectionHeader
         kicker="WHY LOGS AREN'T ENOUGH"
         title={
@@ -117,10 +117,8 @@ export function V4Compare() {
         sub="Logs were designed for debugging, not evidence. Evidence has different requirements: capture point, immutability, signing, external storage."
       />
       <div
+        className="v4-compare-grid"
         style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: 0,
           border: "1px solid var(--ink)",
           borderRadius: 14,
           overflow: "hidden",
