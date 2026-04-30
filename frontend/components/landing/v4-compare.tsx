@@ -111,7 +111,7 @@ export function V4Compare() {
         kicker="WHY LOGS AREN'T ENOUGH"
         title={
           <>
-            Datadog can be silently edited.
+            Logs can be silently edited.
             <br />
             Vera{" "}
             <em
@@ -140,7 +140,7 @@ export function V4Compare() {
         }}
       >
         <V4CompareCol
-          title="Datadog / CloudWatch"
+          title="Conventional logging"
           kicker="MUTABLE"
           rows={[
             ["Mutable text logs", "anyone with prod access can edit"],
