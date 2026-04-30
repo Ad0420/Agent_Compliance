@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, DM_Serif_Display, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import { Providers } from "./providers";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -40,7 +41,9 @@ export default function RootLayout({
       lang="en"
       className={`${inter.variable} ${dmSerif.variable} ${jetbrainsMono.variable}`}
     >
-      <body>{children}</body>
+      <body>
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }
