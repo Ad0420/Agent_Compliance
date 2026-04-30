@@ -145,7 +145,6 @@ export function V4Compare() {
           rows={[
             ["Mutable text logs", "anyone with prod access can edit"],
             ["Plaintext, copyable", "exfiltration risk"],
-            ["App-layer only", "skipped if app skips"],
             ["No signatures", "non-repudiation: none"],
           ]}
           tone="bad"
@@ -154,10 +153,9 @@ export function V4Compare() {
           title="Vera evidence chain"
           kicker="IMMUTABLE"
           rows={[
-            ["DB-trigger captured", "app code can't skip"],
-            ["SHA-256 hash chain", "tamper breaks chain"],
-            ["KMS-signed checkpoints", "cryptographic proof"],
-            ["S3 Object Lock (WORM)", "even AWS root can't edit"],
+            ["Tamper-evident", "any change breaks the chain"],
+            ["Cryptographically sealed", "WORM external storage"],
+            ["Signed at every step", "AWS KMS hardware-bound"],
           ]}
           tone="good"
         />
