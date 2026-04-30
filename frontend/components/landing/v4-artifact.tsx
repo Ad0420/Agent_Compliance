@@ -11,7 +11,7 @@ const ITEMS: [string, string][] = [
 
 export function V4Artifact() {
   return (
-    <section style={{ padding: "120px 88px 0" }}>
+    <section className="v4-section">
       <V4SectionHeader
         kicker="THE ARTIFACT"
         accent="amber"
@@ -25,14 +25,7 @@ export function V4Artifact() {
         }
         sub="When the regulator emails, you respond with a single attachment. Chain integrity stamp, checkpoint table, KMS signature block — verifiable offline by anyone with a hash function."
       />
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 0.95fr",
-          gap: 56,
-          alignItems: "center",
-        }}
-      >
+      <div className="v4-grid-2" style={{ alignItems: "center" }}>
         <div>
           <div
             style={{

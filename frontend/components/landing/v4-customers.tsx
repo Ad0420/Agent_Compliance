@@ -14,18 +14,11 @@ export function V4Customers() {
   return (
     <section
       style={{
-        padding: "56px 88px 72px",
+        padding: "clamp(40px, 6vw, 56px) var(--gutter) clamp(48px, 8vw, 72px)",
         borderBottom: "1px solid var(--ink-4)",
       }}
     >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 32,
-          marginBottom: 36,
-        }}
-      >
+      <div className="v4-customers-headline">
         <span
           style={{
             fontFamily: "var(--mono)",
@@ -37,7 +30,7 @@ export function V4Customers() {
         >
           BUILT TO INTEGRATE WITH
         </span>
-        <span style={{ flex: 1, height: 1, background: "var(--ink-4)" }} />
+        <span className="v4-customers-headline-line" />
         <span
           style={{
             fontFamily: "var(--mono)",
@@ -50,23 +43,12 @@ export function V4Customers() {
           04 SURFACES · SDK · v1.4
         </span>
       </div>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(4, 1fr)",
-          borderTop: "1px solid var(--ink)",
-          borderBottom: "1px solid var(--ink)",
-        }}
-      >
+      <div className="v4-customers-row">
         {INTEGRATIONS.map((it, i) => (
           <div
             key={it.name}
             style={{
               padding: "28px 20px 24px",
-              borderRight:
-                i < INTEGRATIONS.length - 1
-                  ? "1px solid var(--ink-4)"
-                  : "none",
               display: "flex",
               flexDirection: "column",
               gap: 10,
@@ -125,6 +107,8 @@ export function V4Customers() {
           marginTop: 18,
           display: "flex",
           justifyContent: "space-between",
+          flexWrap: "wrap",
+          gap: 8,
           fontFamily: "var(--mono)",
           fontSize: 10.5,
           color: "var(--ink-3)",

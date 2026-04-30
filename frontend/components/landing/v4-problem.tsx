@@ -10,7 +10,7 @@ const QUESTIONS: string[] = [
 
 export function V4Problem() {
   return (
-    <section style={{ padding: "120px 88px 0" }}>
+    <section className="v4-section">
       <V4SectionHeader
         kicker="THE PROBLEM"
         title={
@@ -24,24 +24,13 @@ export function V4Problem() {
         }
         sub="Today, when an AI agent makes a decision your customer disputes, your team scrambles through three log systems to assemble an answer that is unverifiable."
       />
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr",
-          gap: 48,
-          alignItems: "center",
-        }}
-      >
+      <div className="v4-grid-2" style={{ alignItems: "center" }}>
         <ol style={{ listStyle: "none", padding: 0, margin: 0 }}>
           {QUESTIONS.map((q, i) => (
             <li
               key={q}
+              className="v4-problem-row"
               style={{
-                display: "grid",
-                gridTemplateColumns: "80px 1fr auto",
-                alignItems: "baseline",
-                padding: "26px 0",
-                gap: 24,
                 borderTop: i
                   ? "1px solid var(--ink-4)"
                   : "1px solid var(--ink)",
@@ -52,6 +41,7 @@ export function V4Problem() {
               }}
             >
               <span
+                className="v4-problem-qnum"
                 style={{
                   fontFamily: "var(--mono)",
                   fontSize: 13,
@@ -63,8 +53,9 @@ export function V4Problem() {
                 Q.{String(i + 1).padStart(2, "0")}
               </span>
               <span
+                className="v4-problem-text"
                 style={{
-                  fontSize: 28,
+                  fontSize: "clamp(20px, 3.6vw, 28px)",
                   fontWeight: 600,
                   letterSpacing: "-0.02em",
                   lineHeight: 1.15,
@@ -73,6 +64,7 @@ export function V4Problem() {
                 {q}
               </span>
               <span
+                className="v4-problem-badge"
                 style={{
                   fontFamily: "var(--mono)",
                   fontSize: 10.5,
