@@ -4,9 +4,9 @@ import Link from "next/link";
 import { useState, type CSSProperties } from "react";
 import { Wordmark } from "./brand";
 
-const NAV_ITEMS: Array<[string, boolean]> = [
-  ["Product", true],
-  ["Regulations", false],
+const NAV_ITEMS: Array<[string, boolean, string]> = [
+  ["Product", true, "/"],
+  ["Regulations", false, "/regulations"],
 ];
 
 const linkStyle = (hot: boolean): CSSProperties => ({
@@ -55,10 +55,10 @@ export function V4Nav() {
       <span style={{ flex: 1 }} />
 
       <div className="v4-nav-desktop">
-        {NAV_ITEMS.map(([label, hot]) => (
-          <a key={label} href="#" style={linkStyle(hot)}>
+        {NAV_ITEMS.map(([label, hot, href]) => (
+          <Link key={label} href={href} style={linkStyle(hot)}>
             {label}
-          </a>
+          </Link>
         ))}
         <span style={{ width: 6 }} />
         <Link
@@ -122,15 +122,15 @@ export function V4Nav() {
 
       {open && (
         <div className="v4-nav-drawer">
-          {NAV_ITEMS.map(([label, hot]) => (
-            <a
+          {NAV_ITEMS.map(([label, hot, href]) => (
+            <Link
               key={label}
-              href="#"
+              href={href}
               style={{ ...linkStyle(hot), fontSize: 16, padding: "8px 0" }}
               onClick={() => setOpen(false)}
             >
               {label}
-            </a>
+            </Link>
           ))}
           <Link
             href="/login"
