@@ -1,0 +1,29 @@
+name: triageguard-frontend-tests
+
+on:
+  pull_request:
+    paths:
+      - "simulator/customers/triageguard/frontend/**"
+      - ".github/workflows/triageguard-frontend-tests.yml"
+
+jobs:
+  triageguard-frontend-tests:
+    name: triageguard frontend (vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: simulator/customers/triageguard/frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: simulator/customers/triageguard/frontend
+        run: npm ci
+
+      - name: Run Vitest
+        working-directory: simulator/customers/triageguard/frontend
+        run: npm run test:run
