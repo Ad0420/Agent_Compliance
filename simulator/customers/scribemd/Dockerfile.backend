@@ -1,0 +1,40 @@
+# ScribeMD demo — backend image.
+#
+# The compose file mounts the repo root at /app, so this image only needs to
+# carry installed Python dependencies. The Vera SDK (under /app/sdk) and the
+# simulator package (under /app/simulator) are imported directly from the
+# bind mount via PYTHONPATH — that gives us the same auto-reload behaviour
+# editable installs would, without baking sources into the image.
+
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PYTHONPATH=/app:/app/sdk
+
+WORKDIR /app
+
+# curl is needed for the compose healthcheck. Everything else (sqlite, libffi)
+# already ships with python:3.12-slim.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install backend deps + the extras the SDK and simulator pull in. We do this
+# in one pip layer so it caches well across edits.
+COPY simulator/customers/scribemd/backend/requirements.txt /tmp/scribemd-backend-requirements.txt
+RUN pip install --upgrade pip \
+    && pip install -r /tmp/scribemd-backend-requirements.txt \
+    && pip install \
+        "openai>=1.50" \
+        "anthropic>=0.40" \
+        "python-dotenv>=1.0" \
+        "faker>=24.0" \
+        "rich>=13.7"
+
+# Compose overrides CMD with the --reload uvicorn invocation. This default
+# keeps `docker run` against a bare image useful for diagnostics if someone
+# bind-mounts the repo manually.
+CMD ["uvicorn", "simulator.customers.scribemd.backend.main:app", "--host", "0.0.0.0", "--port", "8001"]

@@ -53,6 +53,8 @@ simulator/customers/*/frontend/.env.local
 simulator/customers/*/frontend/.env*.local
 simulator/customers/*/backend/*.db
 simulator/customers/*/backend/scribemd_backend.db
+simulator/customers/*/.env.local
+simulator/customers/*/.env*.local
 
 # ── OS / editor ───────────────────────────────────────────────────────────────
 .DS_Store
