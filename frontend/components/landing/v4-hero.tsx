@@ -24,21 +24,7 @@ export function V4Hero() {
           maxWidth: 1100,
         }}
       >
-        The audit chain
-        <br />
-        regulators accept.
-        <br />
-        <span
-          style={{
-            fontFamily: "var(--serif)",
-            fontStyle: "italic",
-            fontWeight: 500,
-            color: "var(--ink-2)",
-            letterSpacing: "-0.03em",
-          }}
-        >
-          The SDK engineers will ship.
-        </span>
+        Trust Layer for AI Agents
       </h1>
 
       <div
@@ -61,7 +47,7 @@ export function V4Hero() {
           }}
         >
           Vera records every agent action into a tamper-proof, cryptographically-
-          signed audit chain — so when something goes wrong, or a regulator asks,
+          signed audit chain. So when something goes wrong, or a regulator asks,
           the answer is provable in seconds.
         </p>
         <div
