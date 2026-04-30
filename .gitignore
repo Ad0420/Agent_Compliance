@@ -56,6 +56,11 @@ simulator/customers/*/backend/scribemd_backend.db
 simulator/customers/*/.env.local
 simulator/customers/*/.env*.local
 
+# ── Playwright e2e (per-customer) ────────────────────────────────────────────
+simulator/customers/*/e2e/node_modules/
+simulator/customers/*/e2e/playwright-report/
+simulator/customers/*/e2e/test-results/
+
 # ── OS / editor ───────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
