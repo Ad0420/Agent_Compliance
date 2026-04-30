@@ -8,8 +8,6 @@ const INTEGRATIONS: Integration[] = [
   { name: "Anthropic", kind: "LLM" },
   { name: "LangChain", kind: "FRAMEWORK" },
   { name: "CrewAI", kind: "FRAMEWORK" },
-  { name: "AWS KMS", kind: "SIGNING" },
-  { name: "PostgreSQL", kind: "STORAGE" },
 ];
 
 export function V4Customers() {
@@ -49,13 +47,13 @@ export function V4Customers() {
             fontWeight: 600,
           }}
         >
-          06 SURFACES · SDK · v1.4
+          04 SURFACES · SDK · v1.4
         </span>
       </div>
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(6, 1fr)",
+          gridTemplateColumns: "repeat(4, 1fr)",
           borderTop: "1px solid var(--ink)",
           borderBottom: "1px solid var(--ink)",
         }}

@@ -22,7 +22,7 @@ export function V4Problem() {
             </span>
           </>
         }
-        sub="Today, when an AI agent makes a decision your customer disputes, your team scrambles through three log systems to assemble an answer that no court would accept."
+        sub="Today, when an AI agent makes a decision your customer disputes, your team scrambles through three log systems to assemble an answer that is unverifiable."
       />
       <div
         style={{
