@@ -3,7 +3,7 @@ import { V4SectionHeader } from "./v4-section-header";
 type V4CompareColProps = {
   title: string;
   kicker: string;
-  rows: [string, string][];
+  rows: string[];
   tone: "good" | "bad";
 };
 
@@ -57,7 +57,7 @@ function V4CompareCol({ title, kicker, rows, tone }: V4CompareColProps) {
       <div>
         {rows.map((r, i) => (
           <div
-            key={r[0]}
+            key={r}
             style={{
               display: "grid",
               gridTemplateColumns: "32px 1fr",
@@ -76,26 +76,14 @@ function V4CompareCol({ title, kicker, rows, tone }: V4CompareColProps) {
             >
               {String(i + 1).padStart(2, "0")}
             </span>
-            <div>
-              <div
-                style={{
-                  fontSize: 18,
-                  fontWeight: 600,
-                  letterSpacing: "-0.01em",
-                }}
-              >
-                {r[0]}
-              </div>
-              <div
-                style={{
-                  fontSize: 13.5,
-                  color: "var(--ink-2)",
-                  marginTop: 4,
-                  lineHeight: 1.45,
-                }}
-              >
-                {r[1]}
-              </div>
+            <div
+              style={{
+                fontSize: 18,
+                fontWeight: 600,
+                letterSpacing: "-0.01em",
+              }}
+            >
+              {r}
             </div>
           </div>
         ))}
@@ -142,20 +130,16 @@ export function V4Compare() {
         <V4CompareCol
           title="Conventional logging"
           kicker="MUTABLE"
-          rows={[
-            ["Mutable text logs", "anyone with prod access can edit"],
-            ["Plaintext, copyable", "exfiltration risk"],
-            ["No signatures", "non-repudiation: none"],
-          ]}
+          rows={["Mutable text logs", "Plaintext, copyable", "No signatures"]}
           tone="bad"
         />
         <V4CompareCol
           title="Vera evidence chain"
           kicker="IMMUTABLE"
           rows={[
-            ["Tamper-evident", "any change breaks the chain"],
-            ["Cryptographically sealed", "WORM external storage"],
-            ["Signed at every step", "AWS KMS hardware-bound"],
+            "Tamper-evident",
+            "Cryptographically sealed",
+            "Signed at every step",
           ]}
           tone="good"
         />
