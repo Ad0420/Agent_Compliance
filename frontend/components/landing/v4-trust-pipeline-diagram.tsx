@@ -1,18 +1,16 @@
 type Station = {
   n: string;
   title: string;
-  sub: string;
   dt: string;
-  control: string;
   emphasis?: boolean;
 };
 
 const STATIONS: Station[] = [
-  { n: "01", title: "INTERCEPT", sub: "DB trigger", dt: "0.4ms", control: "ISO-27001 A.12.4" },
-  { n: "02", title: "HASH", sub: "sha-256", dt: "0.8ms", control: "FIPS 180-4" },
-  { n: "03", title: "CHAIN", sub: "linked + ordered", dt: "0.9ms", control: "RFC 6962" },
-  { n: "04", title: "SIGN", sub: "AWS KMS / HSM", dt: "3.7ms", control: "FIPS 140-2 L3", emphasis: true },
-  { n: "05", title: "STORE", sub: "S3 Object Lock", dt: "2.2ms", control: "WORM · NIST 800-209" },
+  { n: "01", title: "INTERCEPT", dt: "0.4ms" },
+  { n: "02", title: "HASH", dt: "0.8ms" },
+  { n: "03", title: "CHAIN", dt: "0.9ms" },
+  { n: "04", title: "SIGN", dt: "3.7ms", emphasis: true },
+  { n: "05", title: "STORE", dt: "2.2ms" },
 ];
 
 export function TrustPipelineDiagram() {
@@ -196,7 +194,6 @@ export function TrustPipelineDiagram() {
                     display: "flex",
                     flexDirection: "column",
                     alignItems: "center",
-                    gap: 4,
                     textAlign: "center",
                   }}
                 >
@@ -210,32 +207,6 @@ export function TrustPipelineDiagram() {
                     }}
                   >
                     {s.title}
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: "var(--mono)",
-                      fontSize: 10,
-                      fontWeight: 500,
-                      letterSpacing: 1.1,
-                      color: "var(--ink-3)",
-                    }}
-                  >
-                    {s.sub}
-                  </span>
-                  <span
-                    style={{
-                      fontFamily: "var(--mono)",
-                      fontSize: 9,
-                      fontWeight: 700,
-                      letterSpacing: 1.2,
-                      color: accent,
-                      marginTop: 6,
-                      padding: "2px 6px",
-                      border: "1px solid " + accent,
-                      background: s.emphasis ? "rgba(154,93,18,0.06)" : "rgba(10,122,79,0.05)",
-                    }}
-                  >
-                    {s.control}
                   </span>
                 </div>
               </div>
