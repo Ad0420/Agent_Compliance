@@ -1066,3 +1066,206 @@
     background: var(--amber);
   }
 }
+
+/* === Vera landing — Phase 4 bespoke widgets === */
+
+/* Hero animation: Stage scales 1600x900 cinematic to fit, but on mobile that
+   shrinks all typography to ~3px. Render two children and CSS-toggle between
+   the live Stage (desktop) and a static vertical pipeline (mobile). */
+.v4-hero-anim-desktop {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16/9;
+  position: relative;
+  overflow: hidden;
+}
+.v4-hero-anim-mobile {
+  display: none;
+}
+@media (max-width: 1023px) {
+  .v4-hero-anim-desktop {
+    display: none;
+  }
+  .v4-hero-anim-mobile {
+    display: block;
+  }
+}
+
+.v4-hero-pipe {
+  background: var(--paper);
+  padding: 24px 20px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.v4-hero-pipe-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 1.4px;
+  font-weight: 700;
+  color: var(--ink-3);
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.v4-hero-pipe-stage {
+  display: grid;
+  grid-template-columns: 32px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--paper-2);
+  border: 1px solid var(--ink-4);
+  border-radius: 8px;
+  position: relative;
+}
+.v4-hero-pipe-stage[data-tone="sink"] {
+  background: var(--emerald-paper);
+  border-color: rgba(10, 122, 79, 0.35);
+}
+.v4-hero-pipe-num {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+  color: var(--ink-3);
+}
+.v4-hero-pipe-label {
+  font-family: var(--sans);
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: -0.005em;
+  color: var(--ink);
+  display: block;
+}
+.v4-hero-pipe-sub {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  display: block;
+  margin-top: 2px;
+}
+.v4-hero-pipe-tick {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--emerald);
+  color: var(--paper);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 11px;
+}
+.v4-hero-pipe-arrow {
+  align-self: center;
+  width: 1px;
+  height: 14px;
+  background: var(--ink-4);
+  margin: -8px 0 -8px 16px;
+}
+.v4-hero-pipe-stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--ink-4);
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.v4-hero-pipe-stat-label {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+  color: var(--ink-3);
+}
+.v4-hero-pipe-stat-value {
+  font-family: var(--sans);
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  color: var(--emerald);
+  line-height: 1;
+}
+.v4-hero-pipe-stat-value > span {
+  font-size: 16px;
+  margin-left: 4px;
+}
+
+/* Forensic chain exhibit: row reflow for narrow widths. Hash spans below
+   action; agent column drops; status stays on top row. */
+.v4-forensic-header,
+.v4-forensic-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 18px;
+  grid-template-areas:
+    "num action status"
+    ". hash hash";
+  align-items: center;
+  gap: 4px 10px;
+}
+.v4-forensic-cell-num {
+  grid-area: num;
+}
+.v4-forensic-cell-action {
+  grid-area: action;
+}
+.v4-forensic-cell-agent {
+  display: none;
+}
+.v4-forensic-cell-hash {
+  grid-area: hash;
+  font-size: 10px;
+}
+.v4-forensic-cell-status {
+  grid-area: status;
+  justify-self: end;
+}
+.v4-forensic-tampered-tag {
+  display: none;
+}
+@media (min-width: 1024px) {
+  .v4-forensic-header,
+  .v4-forensic-row {
+    grid-template-columns: 44px 1fr 110px 150px 28px;
+    grid-template-areas: none;
+    gap: 12px;
+  }
+  .v4-forensic-cell-agent {
+    display: inline;
+  }
+  .v4-forensic-cell-hash {
+    font-size: 11.5px;
+  }
+  .v4-forensic-tampered-tag {
+    display: flex;
+  }
+}
+
+/* Dashboard preview: hide sidebar and drop the cinematic aspect ratio on mobile;
+   the table-style evidence rows are the actual point of the preview. */
+.v4-dashboard-preview {
+  display: grid;
+  grid-template-columns: 1fr;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--paper);
+  border: 1px solid var(--ink-4);
+  box-shadow: var(--shadow-3);
+}
+.v4-dashboard-sidebar {
+  display: none;
+}
+@media (min-width: 1024px) {
+  .v4-dashboard-preview {
+    grid-template-columns: 180px 1fr;
+    aspect-ratio: 16/10;
+  }
+  .v4-dashboard-sidebar {
+    display: flex;
+  }
+}
