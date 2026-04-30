@@ -1,0 +1,29 @@
+name: frontend-tests
+
+on:
+  pull_request:
+    paths:
+      - "simulator/customers/scribemd/frontend/**"
+      - ".github/workflows/frontend-tests.yml"
+
+jobs:
+  frontend-tests:
+    name: scribemd frontend (vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: simulator/customers/scribemd/frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: simulator/customers/scribemd/frontend
+        run: npm ci
+
+      - name: Run Vitest
+        working-directory: simulator/customers/scribemd/frontend
+        run: npm run test:run
