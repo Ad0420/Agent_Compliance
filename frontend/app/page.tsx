@@ -4,7 +4,6 @@ import { V4Customers } from "@/components/landing/v4-customers";
 import { V4Problem } from "@/components/landing/v4-problem";
 import { V4Deadline } from "@/components/landing/v4-deadline";
 import { V4Compare } from "@/components/landing/v4-compare";
-import { V4Architecture } from "@/components/landing/v4-architecture";
 import { V4Code } from "@/components/landing/v4-code";
 import { V4Artifact } from "@/components/landing/v4-artifact";
 import { V4DarkCTA } from "@/components/landing/v4-dark-cta";
@@ -26,7 +25,6 @@ export default function LandingPage() {
       <V4Problem />
       <V4Deadline />
       <V4Compare />
-      <V4Architecture />
       <V4Code />
       <V4Artifact />
       <V4DarkCTA />
