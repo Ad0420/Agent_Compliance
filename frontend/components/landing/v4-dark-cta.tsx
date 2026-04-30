@@ -16,7 +16,7 @@ export function V4DarkCTA() {
       <div
         style={{
           position: "relative",
-          padding: "80px 88px",
+          padding: "clamp(48px, 8vw, 80px) var(--gutter)",
           background:
             "linear-gradient(90deg, rgba(14,13,10,.92) 0%, rgba(14,13,10,.78) 60%, rgba(14,13,10,.55) 100%)",
         }}
@@ -44,18 +44,11 @@ export function V4DarkCTA() {
             SHIP IT
           </span>
         </div>
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "flex-end",
-            gap: 48,
-          }}
-        >
+        <div className="v4-row-stack">
           <h2
             style={{
               fontFamily: "var(--sans)",
-              fontSize: 112,
+              fontSize: "var(--h2-cta)",
               fontWeight: 700,
               letterSpacing: "-0.045em",
               lineHeight: 0.92,

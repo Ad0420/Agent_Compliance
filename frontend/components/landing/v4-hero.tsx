@@ -7,7 +7,7 @@ export function V4Hero() {
   return (
     <section
       style={{
-        padding: "88px 88px 56px",
+        padding: "clamp(48px, 8vw, 88px) var(--gutter) clamp(40px, 6vw, 56px)",
         position: "relative",
         background:
           "radial-gradient(ellipse 1200px 600px at 50% -200px, rgba(10,122,79,.06), transparent 60%), var(--paper)",
@@ -16,7 +16,7 @@ export function V4Hero() {
       <h1
         style={{
           fontFamily: "var(--sans)",
-          fontSize: 96,
+          fontSize: "var(--h1)",
           fontWeight: 700,
           lineHeight: 0.95,
           letterSpacing: "-0.045em",
@@ -40,17 +40,12 @@ export function V4Hero() {
       </h1>
 
       <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1.3fr 1fr",
-          gap: 56,
-          alignItems: "end",
-          marginBottom: 56,
-        }}
+        className="v4-grid-hero"
+        style={{ alignItems: "end", marginBottom: "clamp(40px, 6vw, 56px)" }}
       >
         <p
           style={{
-            fontSize: 21,
+            fontSize: "var(--body-lg)",
             lineHeight: 1.45,
             color: "var(--ink)",
             margin: 0,
@@ -70,7 +65,7 @@ export function V4Hero() {
             gap: 16,
           }}
         >
-          <div style={{ display: "flex", gap: 12 }}>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
             <Link
               href="/register"
               style={{
@@ -116,6 +111,7 @@ export function V4Hero() {
               display: "flex",
               alignItems: "center",
               gap: 10,
+              flexWrap: "wrap",
               fontFamily: "var(--mono)",
               fontSize: 12,
               color: "var(--ink-3)",
