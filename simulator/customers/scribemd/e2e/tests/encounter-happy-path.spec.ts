@@ -64,13 +64,17 @@ test.describe("ScribeMD encounter — happy path", () => {
     await expect(startButton).toBeEnabled();
     await startButton.click();
 
-    // The live pipeline renders the four step labels.
+    // The live pipeline renders the four step labels. Scope to the
+    // pipeline region — "Awaiting your sign-off" also appears in the
+    // topbar status banner once the HITL gate fires, so an unscoped
+    // getByText would resolve to two elements and trip strict mode.
+    const pipeline = page.getByLabel("Encounter pipeline");
     await expect(
-      page.getByText("Listening to the visit"),
+      pipeline.getByText("Listening to the visit"),
     ).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByText("Drafting note")).toBeVisible();
-    await expect(page.getByText("Extracting orders")).toBeVisible();
-    await expect(page.getByText("Awaiting your sign-off")).toBeVisible();
+    await expect(pipeline.getByText("Drafting note")).toBeVisible();
+    await expect(pipeline.getByText("Extracting orders")).toBeVisible();
+    await expect(pipeline.getByText("Awaiting your sign-off")).toBeVisible();
 
     // ── Beat 5: wait for the HITL gate ──
     // The "Sign and commit" button only renders inside the ApprovalGate
