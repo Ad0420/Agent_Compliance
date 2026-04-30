@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 48" width="260" height="48" role="img" aria-label="TriageGuard">
+  <rect x="0" y="8" width="32" height="32" rx="8" fill="#FFFFFF" stroke="#E2DCCD"/>
+  <g transform="translate(0,8)">
+    <path d="M9 6.5 V12 Q9 17 16 17 Q23 17 23 12 V6.5" fill="none" stroke="#0F766E" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="9" cy="6.5" r="1.5" fill="#0F766E"/>
+    <circle cx="23" cy="6.5" r="1.5" fill="#0F766E"/>
+    <path d="M4.5 24 H11 L13.5 19 L16 27 L18.5 21 L21 24 H27.5" fill="none" stroke="#0F766E" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="42" y="34" font-family="'DM Serif Display', 'Iowan Old Style', Georgia, serif" font-size="28" font-weight="400" letter-spacing="-0.4" fill="#0E1A1A">Triage<tspan fill="#0F766E">Guard</tspan></text>
+</svg>
