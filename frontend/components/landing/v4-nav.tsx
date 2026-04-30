@@ -4,9 +4,6 @@ import { Wordmark } from "./brand";
 const NAV_ITEMS: Array<[string, boolean]> = [
   ["Product", true],
   ["Regulations", false],
-  ["Architecture", false],
-  ["Docs", false],
-  ["Pricing", false],
 ];
 
 export function V4Nav() {
