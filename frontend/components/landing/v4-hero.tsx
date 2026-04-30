@@ -24,7 +24,19 @@ export function V4Hero() {
           maxWidth: 1100,
         }}
       >
-        Trust Layer for AI Agents
+        Trust Layer for
+        <br />
+        <span
+          style={{
+            fontFamily: "var(--serif)",
+            fontStyle: "italic",
+            fontWeight: 500,
+            color: "var(--ink-2)",
+            letterSpacing: "-0.03em",
+          }}
+        >
+          AI Agents
+        </span>
       </h1>
 
       <div
