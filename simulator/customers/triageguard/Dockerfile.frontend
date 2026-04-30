@@ -1,0 +1,22 @@
+# TriageGuard demo — frontend image.
+#
+# Next.js 16 dev server. The compose file mounts the frontend source so edits
+# hot-reload. node_modules is held in an anonymous volume so the host's
+# (potentially different-arch) install never clobbers the in-container one.
+
+FROM node:22-slim
+
+ENV NODE_ENV=development \
+    NEXT_TELEMETRY_DISABLED=1
+
+WORKDIR /app
+
+# Install deps from the lockfile only. The compose mount layers the rest of
+# the source on top at runtime; node_modules is shadowed by the anonymous
+# volume so this layer's install survives.
+COPY simulator/customers/triageguard/frontend/package.json simulator/customers/triageguard/frontend/package-lock.json ./
+RUN npm ci
+
+EXPOSE 3002
+
+CMD ["npm", "run", "dev"]
