@@ -28,6 +28,7 @@ export type EncounterEventType =
 
 export interface PatientSummary {
   subject_id: string;
+  mrn: string;
   name: string;
   dob: string;
   sex: string;

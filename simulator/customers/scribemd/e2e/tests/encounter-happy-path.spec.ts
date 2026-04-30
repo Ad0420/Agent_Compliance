@@ -116,6 +116,12 @@ test.describe("ScribeMD encounter — happy path", () => {
       page.getByText(/Note signed by\s+Dr\.\s*Adams/i),
     ).toBeVisible();
 
+    // The chart receipt should render a real MRN (MRN-<8 digits>) and must
+    // never fall back to the MRN-XXXXXXXX placeholder — that fallback was
+    // a known regression marker we explicitly stamped out.
+    await expect(page.getByText(/MRN-\d{8}/)).toBeVisible();
+    await expect(page.getByText("MRN-XXXXXXXX")).toHaveCount(0);
+
     // ── Beat 10: audit-trail deep link opens in a new tab and points
     // at /actions/<record-id> on the Vera dashboard ──
     const auditLink = page.getByRole("link", { name: /View audit trail/i });

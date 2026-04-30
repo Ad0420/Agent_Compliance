@@ -59,9 +59,7 @@ function CommittedView({
   onReset(): void;
 }) {
   const note = encounter.terminal_outcome?.note ?? null;
-  const mrn =
-    (encounter.patient_summary as { mrn?: string } | null)?.mrn ??
-    "MRN-XXXXXXXX";
+  const mrn = encounter.patient_summary?.mrn ?? "";
   const auto = encounter.status === "auto_committed";
 
   // Last record id is the chart commit. Fall back gracefully.
