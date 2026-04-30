@@ -1,0 +1,75 @@
+# TriageGuard demo stack.
+#
+# Two services on a single network:
+#   - triageguard-backend  (FastAPI + SSE)  on host :8002
+#   - triageguard-frontend (Next.js dev)    on host :3002
+#
+# Vera is NOT in this compose file. The backend talks to Vera production
+# over the network using the env vars in .env.local. For chaos mode against
+# a local Vera, use the repo-root docker-compose.yml separately.
+#
+# Build context is the repo root so the backend image can install the SDK
+# and the simulator package out of the same source tree the bind mount
+# exposes at runtime. Mount paths are relative to this file's location.
+
+services:
+  triageguard-backend:
+    container_name: triageguard-backend
+    build:
+      context: ../../..
+      dockerfile: simulator/customers/triageguard/Dockerfile.backend
+    working_dir: /app
+    command: >
+      uvicorn simulator.customers.triageguard.backend.main:app
+      --host 0.0.0.0
+      --port 8002
+      --reload
+    ports:
+      - "8002:8002"
+    volumes:
+      - ../../..:/app
+    # TRIAGEGUARD_*, VERA_*, OPENAI_API_KEY, ANTHROPIC_API_KEY, CORS_ORIGINS all
+    # come from .env.local. Anything explicitly set under `environment:` here
+    # is stack-internal (paths, runtime mode) and should not be configurable.
+    env_file:
+      - .env.local
+    environment:
+      PYTHONPATH: /app:/app/sdk
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8002/api/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    networks:
+      - triageguard-net
+
+  triageguard-frontend:
+    container_name: triageguard-frontend
+    build:
+      context: ../../..
+      dockerfile: simulator/customers/triageguard/Dockerfile.frontend
+    command: npm run dev
+    ports:
+      - "3002:3002"
+    volumes:
+      # Mount the source tree so edits hot-reload. The anonymous volume on
+      # /app/node_modules shadows the host's node_modules so the in-container
+      # install (potentially a different arch) is used.
+      - ./frontend:/app
+      - /app/node_modules
+    # NEXT_PUBLIC_TRIAGEGUARD_API_URL comes from .env.local. NODE_ENV is
+    # stack-internal — we always run the dev server in this compose file.
+    env_file:
+      - .env.local
+    environment:
+      NODE_ENV: development
+    depends_on:
+      triageguard-backend:
+        condition: service_healthy
+    networks:
+      - triageguard-net
+
+networks:
+  triageguard-net:
+    driver: bridge
