@@ -81,9 +81,29 @@ def _err_mock_client(status_code: int = 500):
 
 
 async def _flush_tasks():
-    """Yield enough times for asyncio.create_task'd coroutines to run."""
-    for _ in range(5):
-        await asyncio.sleep(0)
+    """Drain background tasks scheduled via ``asyncio.create_task``.
+
+    Yields control until every non-current task on the loop has finished,
+    or the cap fires. Each spin sleeps a millisecond so we make real
+    forward progress on slower CI runners; on a local machine this loop
+    typically exits after one or two iterations. Replaces an older
+    five-yield ``asyncio.sleep(0)`` helper that was racy on GitHub
+    Actions and produced off-by-one ``consecutive_failures`` flakes.
+    """
+    for _ in range(100):
+        pending = [
+            t
+            for t in asyncio.all_tasks()
+            if t is not asyncio.current_task() and not t.done()
+        ]
+        if not pending:
+            return
+        # Wait for at least one of the pending tasks to make progress
+        # rather than spinning. 50ms cap per round keeps the test snappy
+        # even when nothing is actually pending.
+        await asyncio.wait(
+            pending, timeout=0.05, return_when=asyncio.FIRST_COMPLETED
+        )
 
 
 async def _make_subscription(
