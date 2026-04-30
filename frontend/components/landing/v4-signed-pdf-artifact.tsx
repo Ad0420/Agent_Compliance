@@ -235,7 +235,7 @@ export function SignedPdfArtifact() {
       <div
         style={{
           position: "absolute",
-          top: 24,
+          top: 10,
           right: 28,
           transform: "rotate(8deg)",
           border: "1.5px solid var(--amber-ink)",
