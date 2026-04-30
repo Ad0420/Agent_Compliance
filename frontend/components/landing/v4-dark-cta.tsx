@@ -119,7 +119,7 @@ export function V4DarkCTA() {
                   display: "inline-block",
                 }}
               >
-                Talk to founders
+                Talk to us
               </a>
             </div>
             <span
