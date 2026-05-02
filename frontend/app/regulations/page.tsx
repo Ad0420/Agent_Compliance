@@ -999,41 +999,23 @@ function RegsV2CTA() {
             Vera records every agent action into a tamper-evident, signed audit chain. When a regulator
             asks, the answer is provable in seconds.
           </p>
-          <div style={{ display: "flex", gap: 0 }}>
-            <Link
-              href="/"
-              style={{
-                background: "var(--paper)",
-                color: "var(--ink)",
-                border: "1px solid var(--paper)",
-                padding: "16px 24px",
-                fontSize: 15,
-                fontWeight: 600,
-                cursor: "pointer",
-                fontFamily: "var(--sans)",
-                textDecoration: "none",
-              }}
-            >
-              Get started →
-            </Link>
-            <a
-              href="#"
-              style={{
-                background: "transparent",
-                color: "var(--paper)",
-                border: "1px solid var(--paper)",
-                borderLeft: "none",
-                padding: "16px 24px",
-                fontSize: 15,
-                fontWeight: 600,
-                cursor: "pointer",
-                fontFamily: "var(--sans)",
-                textDecoration: "none",
-              }}
-            >
-              Talk to founders
-            </a>
-          </div>
+          <Link
+            href="/"
+            style={{
+              alignSelf: "flex-start",
+              background: "var(--paper)",
+              color: "var(--ink)",
+              border: "1px solid var(--paper)",
+              padding: "16px 24px",
+              fontSize: 15,
+              fontWeight: 600,
+              cursor: "pointer",
+              fontFamily: "var(--sans)",
+              textDecoration: "none",
+            }}
+          >
+            Get started →
+          </Link>
         </div>
       </div>
     </section>
