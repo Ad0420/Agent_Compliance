@@ -1231,15 +1231,43 @@
 @media (min-width: 1024px) {
   .v4-forensic-header,
   .v4-forensic-row {
-    grid-template-columns: 44px 1fr 110px 150px 28px;
+    grid-template-columns: 44px minmax(0, 1fr) 110px 150px 28px;
     grid-template-areas: none;
     gap: 12px;
   }
+  .v4-forensic-cell-num {
+    grid-area: auto;
+    grid-column: 1;
+  }
+  .v4-forensic-cell-action {
+    grid-area: auto;
+    grid-column: 2;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .v4-forensic-cell-agent {
-    display: inline;
+    display: block;
+    grid-area: auto;
+    grid-column: 3;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .v4-forensic-cell-hash {
+    grid-area: auto;
+    grid-column: 4;
     font-size: 11.5px;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .v4-forensic-cell-status {
+    grid-area: auto;
+    grid-column: 5;
   }
   .v4-forensic-tampered-tag {
     display: flex;
