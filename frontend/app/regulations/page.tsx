@@ -147,7 +147,21 @@ function RegsV2Hero() {
   );
 }
 
-// ── Deadline gantt ─────────────────────────────────────────────────────
+// ── Deadline timeline (lane-based) ────────────────────────────────────
+type TLEvent = {
+  id: string;        // unique
+  tabId: string;     // which dossier tab to activate on click
+  date: string;      // ISO yyyy-mm-dd
+  label: string;     // short label
+  sub?: string;      // optional sub
+};
+
+type TLLane = {
+  key: string;
+  title: string;
+  events: TLEvent[];
+};
+
 function RegsV2DeadlineGantt({
   active,
   onPick,
@@ -155,32 +169,85 @@ function RegsV2DeadlineGantt({
   active: string;
   onPick: (id: string) => void;
 }) {
-  const start = new Date(2025, 0, 1).getTime();
-  const end = new Date(2027, 11, 31).getTime();
+  // Window: Jan 2026 → Sep 2027. Anchored to keep TODAY (Apr 30, 2026) at ~20% in.
+  const start = new Date(2026, 0, 1).getTime();
+  const end = new Date(2027, 8, 30).getTime();
   const today = TODAY.getTime();
-  const todayPct = ((today - start) / (end - start)) * 100;
+  const span = end - start;
+  const pctOf = (iso: string) => {
+    const t = new Date(iso).getTime();
+    return Math.max(0, Math.min(100, ((t - start) / span) * 100));
+  };
+  const todayPct = ((today - start) / span) * 100;
 
-  const points: Array<{
-    id: string;
-    date: string;
-    label: string;
-    state: "live" | "soon";
-    offsetTop?: number;
-    forId?: string;
-  }> = [
-    { id: "tx", date: "2026-01-01", label: "TX", state: "live" },
-    { id: "ca", date: "2026-01-01", label: "CA · AB 316/2013", state: "live", offsetTop: 26 },
-    { id: "fda", date: "2026-02-02", label: "FDA QMSR", state: "live", offsetTop: -8 },
-    { id: "hipaa", date: "2026-05-15", label: "HIPAA update", state: "soon", offsetTop: 26 },
-    { id: "co", date: "2026-06-30", label: "CO", state: "soon" },
-    { id: "eu", date: "2026-08-02", label: "EU AI Act", state: "soon", offsetTop: 26 },
-    { id: "ca2", date: "2026-08-02", label: "CA · SB 942", state: "soon", forId: "ca", offsetTop: -8 },
-    { id: "eu27", date: "2027-08-02", label: "EU embedded", state: "soon", forId: "eu", offsetTop: 26 },
+  const lanesRaw: TLLane[] = [
+    {
+      key: "eu",
+      title: "European Union",
+      events: [
+        { id: "eu-26", tabId: "eu", date: "2026-08-02", label: "EU AI Act", sub: "high-risk obligations" },
+        { id: "eu-27", tabId: "eu", date: "2027-08-02", label: "EU embedded", sub: "Annex II products" },
+      ],
+    },
+    {
+      key: "fed",
+      title: "US Federal",
+      events: [
+        { id: "finra", tabId: "finra", date: "2026-01-01", label: "FINRA 24-09", sub: "in force" },
+        { id: "fda", tabId: "fda", date: "2026-02-02", label: "FDA QMSR", sub: "in force" },
+        { id: "hipaa", tabId: "hipaa", date: "2026-05-15", label: "HIPAA update", sub: "AI workflows" },
+      ],
+    },
+    {
+      key: "state",
+      title: "US State",
+      events: [
+        { id: "tx", tabId: "tx", date: "2026-01-01", label: "TX TRAIGA", sub: "in force" },
+        { id: "ca-ab", tabId: "ca", date: "2026-01-01", label: "CA AB 316 / 2013", sub: "in force" },
+        { id: "co", tabId: "co", date: "2026-06-30", label: "CO SB 24-205", sub: "consequential AI" },
+        { id: "ca-sb", tabId: "ca", date: "2026-08-02", label: "CA SB 942", sub: "AI disclosures" },
+      ],
+    },
   ];
+
+  // Auto-stack: assign a "row" (0..n) to each event so chips that share an x-band don't overlap.
+  // Two events collide if their pct positions differ by less than `MIN_GAP_PCT`.
+  const MIN_GAP_PCT = 12; // chips are ~14% wide on most viewports
+  const lanes = lanesRaw.map((lane) => {
+    const sorted = [...lane.events]
+      .map((e) => ({ ...e, _pct: pctOf(e.date) }))
+      .sort((a, b) => a._pct - b._pct);
+    const rowEnds: number[] = [];
+    const placed = sorted.map((e) => {
+      let row = rowEnds.findIndex((end) => e._pct - end >= MIN_GAP_PCT);
+      if (row === -1) {
+        row = rowEnds.length;
+        rowEnds.push(e._pct);
+      } else {
+        rowEnds[row] = e._pct;
+      }
+      return { ...e, _row: row };
+    });
+    const rows = Math.max(1, rowEnds.length);
+    return { ...lane, events: placed, rows };
+  });
+
+  // Quarter ticks across the window.
+  const ticks: Array<{ label: string; pct: number }> = [];
+  for (let y = 2026; y <= 2027; y++) {
+    for (let q = 0; q < 4; q++) {
+      const t = new Date(y, q * 3, 1).getTime();
+      if (t < start || t > end) continue;
+      ticks.push({
+        label: `Q${q + 1} ${String(y).slice(2)}`,
+        pct: ((t - start) / span) * 100,
+      });
+    }
+  }
 
   return (
     <section className="v3-section" style={{ paddingTop: 28, paddingBottom: 8 }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 14, marginBottom: 6 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 14, marginBottom: 12 }}>
         <span
           style={{
             fontFamily: "var(--mono)",
@@ -190,57 +257,136 @@ function RegsV2DeadlineGantt({
             letterSpacing: 1.6,
           }}
         >
-          LIVE TIMELINE · 2025 → 2027
+          ENFORCEMENT WINDOW · NEXT 18 MONTHS
         </span>
         <span style={{ flex: 1, height: 1, background: "var(--ink-4)" }} />
         <span
           style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 8,
             fontFamily: "var(--mono)",
             fontSize: 11,
-            color: "var(--red)",
+            color: "var(--ink-3)",
             fontWeight: 700,
-            letterSpacing: 1.6,
+            letterSpacing: 1.4,
           }}
         >
-          TODAY · {formatDate(TODAY)}
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <span style={{ width: 9, height: 9, background: "var(--emerald)", border: "1px solid var(--emerald-ink)" }} />
+            IN FORCE
+          </span>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <span style={{ width: 9, height: 9, background: "var(--paper)", border: "1px solid var(--amber-ink)" }} />
+            UPCOMING
+          </span>
         </span>
       </div>
 
-      <div className="r2-gantt">
-        <div className="r2-gantt__rule" />
-        <div className="r2-gantt__today" style={{ left: `${todayPct}%` }} />
-        {points.map((p) => {
-          const t = new Date(p.date).getTime();
-          const pct = Math.max(2, Math.min(98, ((t - start) / (end - start)) * 100));
-          const tabId = p.forId || p.id;
-          return (
-            <Fragment key={p.id}>
-              <span
-                className="r2-gantt__dot"
-                style={{ left: `${pct}%` }}
-                data-state={p.state}
-                data-active={tabId === active ? "true" : "false"}
-                onClick={() => onPick(tabId)}
-                title={`${p.label} · ${formatDate(p.date)}`}
-              />
-              <span
-                className="r2-gantt__date"
-                style={{
-                  left: `${pct}%`,
-                  top: `calc(50% - ${(p.offsetTop || -28) > 0 ? 8 : 28}px)`,
-                }}
-              >
-                {new Date(p.date).toLocaleDateString("en-US", { month: "short", year: "2-digit" })}
+      <div className="r2-tl">
+        {/* today indicator: label above the frame, scrubber line through it */}
+        <div className="r2-tl__today-rail">
+          <span
+            className="r2-tl__today-marker"
+            style={{ left: `calc(var(--tl-label-col) + var(--tl-track-pad) + (100% - var(--tl-label-col) - var(--tl-track-pad) * 2) * ${todayPct / 100})` }}
+          >
+            <span className="r2-tl__today-tag">TODAY · {formatDate(TODAY)}</span>
+          </span>
+        </div>
+
+        <div className="r2-tl__head">
+          <div className="r2-tl__head-axis">
+            {ticks.map((t) => (
+              <span key={t.label} className="r2-tl__tick" style={{ left: `${t.pct}%` }}>
+                {t.label}
               </span>
-              <span
-                className="r2-gantt__lbl"
-                style={{ left: `${pct}%`, top: `calc(50% + ${p.offsetTop ?? 18}px)` }}
-              >
-                {p.label}
-              </span>
-            </Fragment>
-          );
-        })}
+            ))}
+          </div>
+        </div>
+
+        <div className="r2-tl__body">
+          {/* vertical quarter rules behind everything */}
+          <div className="r2-tl__rules">
+            {ticks.map((t) => (
+              <span key={t.label} className="r2-tl__rule" style={{ left: `${t.pct}%` }} />
+            ))}
+            <span className="r2-tl__today-line" style={{ left: `${todayPct}%` }} />
+          </div>
+
+          {lanes.map((lane) => (
+            <div
+              key={lane.key}
+              className="r2-tl__lane"
+              data-lane={lane.key}
+              data-rows={lane.rows}
+              style={{ minHeight: 38 + lane.rows * 56 }}
+            >
+              <div className="r2-tl__lane-lbl">
+                <span className="r2-tl__lane-flag" aria-hidden />
+                <span className="r2-tl__lane-title">{lane.title}</span>
+                <span className="r2-tl__lane-count">
+                  {lane.events.length} {lane.events.length === 1 ? "law" : "laws"}
+                </span>
+              </div>
+              <div className="r2-tl__lane-track">
+                {lane.events.map((e) => {
+                  const eventTime = new Date(e.date).getTime();
+                  const live = eventTime <= today;
+                  const days = Math.round((eventTime - today) / (1000 * 60 * 60 * 24));
+                  const daysLabel = live ? null : `T+${days}d`;
+                  const anchor: "left" | "right" = e._pct >= 65 ? "right" : "left";
+                  const rowOffset = lane.rows === 1
+                    ? 50
+                    : 28 + e._row * (44 / Math.max(1, lane.rows - 1));
+                  const positionStyle: React.CSSProperties =
+                    anchor === "left"
+                      ? { left: `${e._pct}%`, top: `${rowOffset}%` }
+                      : { right: `${100 - e._pct}%`, top: `${rowOffset}%` };
+                  return (
+                    <Fragment key={e.id}>
+                      <span
+                        className="r2-tl__stem"
+                        style={{ left: `${e._pct}%`, top: `${rowOffset}%` }}
+                        data-state={live ? "live" : "soon"}
+                        aria-hidden
+                      />
+                      <button
+                        type="button"
+                        className="r2-tl__chip"
+                        data-state={live ? "live" : "soon"}
+                        data-active={e.tabId === active ? "true" : "false"}
+                        data-anchor={anchor}
+                        data-lane={lane.key}
+                        aria-pressed={e.tabId === active}
+                        style={positionStyle}
+                        onClick={() => onPick(e.tabId)}
+                        title={`${e.label} · ${formatDate(e.date)}${e.sub ? ` — ${e.sub}` : ""}`}
+                      >
+                        <span className="r2-tl__chip-mark" aria-hidden>{live ? "✓" : "◇"}</span>
+                        <span className="r2-tl__chip-text">
+                          <span className="r2-tl__chip-label">{e.label}</span>
+                          <span className="r2-tl__chip-date">
+                            <span className="r2-tl__chip-when">
+                              {new Date(e.date).toLocaleDateString("en-US", {
+                                month: "short",
+                                day: "numeric",
+                                year: "2-digit",
+                              })}
+                            </span>
+                            {e.sub && <span className="r2-tl__chip-sub">{e.sub}</span>}
+                          </span>
+                        </span>
+                        {daysLabel && (
+                          <span className="r2-tl__chip-days" aria-hidden>{daysLabel}</span>
+                        )}
+                      </button>
+                    </Fragment>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </section>
   );
