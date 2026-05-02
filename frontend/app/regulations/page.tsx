@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { HashStamp, PrototypeDisclaimer, Tick, Wordmark } from "@/components/landing/brand";
+import { V4Nav } from "@/components/landing/v4-nav";
 import {
   REGS,
   TODAY,
@@ -37,7 +38,7 @@ export default function RegulationsPage() {
 
   return (
     <div style={{ background: "var(--paper)", color: "var(--ink)", fontFamily: "var(--sans)" }}>
-      <RegsV2Nav />
+      <V4Nav />
       <RegsV2Hero />
       <RegsV2DeadlineGantt active={active} onPick={setActive} />
 
@@ -73,80 +74,6 @@ export default function RegulationsPage() {
 
       <StatuteDrawer reg={drawerReg} open={!!drawerId} onClose={() => setDrawerId(null)} />
     </div>
-  );
-}
-
-// ── Nav ────────────────────────────────────────────────────────────────
-function RegsV2Nav() {
-  const items: Array<{ l: string; h: string; active?: boolean }> = [
-    { l: "Product", h: "/" },
-    { l: "Regulations", h: "/regulations", active: true },
-    { l: "Docs", h: "#" },
-    { l: "Pricing", h: "#" },
-  ];
-  return (
-    <nav
-      className="v3-nav"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 18,
-        borderBottom: "1px solid var(--ink-4)",
-      }}
-    >
-      <Link href="/" style={{ textDecoration: "none", color: "inherit" }}>
-        <Wordmark size={17} />
-      </Link>
-      <span style={{ flex: 1 }} />
-      <div className="v3-nav__links">
-        {items.map((it) => (
-          <Link
-            key={it.l}
-            href={it.h}
-            style={{
-              fontSize: 13.5,
-              textDecoration: "none",
-              fontWeight: it.active ? 700 : 500,
-              color: it.active ? "var(--ink)" : "var(--ink-2)",
-              borderBottom: it.active ? "1px solid var(--ink)" : "none",
-              paddingBottom: 2,
-            }}
-          >
-            {it.l}
-          </Link>
-        ))}
-        <span style={{ width: 8 }} />
-        <Link
-          href="/login"
-          style={{
-            fontSize: 13.5,
-            color: "var(--ink-2)",
-            textDecoration: "none",
-            fontWeight: 500,
-          }}
-        >
-          Sign in
-        </Link>
-      </div>
-      <Link
-        href="/register"
-        style={{
-          background: "var(--ink)",
-          color: "var(--paper)",
-          border: "1px solid var(--ink)",
-          padding: "9px 16px",
-          fontSize: 13,
-          fontWeight: 600,
-          fontFamily: "var(--sans)",
-          cursor: "pointer",
-          letterSpacing: "-0.005em",
-          textDecoration: "none",
-          display: "inline-block",
-        }}
-      >
-        Get started →
-      </Link>
-    </nav>
   );
 }
 

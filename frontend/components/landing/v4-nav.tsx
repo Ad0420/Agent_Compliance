@@ -1,12 +1,13 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useState, type CSSProperties } from "react";
 import { Wordmark } from "./brand";
 
-const NAV_ITEMS: Array<[string, boolean, string]> = [
-  ["Product", true, "/"],
-  ["Regulations", false, "/regulations"],
+const NAV_ITEMS: Array<[string, string]> = [
+  ["Product", "/"],
+  ["Regulations", "/regulations"],
 ];
 
 const linkStyle = (hot: boolean): CSSProperties => ({
@@ -34,6 +35,7 @@ const ctaStyle: CSSProperties = {
 
 export function V4Nav() {
   const [open, setOpen] = useState(false);
+  const pathname = usePathname();
 
   return (
     <nav
@@ -55,8 +57,8 @@ export function V4Nav() {
       <span style={{ flex: 1 }} />
 
       <div className="v4-nav-desktop">
-        {NAV_ITEMS.map(([label, hot, href]) => (
-          <Link key={label} href={href} style={linkStyle(hot)}>
+        {NAV_ITEMS.map(([label, href]) => (
+          <Link key={label} href={href} style={linkStyle(pathname === href)}>
             {label}
           </Link>
         ))}
@@ -122,11 +124,11 @@ export function V4Nav() {
 
       {open && (
         <div className="v4-nav-drawer">
-          {NAV_ITEMS.map(([label, hot, href]) => (
+          {NAV_ITEMS.map(([label, href]) => (
             <Link
               key={label}
               href={href}
-              style={{ ...linkStyle(hot), fontSize: 16, padding: "8px 0" }}
+              style={{ ...linkStyle(pathname === href), fontSize: 16, padding: "8px 0" }}
               onClick={() => setOpen(false)}
             >
               {label}
