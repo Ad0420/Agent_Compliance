@@ -758,6 +758,312 @@
 /* legacy compatibility */
 .r2-gantt { display: none; }
 
+/* ── Skeleton (avoids SSR/CSR mismatch while we wait for client today) ── */
+.r2-tl-skeleton {
+  margin-top: 32px;
+  height: 280px;
+  border: 1px solid var(--ink-4);
+  background: var(--paper-2);
+}
+
+/* ── Mobile chronological list (hidden on desktop) ───────────────────── */
+.r2-tl-list { display: none; }
+
+@media (max-width: 700px) {
+  .r2-tl { display: none; }
+  .r2-tl-skeleton { height: 480px; }
+  .r2-tl-list {
+    display: block;
+    margin: 16px 0 0;
+    padding: 0;
+    list-style: none;
+    border: 1px solid var(--ink);
+    background: var(--paper-2);
+    position: relative;
+  }
+  /* continuous "spine" runs the full height behind every lane bar so the list
+     reads as a timeline rather than a stack of cards */
+  .r2-tl-list::before {
+    content: "";
+    position: absolute;
+    left: 16px;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: var(--ink-4);
+    pointer-events: none;
+  }
+  .r2-tl-list__group {
+    padding: 0;
+    list-style: none;
+    position: relative;
+  }
+  .r2-tl-list__group + .r2-tl-list__group { border-top: none; }
+  .r2-tl-list__group-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 14px 16px 8px 36px;
+    background: transparent;
+  }
+  .r2-tl-list__group-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 1.6px;
+    text-transform: uppercase;
+    color: var(--ink-3);
+  }
+  .r2-tl-list__group-count {
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--ink-2);
+  }
+  .r2-tl-list__items {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .r2-tl-list__items > li + li { border-top: 1px dashed var(--ink-4); }
+  .r2-tl-list__item {
+    display: grid;
+    grid-template-columns: 32px 1fr auto;
+    column-gap: 12px;
+    width: 100%;
+    min-height: 56px;
+    text-align: left;
+    background: transparent;
+    border: 0;
+    padding: 14px 14px 14px 0;
+    cursor: pointer;
+    font-family: var(--sans);
+    color: var(--ink);
+    align-items: center;
+    transition: background 120ms ease;
+    position: relative;
+  }
+  .r2-tl-list__item:hover { background: rgba(20,18,14,.025); }
+  .r2-tl-list__item { outline: none; -webkit-tap-highlight-color: transparent; }
+  .r2-tl-list__item:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: -2px;
+  }
+  /* engraved treatment for past (in-force) rows: deeper desaturation +
+     inset top shadow so they read as "behind us" */
+  .r2-tl-list__item[data-state="live"] {
+    background: rgba(15,14,10,.05);
+    box-shadow: inset 0 1px 0 rgba(15,14,10,.08);
+  }
+  .r2-tl-list__item[data-state="live"] .r2-tl-list__label,
+  .r2-tl-list__item[data-state="live"] .r2-tl-list__when {
+    color: var(--ink-2);
+  }
+  .r2-tl-list__item[data-active="true"] {
+    background: var(--paper);
+  }
+  .r2-tl-list__item[data-state="live"][data-active="true"] {
+    background: var(--paper);
+  }
+  .r2-tl-list__item[data-active="true"] .r2-tl-list__label {
+    color: var(--ink);
+  }
+  .r2-tl-list__item[data-active="true"]::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 3px;
+    background: var(--ink);
+  }
+  /* lane "node" — shape encodes horizon: filled square = in force,
+     hollow diamond = upcoming-near (≤90d), hollow ring = upcoming-far (>90d) */
+  .r2-tl-list__lane {
+    width: 14px;
+    height: 14px;
+    margin-left: 9px;       /* centers on the 16px spine */
+    background: var(--paper-2);
+    border: 1.5px solid var(--ink-3);
+    align-self: center;
+    z-index: 1;
+    transition: transform 140ms ease;
+  }
+  /* in-force: filled square in jurisdiction color */
+  .r2-tl-list__item[data-state="live"] .r2-tl-list__lane {
+    border-color: var(--emerald-ink);
+  }
+  .r2-tl-list__item[data-state="live"][data-lane="eu"] .r2-tl-list__lane { background: #11457a; }
+  .r2-tl-list__item[data-state="live"][data-lane="fed"] .r2-tl-list__lane { background: #8a2723; }
+  .r2-tl-list__item[data-state="live"][data-lane="state"] .r2-tl-list__lane { background: #4a4036; }
+  /* upcoming-near: hollow diamond (rotated square) in lane color outline */
+  .r2-tl-list__item[data-state="soon"][data-horizon="near"] .r2-tl-list__lane {
+    transform: rotate(45deg);
+    background: var(--paper-2);
+    border-color: var(--amber-ink);
+  }
+  .r2-tl-list__item[data-state="soon"][data-horizon="near"][data-lane="eu"] .r2-tl-list__lane { border-color: #11457a; }
+  .r2-tl-list__item[data-state="soon"][data-horizon="near"][data-lane="fed"] .r2-tl-list__lane { border-color: #8a2723; }
+  .r2-tl-list__item[data-state="soon"][data-horizon="near"][data-lane="state"] .r2-tl-list__lane { border-color: #4a4036; }
+  /* upcoming-far: hollow ring, slightly smaller + thinner stroke to read
+     as "further out on the horizon" than the diamond */
+  .r2-tl-list__item[data-state="soon"][data-horizon="far"] .r2-tl-list__lane {
+    border-radius: 50%;
+    width: 12px;
+    height: 12px;
+    margin-left: 10px;
+    border-width: 1px;
+    background: var(--paper-2);
+    border-color: var(--ink-3);
+    opacity: 0.85;
+  }
+  .r2-tl-list__item[data-state="soon"][data-horizon="far"][data-lane="eu"] .r2-tl-list__lane { border-color: #11457a; }
+  .r2-tl-list__item[data-state="soon"][data-horizon="far"][data-lane="fed"] .r2-tl-list__lane { border-color: #8a2723; }
+  .r2-tl-list__item[data-state="soon"][data-horizon="far"][data-lane="state"] .r2-tl-list__lane { border-color: #4a4036; }
+  /* active: enlarge the node, dark outer halo */
+  .r2-tl-list__item[data-active="true"] .r2-tl-list__lane {
+    transform: scale(1.25);
+    box-shadow: 0 0 0 3px var(--paper-2), 0 0 0 4px var(--ink);
+  }
+  .r2-tl-list__item[data-state="soon"][data-horizon="near"][data-active="true"] .r2-tl-list__lane {
+    transform: rotate(45deg) scale(1.25);
+  }
+  .r2-tl-list__main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .r2-tl-list__top {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  .r2-tl-list__mark { display: none; }
+  .r2-tl-list__label {
+    font-size: 14.5px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    color: var(--ink);
+    min-width: 0;
+    flex-shrink: 1;
+    overflow-wrap: anywhere;
+    line-height: 1.2;
+  }
+  .r2-tl-list__juris { flex-shrink: 0; align-self: center; }
+  .r2-tl-list__juris {
+    font-family: var(--mono);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 1.2px;
+    color: var(--ink-3);
+    text-transform: uppercase;
+    padding: 2px 6px 1px;
+    border: 1px solid var(--ink-4);
+    background: var(--paper);
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .r2-tl-list__item[data-lane="eu"] .r2-tl-list__juris {
+    color: #11457a;
+    border-color: #11457a;
+  }
+  .r2-tl-list__item[data-lane="fed"] .r2-tl-list__juris {
+    color: #8a2723;
+    border-color: #8a2723;
+  }
+  .r2-tl-list__item[data-lane="state"] .r2-tl-list__juris {
+    color: #4a4036;
+    border-color: #4a4036;
+  }
+  .r2-tl-list__bottom {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .r2-tl-list__when {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--ink-2);
+    font-weight: 600;
+    letter-spacing: 0.2px;
+  }
+  .r2-tl-list__sub {
+    font-family: var(--sans);
+    font-size: 12.5px;
+    color: var(--ink-3);
+    font-style: italic;
+  }
+  /* date+countdown stacked column on the right so they read as a single rail */
+  .r2-tl-list__age {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    padding: 4px 8px 3px;
+    background: transparent;
+    border: 1px solid currentColor;
+    line-height: 1;
+    white-space: nowrap;
+    align-self: center;
+    text-align: right;
+  }
+  .r2-tl-list__item[data-state="live"] .r2-tl-list__age {
+    color: var(--emerald-ink);
+    border-color: var(--emerald-ink);
+  }
+  .r2-tl-list__item[data-state="soon"] .r2-tl-list__age {
+    color: var(--amber-ink);
+    border-color: var(--amber-ink);
+  }
+  /* Far rows: fade the T+ pill so the far horizon registers in the chip
+     too, not just in the node. */
+  .r2-tl-list__item[data-horizon="far"] .r2-tl-list__age {
+    opacity: 0.6;
+    border-style: dashed;
+    font-weight: 600;
+  }
+  .r2-tl-list__item[data-horizon="far"] .r2-tl-list__label,
+  .r2-tl-list__item[data-horizon="far"] .r2-tl-list__when,
+  .r2-tl-list__item[data-horizon="far"] .r2-tl-list__sub {
+    opacity: 0.78;
+  }
+  /* TODAY divider — softened from a stop-sign red pill into an editorial
+     marker that reads as a passing point in the timeline */
+  .r2-tl-list__today {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 16px 14px 8px;
+    background: var(--paper);
+    border-top: 1px solid var(--ink);
+    border-bottom: 1px solid var(--ink);
+    position: relative;
+    z-index: 2;
+  }
+  .r2-tl-list__today-rule {
+    flex: 1;
+    height: 0;
+    border-top: 1px dashed var(--red);
+    opacity: 0.7;
+  }
+  .r2-tl-list__today-pill {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 1.4px;
+    color: var(--red);
+    background: var(--paper);
+    padding: 4px 8px 3px;
+    line-height: 1;
+    white-space: nowrap;
+    border: 1px solid var(--red);
+  }
+}
+
 /* ── Risk calculator ────────────────────────────────────────────────── */
 .r2-calc {
   border: 1px solid var(--ink);

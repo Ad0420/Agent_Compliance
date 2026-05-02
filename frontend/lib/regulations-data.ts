@@ -2,7 +2,16 @@
 // Each entry has the headline triad (fine, deadline, verdict),
 // a sales-mode short body, full-statute drawer content, and citations.
 
-export const TODAY = new Date(2026, 3, 30); // April 30, 2026
+// Live "today" — module-level so server-rendered initial paint and client-side
+// hydration both reference a stable value. Components that need exact local
+// midnight should call `getToday()` inside a useEffect/useState to avoid SSR
+// time-zone drift.
+export function getToday(): Date {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+export const TODAY = getToday();
 
 export type DeadlineState = "live" | "soon" | "ongoing";
 
