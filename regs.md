@@ -337,3 +337,6 @@ FUTURE/MOAT IDEA
 
 Vera's equivalent moat insight: every AI regulation is asking variations of the same three questions above. Build the runtime substrate once — capture every agent decision with cryptographic integrity, enforce policy with full justification trails, prove human oversight where required — then translate that substrate into whatever evidentiary format each regulation demands. EU AI Act conformity package, HIPAA audit log export, FINRA Rule 17a-4 WORM archive, ISO 42001 management evidence, all from the same underlying data.
 That's the architecture. Capture once, translate many. The translation layer is where the moat lives because it has to be built regulation by regulation, validated by attorneys, accepted by auditors, and updated continuously as guidance evolves. The substrate is replicable. The translation library is the thing that takes years.
+
+
+After we build the YC app etc, we can go to an attorney firm and ask them to validate the priduct and make sure it fits well with what we are claiming and what the laws end up mandating. 
