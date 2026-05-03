@@ -331,3 +331,9 @@ Change "tamper-proof" → "tamper-evident"
 Drop "FRE 901/902" everywhere. its not accurate
 Drop "Verisk" from timeline
 Fix "SEC 17a-4 + FINRA Q4 2026" rephrase to "Ongoing · FINRA Notice 24-09 + 2026 oversight report"
+
+
+FUTURE/MOAT IDEA
+
+Vera's equivalent moat insight: every AI regulation is asking variations of the same three questions above. Build the runtime substrate once — capture every agent decision with cryptographic integrity, enforce policy with full justification trails, prove human oversight where required — then translate that substrate into whatever evidentiary format each regulation demands. EU AI Act conformity package, HIPAA audit log export, FINRA Rule 17a-4 WORM archive, ISO 42001 management evidence, all from the same underlying data.
+That's the architecture. Capture once, translate many. The translation layer is where the moat lives because it has to be built regulation by regulation, validated by attorneys, accepted by auditors, and updated continuously as guidance evolves. The substrate is replicable. The translation library is the thing that takes years.
