@@ -19,6 +19,17 @@ export type Fine = { big: string; sub: string; per?: string };
 
 export type ThermoRow = { lbl: string; val: string; tier: "top" | "mid" | "low"; pct: number };
 
+export type Tier = "I" | "II" | "III";
+
+export type ScalePayload =
+  | { kind: "tiers"; rows: Array<{ lbl: string; val: string; tier: "top" | "mid" | "low"; pct: number }> }
+  | { kind: "multiplier"; per: number; unit: "$/violation" | "$/consumer"; defaultCount: number; label: string }
+  | { kind: "daily"; perDay: number; marks: number[]; label: string }
+  | { kind: "examples"; items: Array<{ name: string; year: string; fine: string }> }
+  | { kind: "ladder"; steps: Array<{ label: string; note?: string }> };
+
+export type ReqItem = { label: string; ref?: string };
+
 export type Reg = {
   id: string;
   num: string;
@@ -52,6 +63,17 @@ export type Reg = {
   citations: Record<string, string>;
   exposure: number;
   fineFlat?: number;
+  // Wave 2 redesign — additive fields. Old fields above remain populated until
+  // consumers migrate in subsequent PRs.
+  tier: Tier;
+  tierLabel: string;
+  scopeTrigger: string;
+  oneliner: string;
+  footnote: string;
+  beforeDeployment: ReqItem[];
+  duringDeployment: ReqItem[];
+  scale: ScalePayload;
+  source: { citation: string; lastVerified: string };
 };
 
 export function daysBetween(target: string | Date): number {
@@ -161,6 +183,36 @@ export const REGS: Reg[] = [
         "Serious incidents must be reported in tiered windows: 2 days for widespread infringement, 10 for serious harm, 15 for other reportable incidents.",
     },
     exposure: 0.07,
+    tier: "I",
+    tierLabel: "TIER I · UNCAPPED EXPOSURE",
+    scopeTrigger: "Output reaches a user in the EU.",
+    oneliner:
+      "€35M or 7% of worldwide turnover for prohibited practices. Applies to any AI provider whose output reaches a user in the EU, regardless of where the company is based.",
+    footnote:
+      "August 2, 2026 is the binding date for high-risk obligations. The November 2025 Digital Omnibus proposal could link this to harmonized standards readiness, but the date has not moved.",
+    beforeDeployment: [
+      { label: "Risk management system", ref: "Art. 9" },
+      { label: "Data governance", ref: "Art. 10" },
+      { label: "Technical documentation per Annex IV", ref: "Art. 11" },
+      { label: "Transparency mechanisms designed", ref: "Art. 13" },
+      { label: "Human oversight measures designed", ref: "Art. 14" },
+      { label: "Accuracy, robustness, cybersecurity validated", ref: "Art. 15" },
+      { label: "CE marking and EU database registration", ref: "Art. 71" },
+    ],
+    duringDeployment: [
+      { label: "Automatic logging of operation", ref: "Art. 12" },
+      { label: "Post-market monitoring", ref: "Art. 72" },
+      { label: "Serious incident reporting · 2 / 10 / 15-day windows", ref: "Art. 73" },
+    ],
+    scale: {
+      kind: "tiers",
+      rows: [
+        { lbl: "Prohibited practices (Art. 5)", val: "€35M / 7%", tier: "top", pct: 100 },
+        { lbl: "High-risk obligations", val: "€15M / 3%", tier: "mid", pct: 43 },
+        { lbl: "Misleading information", val: "€7.5M / 1%", tier: "low", pct: 21 },
+      ],
+    },
+    source: { citation: "Regulation (EU) 2024/1689", lastVerified: "2026-04-30" },
   },
   {
     id: "co",
@@ -223,6 +275,35 @@ export const REGS: Reg[] = [
         "A decision with material legal or similarly significant effects on a consumer, including offers of credit, employment, insurance, healthcare, or housing.",
     },
     exposure: 0,
+    tier: "I",
+    tierLabel: "TIER I · UNCAPPED EXPOSURE",
+    scopeTrigger:
+      "AI is used to make or substantially influence a consequential decision about a Colorado consumer.",
+    oneliner:
+      "Targets algorithmic discrimination in consequential decisions across education, employment, financial services, healthcare, housing, insurance, government, and legal services. Enforced exclusively by the Colorado AG via the Consumer Protection Act, with a 60-day cure period.",
+    footnote:
+      "Pushed from February 1 to June 30, 2026 by SB 25B-004 (signed August 28, 2025). The delay is final.",
+    beforeDeployment: [
+      { label: "Risk management policy adopted (NIST AI RMF or ISO/IEC 42001 satisfy)" },
+      { label: "Initial impact assessment for the high-risk AI system" },
+      { label: "Developers: documentation, intended-use statements, impact-assessment artifacts for deployers" },
+      { label: "Developers: public statement summarizing high-risk systems offered" },
+    ],
+    duringDeployment: [
+      { label: "Reasonable care to prevent algorithmic discrimination" },
+      { label: "Annual impact assessments + within 90 days of substantial modification" },
+      { label: "Notify consumers when AI is used in consequential decisions" },
+      { label: "Right to appeal with human review where technically feasible" },
+      { label: "Disclose discovered algorithmic discrimination to the AG within 90 days" },
+    ],
+    scale: {
+      kind: "multiplier",
+      per: 20000,
+      unit: "$/consumer",
+      defaultCount: 1000,
+      label: "$20,000 per violation per consumer — scales linearly with affected consumers",
+    },
+    source: { citation: "Colorado SB 24-205 (Anti-Discrimination in AI Law)", lastVerified: "2026-04-30" },
   },
   {
     id: "tx",
@@ -280,6 +361,31 @@ export const REGS: Reg[] = [
     },
     exposure: 0,
     fineFlat: 200000,
+    tier: "II",
+    tierLabel: "TIER II · CAPPED EXPOSURE",
+    scopeTrigger: "AI is developed, deployed, or marketed in Texas.",
+    oneliner:
+      "$200,000 per violation, Texas AG enforcement, 60-day cure period. Prohibited-use clauses apply to any operator. Most operational obligations are limited to government agencies and healthcare providers.",
+    footnote:
+      "Compliance with the NIST AI Risk Management Framework provides an affirmative defense. Private-sector employers are not required to run impact assessments under TRAIGA.",
+    beforeDeployment: [
+      { label: "Confirm AI is not designed to incite self-harm, violence, or criminal activity" },
+      { label: "Confirm AI is not designed for unlawful deepfakes or impersonating minors in sexual contexts" },
+      { label: "Confirm AI is not deployed with intent to discriminate against protected classes" },
+    ],
+    duringDeployment: [
+      { label: "Government agencies: disclose AI use in consumer interactions" },
+      { label: "Healthcare providers: disclose AI use in patient treatment" },
+      { label: "Maintain NIST AI RMF compliance to preserve affirmative defense" },
+    ],
+    scale: {
+      kind: "multiplier",
+      per: 200000,
+      unit: "$/violation",
+      defaultCount: 5,
+      label: "$200,000 per discrete violation",
+    },
+    source: { citation: "Texas Responsible AI Governance Act (HB 149)", lastVerified: "2026-04-30" },
   },
   {
     id: "ca",
@@ -351,6 +457,36 @@ export const REGS: Reg[] = [
     },
     exposure: 0.005,
     fineFlat: 5000 * 365,
+    tier: "I",
+    tierLabel: "TIER I · UNCAPPED EXPOSURE",
+    scopeTrigger: "GenAI service is offered to California users (SB 942: more than 1M monthly users).",
+    oneliner:
+      "$5,000 per violation per day under SB 942 for GenAI providers with over one million monthly California users. Three additional statutes in force: AB 316 (autonomy defense closed), AB 2013 (training-data transparency), SB 53 (frontier models).",
+    footnote:
+      "SB 942 was delayed from January 1 to August 2, 2026 by AB 853, deliberately aligning the effective date with the EU AI Act.",
+    beforeDeployment: [
+      { label: "AB 2013: publish training-data summaries, retroactive to January 1, 2022" },
+      { label: "SB 942: free, publicly accessible AI detection tool" },
+      { label: "SB 942: technical infrastructure for manifest and latent disclosures" },
+      { label: "AB 489: ensure AI does not claim a healthcare license" },
+      { label: "SB 53: frontier-model developer obligations" },
+    ],
+    duringDeployment: [
+      { label: "SB 942: apply manifest disclosures (visible labels) to GenAI output" },
+      { label: "SB 942: apply latent disclosures (embedded metadata) to GenAI output" },
+      { label: "SB 243: companion chatbot disclosures, suicide/self-harm safety, minor protections" },
+      { label: "AB 316: do not assert AI autonomy as a defense in civil actions" },
+    ],
+    scale: {
+      kind: "daily",
+      perDay: 5000,
+      marks: [1, 30, 90, 365],
+      label: "SB 942 — $5,000 per violation per day, compounds without statutory cap",
+    },
+    source: {
+      citation: "California SB 942 (CAITA), AB 316, AB 2013, AB 853, AB 489, SB 53, SB 243",
+      lastVerified: "2026-04-30",
+    },
   },
   {
     id: "finra",
@@ -416,6 +552,38 @@ export const REGS: Reg[] = [
       "Notice 24-09": "Issued June 27, 2024. Confirms existing FINRA rules apply to AI; does not create new requirements.",
     },
     exposure: 0,
+    tier: "III",
+    tierLabel: "TIER III · PROCEDURAL EXPOSURE",
+    scopeTrigger: "FINRA member firm (broker-dealer) using AI in any operational role.",
+    oneliner:
+      "No AI-specific rules. Existing technology-neutral rules apply: Rule 3110 (supervision), Rule 2210 (communications), Rule 4511 (books and records). The 2026 Annual Regulatory Oversight Report flags agentic AI as an emerging supervisory concern.",
+    footnote:
+      "Notice 24-09 (June 27, 2024) explicitly states it does not create new legal or regulatory requirements. Examiners measure AI use against existing supervision and recordkeeping rules.",
+    beforeDeployment: [
+      { label: "Establish a supervisory system addressing AI use, model risk, and data integrity", ref: "Rule 3110" },
+      { label: "Define clear limits on agent scope and authority" },
+      { label: "Build logging and audit capabilities for AI activity" },
+    ],
+    duringDeployment: [
+      { label: "Ensure AI-generated communications meet content standards", ref: "Rule 2210" },
+      { label: "Retain AI-related records", ref: "Rule 4511" },
+      { label: "Maintain human-in-the-loop review for consequential outputs" },
+    ],
+    scale: {
+      kind: "examples",
+      // TODO: Replace with verified recent FINRA enforcement actions before merging Wave 2.
+      // These are illustrative themes drawn from FINRA 2024 enforcement categories;
+      // exact case data should be sourced from FINRA's public enforcement actions database.
+      items: [
+        { name: "Supervision · failure to address electronic comms", year: "2024", fine: "see FINRA enforcement DB" },
+        { name: "Communications · misleading or non-compliant content", year: "2024", fine: "see FINRA enforcement DB" },
+        { name: "Books & records · retention failures", year: "2024", fine: "see FINRA enforcement DB" },
+      ],
+    },
+    source: {
+      citation: "FINRA Regulatory Notice 24-09 + 2026 Annual Regulatory Oversight Report",
+      lastVerified: "2026-04-30",
+    },
   },
   {
     id: "hipaa",
@@ -491,6 +659,32 @@ export const REGS: Reg[] = [
     },
     exposure: 0,
     fineFlat: 2100000,
+    tier: "II",
+    tierLabel: "TIER II · CAPPED EXPOSURE",
+    scopeTrigger:
+      "Covered entity or business associate handling Protected Health Information; AI vendors handling PHI are business associates.",
+    oneliner:
+      "Tiered civil penalties up to approximately $2.1M per violation category per year, adjusted annually for inflation. Criminal penalties available for willful violations. The Security Rule has been in force since 2003; a major update is expected to finalize around May 2026.",
+    footnote:
+      "If finalized as proposed, the update eliminates the addressable / required distinction, mandates encryption of ePHI at rest and in transit, mandates MFA for systems accessing PHI, and requires annual compliance audits.",
+    beforeDeployment: [
+      { label: "Risk analysis before deploying AI that touches PHI (OCR Dec 2023 guidance)" },
+      { label: "Business Associate Agreement signed with each AI vendor handling PHI" },
+      { label: "Workforce training on AI-specific risks" },
+    ],
+    duringDeployment: [
+      { label: "Audit logs retained for 6 years", ref: "§164.312(b)" },
+      { label: "Information system activity review", ref: "§164.308(a)(1)(ii)(D)" },
+      { label: "Treat PHI used in AI training as PHI" },
+    ],
+    scale: {
+      kind: "tiers",
+      rows: [
+        { lbl: "Civil penalty cap (annual, per category)", val: "$2.1M", tier: "top", pct: 100 },
+        { lbl: "Criminal exposure (willful)", val: "case-by-case", tier: "mid", pct: 60 },
+      ],
+    },
+    source: { citation: "45 C.F.R. Parts 160, 162, 164", lastVerified: "2026-04-30" },
   },
   {
     id: "fda",
@@ -563,5 +757,38 @@ export const REGS: Reg[] = [
       QMSR: "Quality Management System Regulation. Replaces 21 CFR Part 820 and aligns with ISO 13485.",
     },
     exposure: 0,
+    tier: "III",
+    tierLabel: "TIER III · PROCEDURAL EXPOSURE",
+    scopeTrigger: "AI-enabled medical device that meets the FDA's Software as a Medical Device (SaMD) definition.",
+    oneliner:
+      "QMSR took effect February 2, 2026, replacing 21 CFR Part 820 and aligning with ISO 13485. Enforcement consequences include warning letters, Form 483 observations, recalls, import bans, civil money penalties, and criminal prosecution. Over 1,350 AI-enabled medical devices have been authorized as of early 2026.",
+    footnote:
+      "PCCP (Predetermined Change Control Plan) lets manufacturers pre-authorize specified AI model modifications without filing a new submission. The Lifecycle Management draft guidance is on track to finalize.",
+    beforeDeployment: [
+      { label: "PCCP filed: Description of Modifications, Modification Protocol, Impact Assessment" },
+      { label: "QMSR-aligned Quality Management System established" },
+      { label: "Lifecycle: model description, data lineage, performance tied to claims" },
+      { label: "Lifecycle: bias analysis and mitigation" },
+      { label: "Lifecycle: human-AI workflow documentation" },
+    ],
+    duringDeployment: [
+      { label: "Lifecycle: post-market performance monitoring" },
+      { label: "Lifecycle: PCCP execution for model updates" },
+    ],
+    scale: {
+      kind: "ladder",
+      steps: [
+        { label: "Form 483 observation", note: "Inspection finding requiring response" },
+        { label: "Warning letter", note: "Public, formal" },
+        { label: "Recall", note: "Product removed from market" },
+        { label: "Import ban / detention", note: "Foreign-manufactured products blocked" },
+        { label: "Civil money penalty", note: "Administrative fine" },
+        { label: "Criminal prosecution", note: "Willful violations" },
+      ],
+    },
+    source: {
+      citation: "FDA QMSR (supersedes 21 CFR Part 820); PCCP Final Guidance (Dec 2024)",
+      lastVerified: "2026-04-30",
+    },
   },
 ];
