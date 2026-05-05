@@ -1030,7 +1030,7 @@ function StatuteDrawer({
         {reg && (
           <Fragment>
             <div className="r2-drawer__head">
-              <span className="r2-drawer__head-num">FOLIO {reg.num} · CASE FILE</span>
+              <span className="r2-drawer__head-num">§ {reg.num} · CASE FILE</span>
               <span className="r2-drawer__head-title">{reg.label}</span>
               <button className="r2-drawer__close" onClick={onClose}>
                 Close · Esc
@@ -1128,6 +1128,28 @@ function StatuteDrawer({
                     }}
                   >
                     {reg.statute.nuance}
+                  </p>
+                </div>
+              )}
+              {reg.citations && Object.keys(reg.citations).length > 0 && (
+                <div className="r2-drawer__section">
+                  <span className="r2-drawer__section-lbl">§ 07 · definitions</span>
+                  <dl className="r2-drawer__defs">
+                    {Object.entries(reg.citations).map(([term, body]) => (
+                      <Fragment key={term}>
+                        <dt>{term}</dt>
+                        <dd>{body}</dd>
+                      </Fragment>
+                    ))}
+                  </dl>
+                </div>
+              )}
+              {reg.source && (
+                <div className="r2-drawer__section">
+                  <span className="r2-drawer__section-lbl">§ 08 · sources</span>
+                  <p className="r2-drawer__source">{reg.source.citation}</p>
+                  <p className="r2-drawer__source-meta">
+                    last verified {formatDate(reg.source.lastVerified)}
                   </p>
                 </div>
               )}
