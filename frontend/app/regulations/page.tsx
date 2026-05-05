@@ -13,7 +13,6 @@ import {
   getToday,
   type DeadlineInfo,
   type Reg,
-  type ThermoRow,
 } from "@/lib/regulations-data";
 
 function useToday(): Date | null {
@@ -820,15 +819,6 @@ function DossierCard({ reg, onOpen }: { reg: Reg; onOpen: () => void }) {
           <div className="r2-card-v2-scale-slot">
             <Scale payload={reg.scale} />
           </div>
-
-          {reg.thermo && (
-            <div className="r2-card-v2-thermo-fallback">
-              <span className="r2-triad__lbl" style={{ marginBottom: 12, display: "block" }}>
-                Penalty thermometer
-              </span>
-              <PenaltyThermometer rows={reg.thermo} />
-            </div>
-          )}
         </div>
       </div>
 
@@ -841,34 +831,6 @@ function DossierCard({ reg, onOpen }: { reg: Reg; onOpen: () => void }) {
           Open the case file
         </button>
       </div>
-    </div>
-  );
-}
-
-function PenaltyThermometer({ rows }: { rows: ThermoRow[] }) {
-  return (
-    <div className="r2-thermo">
-      {rows.map((r, i) => (
-        <div key={i} className="r2-thermo__group">
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "baseline",
-              gap: 12,
-            }}
-          >
-            <span className="r2-thermo__lbl">{r.lbl}</span>
-            <span className="r2-thermo__val">{r.val}</span>
-          </div>
-          <div className="r2-thermo__bar">
-            <div
-              className={`r2-thermo__fill r2-thermo__fill--${r.tier}`}
-              style={{ width: `${r.pct}%` }}
-            />
-          </div>
-        </div>
-      ))}
     </div>
   );
 }
