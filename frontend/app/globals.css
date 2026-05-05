@@ -2166,3 +2166,29 @@
   text-transform: uppercase;
   margin: 0;
 }
+
+/* ── PR 4: tabs v2 + microtypography ─────────────────────────── */
+.r2-tab__worst {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  font-weight: 700;
+  color: var(--ink);
+  margin-top: 4px;
+  line-height: 1.3;
+}
+.r2-tab[data-tier="I"]   .r2-tab__worst { color: var(--red); }
+.r2-tab[data-tier="II"]  .r2-tab__worst { color: var(--amber-ink); }
+.r2-tab[data-tier="III"] .r2-tab__worst { color: var(--ink-2); }
+
+/* When tab is active (inverted ink background), keep tier hue legible. */
+.r2-tab[data-active="true"][data-tier="I"]   .r2-tab__worst { color: #ff8a7c; }
+.r2-tab[data-active="true"][data-tier="II"]  .r2-tab__worst { color: #ffd277; }
+.r2-tab[data-active="true"][data-tier="III"] .r2-tab__worst { color: rgba(243,239,231,.85); }
+
+/* Microtypography overrides: no italic on tabs, mono on state + worst,
+   tighter sub letter-spacing. */
+.r2-tab, .r2-tab * { font-style: normal; }
+.r2-tab__sub { letter-spacing: 0.4px; text-transform: lowercase; }
+.r2-tab__state { font-family: var(--mono); }
