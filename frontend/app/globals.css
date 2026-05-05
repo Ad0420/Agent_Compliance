@@ -1895,3 +1895,238 @@
     display: flex;
   }
 }
+
+/* ── PR 2: dossier card v2 ────────────────────────────────────────── */
+/* The --red token is already declared in :root above (#a82a1d) and is
+   reused here for the TIER I strip; no redeclaration to avoid conflicts. */
+
+/* Tier strip — full-width colored bar above the card head. */
+.r2-card-v2-tier-strip {
+  display: block;
+  width: 100%;
+  padding: 11px 32px;
+  border-bottom: 1px solid var(--ink);
+  text-align: left;
+}
+.r2-card-v2-tier-strip[data-tier="i"]   { background: var(--red);     color: var(--paper); }
+.r2-card-v2-tier-strip[data-tier="ii"]  { background: var(--amber);   color: var(--paper); }
+.r2-card-v2-tier-strip[data-tier="iii"] { background: var(--emerald); color: var(--paper); }
+.r2-card-v2-tier-strip__label {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+}
+@media (max-width: 760px) {
+  .r2-card-v2-tier-strip { padding: 10px 20px; }
+  .r2-card-v2-tier-strip__label { font-size: 10.5px; letter-spacing: 1.4px; }
+}
+
+/* Head row — keep underlying r2-card__head grid but tighten the num column. */
+.r2-card-v2-head { grid-template-columns: 56px 1fr; }
+@media (max-width: 760px) { .r2-card-v2-head { grid-template-columns: 48px 1fr; } }
+.r2-card-v2-num { letter-spacing: 1.2px; }
+
+/* Verdict bar — three horizontal slots replacing the old triad. */
+.r2-card-v2-verdict-bar {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr 1.4fr;
+  border-bottom: 1px solid var(--ink);
+  background: var(--paper);
+}
+.r2-card-v2-verdict-bar__cell {
+  padding: 22px 28px;
+  border-right: 1px solid var(--ink-4);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.r2-card-v2-verdict-bar__cell:last-child { border-right: none; }
+@media (max-width: 760px) {
+  .r2-card-v2-verdict-bar { grid-template-columns: 1fr; }
+  .r2-card-v2-verdict-bar__cell {
+    border-right: none;
+    border-bottom: 1px solid var(--ink-4);
+    padding: 18px 20px;
+  }
+  .r2-card-v2-verdict-bar__cell:last-child { border-bottom: none; }
+}
+
+/* Status pill (left slot) */
+.r2-card-v2-status__big {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: var(--ink);
+  line-height: 1.2;
+}
+.r2-card-v2-status__big[data-state="live"] { color: var(--emerald-ink); }
+.r2-card-v2-status__big[data-state="soon"] { color: var(--amber-ink); }
+.r2-card-v2-status__sub {
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  color: var(--ink-2);
+}
+
+/* Fine slot (center) */
+.r2-card-v2-fine__big {
+  font-family: var(--sans);
+  font-weight: 700;
+  font-size: clamp(34px, 4.4vw, 48px);
+  letter-spacing: -0.035em;
+  line-height: 1;
+  color: var(--ink);
+  margin: 0;
+}
+.r2-card-v2-fine__big--none {
+  font-size: clamp(22px, 2.8vw, 30px);
+  color: var(--ink-2);
+  letter-spacing: -0.02em;
+}
+.r2-card-v2-fine__sub {
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.8px;
+  color: var(--ink-3);
+  line-height: 1.4;
+}
+
+/* Scope-trigger slot (right) */
+.r2-card-v2-scope__body {
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--ink);
+  margin: 0;
+}
+
+/* Section labels (mono caps caption) — used in verdict bar + tldr block. */
+.r2-card-v2-section-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.6px;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+  display: block;
+}
+.r2-card-v2-section-label--spaced { margin-top: 22px; }
+
+/* TLDR + Footnote (left column) */
+.r2-card-v2-tldr { padding: 28px 32px; }
+.r2-card-v2-tldr__oneliner {
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--ink);
+  margin: 0;
+  font-style: normal;
+  max-width: 640px;
+}
+.r2-card-v2-tldr__footnote {
+  font-family: var(--sans);
+  font-size: 14.5px;
+  line-height: 1.5;
+  color: var(--ink-2);
+  margin: 0;
+  font-style: normal;
+  max-width: 640px;
+}
+
+/* Body grid — overrides grid-template-columns of underlying r2-card__body
+   for v2; mobile collapse handled by underlying rule at 900px. */
+.r2-card-v2-body { grid-template-columns: 1.1fr 1fr; }
+
+/* Ranked requirements (right column) */
+.r2-card-v2-reqs-col { padding: 28px 32px; background: var(--paper-2); }
+.r2-card-v2-reqs-section + .r2-card-v2-reqs-section { margin-top: 22px; }
+.r2-card-v2-reqs-section__head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--ink-4);
+}
+.r2-card-v2-reqs-section__title {
+  font-family: var(--sans);
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.r2-card-v2-reqs-section__count {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: var(--ink-3);
+}
+.r2-card-v2-reqs-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+.r2-card-v2-reqs-item {
+  display: grid;
+  grid-template-columns: 32px 1fr;
+  gap: 12px;
+  padding: 8px 0;
+  border-top: 1px solid var(--ink-4);
+  align-items: start;
+}
+.r2-card-v2-reqs-item:first-child { border-top: none; padding-top: 4px; }
+.r2-card-v2-reqs-item__num {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: var(--ink-3);
+  padding-top: 2px;
+}
+.r2-card-v2-reqs-item__label {
+  font-family: var(--sans);
+  font-size: 14.5px;
+  line-height: 1.45;
+  color: var(--ink);
+}
+.r2-card-v2-reqs-item__ref {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: var(--ink-3);
+  margin-left: 6px;
+  white-space: nowrap;
+}
+
+/* Scale slot + legacy thermometer fallback spacing. */
+.r2-card-v2-scale-slot { margin-top: 22px; }
+.r2-card-v2-thermo-fallback { margin-top: 22px; }
+
+/* Foot row — single source line + open file button. */
+.r2-card-v2-foot {
+  justify-content: space-between;
+  gap: 14px;
+}
+.r2-card-v2-source {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  color: var(--ink-3);
+  line-height: 1.4;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+@media (max-width: 600px) {
+  .r2-card-v2-foot { flex-direction: column; align-items: flex-start; }
+}

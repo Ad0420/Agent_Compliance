@@ -1,9 +1,10 @@
 "use client";
 
-import { Fragment, useEffect, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useState } from "react";
 import Link from "next/link";
-import { HashStamp, PrototypeDisclaimer, Tick, Wordmark } from "@/components/landing/brand";
+import { HashStamp, PrototypeDisclaimer, Wordmark } from "@/components/landing/brand";
 import { V4Nav } from "@/components/landing/v4-nav";
+import { Scale } from "@/components/regulations/Scale";
 import {
   REGS,
   TODAY,
@@ -27,8 +28,6 @@ function useToday(): Date | null {
 export default function RegulationsPage() {
   const [active, setActive] = useState<string>("eu");
   const [drawerId, setDrawerId] = useState<string | null>(null);
-  const [register, setRegister] = useState<Record<string, "plain" | "statute">>({});
-  const [moreReqs, setMoreReqs] = useState<Record<string, boolean>>({});
 
   const activeReg = REGS.find((r) => r.id === active);
   const drawerReg = REGS.find((r) => r.id === drawerId);
@@ -41,10 +40,6 @@ export default function RegulationsPage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [drawerId]);
-
-  const reg = (id: string): "plain" | "statute" => register[id] || "plain";
-  const setReg = (id: string, v: "plain" | "statute") =>
-    setRegister((s) => ({ ...s, [id]: v }));
 
   return (
     <div style={{ background: "var(--paper)", color: "var(--ink)", fontFamily: "var(--sans)" }}>
@@ -59,16 +54,7 @@ export default function RegulationsPage() {
       <RegsV2Tabs active={active} onClick={setActive} />
 
       <section className="v3-section" style={{ paddingTop: 24, paddingBottom: 48 }}>
-        {activeReg && (
-          <DossierCard
-            reg={activeReg}
-            register={reg(active)}
-            setRegister={(v) => setReg(active, v)}
-            moreReqs={!!moreReqs[active]}
-            toggleMoreReqs={() => setMoreReqs((s) => ({ ...s, [active]: !s[active] }))}
-            onOpen={() => setDrawerId(active)}
-          />
-        )}
+        {activeReg && <DossierCard reg={activeReg} onOpen={() => setDrawerId(active)} />}
       </section>
 
       <section className="v3-section" style={{ paddingTop: 24, paddingBottom: 48 }}>
@@ -678,62 +664,8 @@ function RegsV2Tabs({
   );
 }
 
-// ── Citation chip ──────────────────────────────────────────────────────
-function Cite({ children, body }: { children: ReactNode; body: string }) {
-  return (
-    <span className="r2-cite">
-      {children}
-      <span className="r2-cite__pop">{body}</span>
-    </span>
-  );
-}
-
-function withCitations(text: string, citations?: Record<string, string>): ReactNode {
-  if (!citations) return text;
-  const parts: ReactNode[] = [];
-  const re = /\[([^\]]+)\]/g;
-  let last = 0;
-  let m: RegExpExecArray | null;
-  let i = 0;
-  while ((m = re.exec(text)) !== null) {
-    if (m.index > last) parts.push(text.slice(last, m.index));
-    const key = m[1];
-    if (citations[key]) {
-      parts.push(
-        <Cite key={i++} body={citations[key]}>
-          {key}
-        </Cite>
-      );
-    } else {
-      parts.push(m[0]);
-    }
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) parts.push(text.slice(last));
-  return parts;
-}
-
 // ── Dossier card ───────────────────────────────────────────────────────
-function DossierCard({
-  reg,
-  register,
-  setRegister,
-  moreReqs,
-  toggleMoreReqs,
-  onOpen,
-}: {
-  reg: Reg;
-  register: "plain" | "statute";
-  setRegister: (v: "plain" | "statute") => void;
-  moreReqs: boolean;
-  toggleMoreReqs: () => void;
-  onOpen: () => void;
-}) {
-  const triadOverride = reg.triadOverride;
-  const fine = (triadOverride && triadOverride.fine) || reg.fine;
-  const verdict = (triadOverride && triadOverride.verdict) || reg.verdict;
-  const verdictAfter = (triadOverride && triadOverride.verdictAfter) || reg.verdictAfter;
-
+function DossierCard({ reg, onOpen }: { reg: Reg; onOpen: () => void }) {
   const ds: DeadlineInfo = reg.targetDate
     ? computeDeadlineState(reg.targetDate, reg.anchorDate)
     : {
@@ -743,130 +675,139 @@ function DossierCard({
         fillPct: 100,
       };
 
-  const reqs = register === "statute" ? reg.statute.reqs : reg.plain.reqs;
-  const reqsExtra = register === "statute" ? [] : reg.plain.reqsExtra || [];
-  const visibleReqs = moreReqs ? [...reqs, ...reqsExtra] : reqs;
+  const tierKey = reg.tier === "I" ? "i" : reg.tier === "II" ? "ii" : "iii";
+
+  const statusDate = reg.forceDate ?? reg.targetDate;
+  const statusBig =
+    ds.state === "live" ? "● IN FORCE" : `● ${ds.deadlineLine}`;
+  const statusSub =
+    ds.state === "live"
+      ? statusDate
+        ? `since ${formatDate(statusDate)}`
+        : "ongoing"
+      : reg.targetDate
+        ? `until ${formatDate(reg.targetDate)}`
+        : "";
 
   return (
     <div className="r2-card">
-      <div className="r2-card__head">
-        <span className="r2-card__num">FOLIO {reg.num}</span>
+      <div className="r2-card-v2-tier-strip" data-tier={tierKey}>
+        <span className="r2-card-v2-tier-strip__label">{reg.tierLabel}</span>
+      </div>
+
+      <div className="r2-card__head r2-card-v2-head">
+        <span className="r2-card__num r2-card-v2-num">§ {reg.num}</span>
         <h2 className="r2-card__title">
           {reg.label}
           <span className="r2-card__title-sub">· {reg.sub}</span>
         </h2>
-        <div className="r2-card__toggle" role="tablist" aria-label="Register">
-          <button
-            data-active={register === "plain" ? "true" : "false"}
-            onClick={() => setRegister("plain")}
-          >
-            Plain
-          </button>
-          <button
-            data-active={register === "statute" ? "true" : "false"}
-            onClick={() => setRegister("statute")}
-          >
-            Statute
-          </button>
-        </div>
       </div>
 
-      <div className="r2-triad">
-        <div className="r2-triad__cell r2-triad__cell--fine">
-          <span className="r2-triad__lbl">Maximum exposure</span>
-          {fine ? (
+      <div className="r2-card-v2-verdict-bar">
+        <div className="r2-card-v2-verdict-bar__cell r2-card-v2-verdict-bar__status">
+          <div
+            className="r2-card-v2-status__big"
+            data-state={ds.state}
+          >
+            {statusBig}
+          </div>
+          {statusSub && (
+            <div className="r2-card-v2-status__sub">{statusSub}</div>
+          )}
+        </div>
+
+        <div className="r2-card-v2-verdict-bar__cell r2-card-v2-verdict-bar__fine">
+          {reg.fine ? (
             <Fragment>
-              <div className="r2-fine">{fine.big}</div>
-              <div className="r2-fine__sub">{fine.sub}</div>
-              {fine.per && <span className="r2-fine__per">{fine.per}</span>}
+              <div className="r2-card-v2-fine__big">{reg.fine.big}</div>
+              <div className="r2-card-v2-fine__sub">
+                {reg.fine.sub}
+                {reg.fine.per ? ` · ${reg.fine.per}` : ""}
+              </div>
             </Fragment>
           ) : (
-            <div
-              className="r2-fine"
-              style={{ color: "var(--ink)", fontSize: "clamp(28px, 4vw, 44px)" }}
-            >
+            <div className="r2-card-v2-fine__big r2-card-v2-fine__big--none">
               No statutory cap
             </div>
           )}
         </div>
 
-        <div className="r2-triad__cell r2-triad__cell--dead">
-          <span className="r2-triad__lbl">{ds.state === "live" ? "Status" : "Time remaining"}</span>
-          <div className={`r2-deadline r2-deadline--${ds.state}`}>{ds.deadlineLine}</div>
-          <div className="r2-deadline__sub">{ds.daysLine}</div>
-          <div className="r2-deadline__bar">
-            <div
-              className={`r2-deadline__bar-fill ${
-                ds.state === "live" ? "r2-deadline__bar-fill--live" : ""
-              }`}
-              style={{ width: `${ds.fillPct}%` }}
-            />
-          </div>
-        </div>
-
-        <div className="r2-triad__cell r2-triad__cell--verd">
-          <span className="r2-triad__lbl">Verdict</span>
-          {verdict && <p className="r2-verdict">{verdict}</p>}
-          {verdictAfter && <p className="r2-verdict__after">{verdictAfter}</p>}
+        <div className="r2-card-v2-verdict-bar__cell r2-card-v2-verdict-bar__scope">
+          <div className="r2-card-v2-section-label">Binds you when</div>
+          <div className="r2-card-v2-scope__body">{reg.scopeTrigger}</div>
         </div>
       </div>
 
-      <div className="r2-card__body">
-        <div className="r2-card__copy">
-          <h3>{register === "statute" ? "What it is" : "What it is, in plain terms"}</h3>
-          <p>
-            {withCitations(
-              register === "statute" ? reg.statute.what : reg.plain.what,
-              reg.citations
-            )}
-          </p>
+      <div className="r2-card__body r2-card-v2-body">
+        <div className="r2-card__copy r2-card-v2-tldr">
+          <div className="r2-card-v2-section-label">TL;DR</div>
+          <p className="r2-card-v2-tldr__oneliner">{reg.oneliner}</p>
 
-          <h3 style={{ marginTop: 18 }}>
-            {register === "statute" ? "Who it affects" : "Who it actually hits"}
-          </h3>
-          <p>
-            {withCitations(
-              register === "statute" ? reg.statute.who : reg.plain.who,
-              reg.citations
-            )}
-          </p>
-
-          {register === "statute" && reg.statute.nuance && (
-            <p
-              style={{
-                fontFamily: "var(--serif)",
-                fontStyle: "italic",
-                color: "var(--amber-ink)",
-                marginTop: 16,
-              }}
-            >
-              Important nuance: {reg.statute.nuance}
-            </p>
-          )}
+          <div className="r2-card-v2-section-label r2-card-v2-section-label--spaced">
+            Footnote
+          </div>
+          <p className="r2-card-v2-tldr__footnote">{reg.footnote}</p>
         </div>
 
-        <div className="r2-card__visual">
-          <span className="r2-triad__lbl" style={{ marginBottom: 14, display: "block" }}>
-            {register === "statute" ? "Requirements" : "What you need to do"}
-          </span>
-          <ul className="r2-reqs">
-            {visibleReqs.map((q, i) => (
-              <li key={i}>
-                <span className="r2-reqs__tick">
-                  <Tick size={14} />
+        <div className="r2-card__visual r2-card-v2-reqs-col">
+          {reg.beforeDeployment.length > 0 && (
+            <div className="r2-card-v2-reqs-section">
+              <div className="r2-card-v2-reqs-section__head">
+                <span className="r2-card-v2-reqs-section__title">Before deployment</span>
+                <span className="r2-card-v2-reqs-section__count">
+                  · {reg.beforeDeployment.length}
                 </span>
-                <span>{q}</span>
-              </li>
-            ))}
-          </ul>
-          {reqsExtra.length > 0 && register !== "statute" && (
-            <button className="r2-reqs__more" onClick={toggleMoreReqs}>
-              {moreReqs ? "− show fewer" : `+ ${reqsExtra.length} more requirements`}
-            </button>
+              </div>
+              <ol className="r2-card-v2-reqs-list">
+                {reg.beforeDeployment.map((item, i) => (
+                  <li key={`before-${i}`} className="r2-card-v2-reqs-item">
+                    <span className="r2-card-v2-reqs-item__num">
+                      {String(i + 1).padStart(2, "0")}
+                    </span>
+                    <span className="r2-card-v2-reqs-item__label">
+                      {item.label}
+                      {item.ref && (
+                        <span className="r2-card-v2-reqs-item__ref">· {item.ref}</span>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </div>
           )}
 
+          {reg.duringDeployment.length > 0 && (
+            <div className="r2-card-v2-reqs-section">
+              <div className="r2-card-v2-reqs-section__head">
+                <span className="r2-card-v2-reqs-section__title">During deployment</span>
+                <span className="r2-card-v2-reqs-section__count">
+                  · {reg.duringDeployment.length}
+                </span>
+              </div>
+              <ol className="r2-card-v2-reqs-list">
+                {reg.duringDeployment.map((item, i) => (
+                  <li key={`during-${i}`} className="r2-card-v2-reqs-item">
+                    <span className="r2-card-v2-reqs-item__num">
+                      {String(i + 1).padStart(2, "0")}
+                    </span>
+                    <span className="r2-card-v2-reqs-item__label">
+                      {item.label}
+                      {item.ref && (
+                        <span className="r2-card-v2-reqs-item__ref">· {item.ref}</span>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
+          <div className="r2-card-v2-scale-slot">
+            <Scale payload={reg.scale} />
+          </div>
+
           {reg.thermo && (
-            <div style={{ marginTop: 24 }}>
+            <div className="r2-card-v2-thermo-fallback">
               <span className="r2-triad__lbl" style={{ marginBottom: 12, display: "block" }}>
                 Penalty thermometer
               </span>
@@ -876,14 +817,10 @@ function DossierCard({
         </div>
       </div>
 
-      <div className="r2-card__foot">
-        <div className="r2-bar-spaced">
-          <span className="r2-card__foot-meta">EXHIBIT {reg.num} · case file</span>
-          <span className="r2-ribbon" data-state={ds.state}>
-            <span className="r2-ribbon__dot" />
-            {ds.state === "live" ? "ENFORCEABLE NOW" : "INCOMING"}
-          </span>
-        </div>
+      <div className="r2-card__foot r2-card-v2-foot">
+        <span className="r2-card-v2-source">
+          Source: {reg.source.citation} · last verified {formatDate(reg.source.lastVerified)}
+        </span>
         <button className="r2-openfile" onClick={onOpen}>
           <span style={{ fontFamily: "var(--mono)", fontSize: 14, fontWeight: 700 }}>↗</span>
           Open the case file
