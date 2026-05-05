@@ -17,8 +17,6 @@ export type DeadlineState = "live" | "soon" | "ongoing";
 
 export type Fine = { big: string; sub: string; per?: string };
 
-export type ThermoRow = { lbl: string; val: string; tier: "top" | "mid" | "low"; pct: number };
-
 export type Tier = "I" | "II" | "III";
 
 export type ScalePayload =
@@ -59,7 +57,6 @@ export type Reg = {
     proposed?: string[];
     nuance?: string;
   };
-  thermo: ThermoRow[] | null;
   citations: Record<string, string>;
   exposure: number;
   fineFlat?: number;
@@ -168,11 +165,6 @@ export const REGS: Reg[] = [
         "CE marking and EU database registration (Article 71)",
       ],
     },
-    thermo: [
-      { lbl: "Prohibited practices (Art. 5)", val: "€35M / 7%", tier: "top", pct: 100 },
-      { lbl: "High-risk obligations", val: "€15M / 3%", tier: "mid", pct: 43 },
-      { lbl: "Misleading information", val: "€7.5M / 1%", tier: "low", pct: 21 },
-    ],
     citations: {
       "Art. 5":
         "Prohibits manipulative AI, social scoring, real-time biometric ID in public, and other unacceptable-risk practices.",
@@ -268,7 +260,6 @@ export const REGS: Reg[] = [
         "Developers: maintain a public statement summarizing high-risk systems offered",
       ],
     },
-    thermo: null,
     citations: {
       ADAI: "Anti-Discrimination in AI Law. Common nickname for Colorado SB 24-205.",
       "Consequential decision":
@@ -354,7 +345,6 @@ export const REGS: Reg[] = [
       nuance:
         "Private-sector employers are not required to conduct impact assessments or implement risk-management policies under TRAIGA. Compliance with the NIST AI Risk Management Framework provides an affirmative defense.",
     },
-    thermo: null,
     citations: {
       TRAIGA: "Texas Responsible AI Governance Act. The shipped version of HB 149.",
       "Affirmative defense": "Compliance with NIST AI RMF can be raised as a defense if enforcement is brought.",
@@ -443,11 +433,6 @@ export const REGS: Reg[] = [
         "SB 53: frontier-model developer obligations",
       ],
     },
-    thermo: [
-      { lbl: "SB 942 daily violation", val: "$5,000 / day", tier: "top", pct: 100 },
-      { lbl: "AB 316 autonomy defense", val: "case-by-case", tier: "mid", pct: 50 },
-      { lbl: "AB 2013 training-data", val: "civil action", tier: "low", pct: 25 },
-    ],
     citations: {
       CAITA: "California AI Transparency Act. SB 942.",
       "AB 853":
@@ -545,7 +530,6 @@ export const REGS: Reg[] = [
       nuance:
         "Notice 24-09 explicitly states it does not create new legal or regulatory requirements. FINRA enforces existing rules in the AI context.",
     },
-    thermo: null,
     citations: {
       "Rule 3110":
         "FINRA's supervision rule. Member firms must establish and maintain a system to supervise the activities of associated persons.",
@@ -647,10 +631,6 @@ export const REGS: Reg[] = [
       ],
       nuance: "There is no 'HIPAA-certified AI.' HIPAA compliance is operational, not a product attribute.",
     },
-    thermo: [
-      { lbl: "Civil penalty cap (annual, per category)", val: "$2.1M", tier: "top", pct: 100 },
-      { lbl: "Criminal exposure (willful)", val: "case", tier: "mid", pct: 60 },
-    ],
     citations: {
       ePHI: "Electronic Protected Health Information.",
       BAA: "Business Associate Agreement. Required between a covered entity and any third party that handles PHI on its behalf.",
@@ -749,7 +729,6 @@ export const REGS: Reg[] = [
         "QMSR: ISO 13485-aligned quality management system",
       ],
     },
-    thermo: null,
     citations: {
       SaMD:
         "Software as a Medical Device. Software intended to be used for medical purposes that performs those purposes without being part of a hardware medical device.",

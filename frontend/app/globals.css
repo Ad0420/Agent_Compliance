@@ -1308,22 +1308,6 @@
 }
 .r2-openfile:hover { background: var(--paper); color: var(--ink); }
 
-/* ── Penalty thermometer ────────────────────────────────────────────── */
-.r2-thermo { display: flex; flex-direction: column; gap: 10px; }
-.r2-thermo__row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 12px; align-items: baseline;
-}
-.r2-thermo__bar { background: var(--ink-4); position: relative; height: 24px; grid-column: 1 / 3; }
-.r2-thermo__fill { height: 100%; background: var(--amber); }
-.r2-thermo__fill--top { background: var(--red); }
-.r2-thermo__fill--mid { background: var(--amber); }
-.r2-thermo__fill--low { background: var(--emerald); }
-.r2-thermo__lbl { font-family: var(--mono); font-size: 10.5px; color: var(--ink-2); letter-spacing: 1px; text-transform: uppercase; font-weight: 600; }
-.r2-thermo__val { font-family: var(--mono); font-size: 12px; color: var(--ink); font-weight: 700; letter-spacing: 0.4px; white-space: nowrap; }
-.r2-thermo__group { display: flex; flex-direction: column; gap: 4px; padding: 6px 0; }
-
 /* ── Side drawer ────────────────────────────────────────────────────── */
 .r2-drawer-scrim {
   position: fixed; inset: 0; background: rgba(31,29,26,0); pointer-events: none;
@@ -2109,9 +2093,8 @@
   white-space: nowrap;
 }
 
-/* Scale slot + legacy thermometer fallback spacing. */
+/* Scale slot spacing. */
 .r2-card-v2-scale-slot { margin-top: 22px; }
-.r2-card-v2-thermo-fallback { margin-top: 22px; }
 
 /* Foot row — single source line + open file button. */
 .r2-card-v2-foot {
@@ -2192,3 +2175,226 @@
 .r2-tab, .r2-tab * { font-style: normal; }
 .r2-tab__sub { letter-spacing: 0.4px; text-transform: lowercase; }
 .r2-tab__state { font-family: var(--mono); }
+
+/* ── PR 3: scale module variants ──────────────────────────────── */
+/* Shared header caption used by every variant. */
+.r2-scale__header {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+  color: var(--ink-3);
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+
+/* Tiers — rebrand of legacy thermometer. */
+.r2-scale-tiers { display: flex; flex-direction: column; gap: 10px; }
+.r2-scale-tiers__row { display: flex; flex-direction: column; gap: 4px; padding: 6px 0; }
+.r2-scale-tiers__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.r2-scale-tiers__lbl {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-2);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.r2-scale-tiers__val {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+}
+.r2-scale-tiers__bar {
+  background: var(--ink-4);
+  position: relative;
+  height: 24px;
+  width: 100%;
+}
+.r2-scale-tiers__fill { height: 100%; background: var(--amber); }
+.r2-scale-tiers__fill[data-tier="top"] { background: var(--red); }
+.r2-scale-tiers__fill[data-tier="mid"] { background: var(--amber); }
+.r2-scale-tiers__fill[data-tier="low"] { background: var(--emerald); }
+
+/* Multiplier — live calculator with slider. */
+.r2-scale-mult { display: flex; flex-direction: column; }
+.r2-scale-mult__total {
+  font-family: var(--sans);
+  font-weight: 700;
+  font-size: clamp(36px, 4vw, 44px);
+  letter-spacing: -0.02em;
+  line-height: 1;
+  color: var(--ink);
+  margin: 2px 0 6px;
+}
+.r2-scale-mult__formula {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.6px;
+  margin-bottom: 14px;
+}
+.r2-scale-mult__slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 2px;
+  background: var(--ink-4);
+  outline: none;
+  margin-top: 4px;
+}
+.r2-scale-mult__slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 18px;
+  height: 18px;
+  background: var(--ink);
+  cursor: pointer;
+  border: none;
+}
+.r2-scale-mult__slider::-moz-range-thumb {
+  width: 18px;
+  height: 18px;
+  background: var(--ink);
+  cursor: pointer;
+  border: none;
+  border-radius: 0;
+}
+.r2-scale-mult__ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-3);
+  letter-spacing: 0.8px;
+}
+.r2-scale-mult__caption {
+  margin: 14px 0 0;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+/* Daily — stepwise per-day visualization. */
+.r2-scale-daily { display: flex; flex-direction: column; gap: 10px; }
+.r2-scale-daily__row {
+  display: grid;
+  grid-template-columns: 64px 1fr auto;
+  gap: 12px;
+  align-items: center;
+}
+.r2-scale-daily__day {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-2);
+  letter-spacing: 0.6px;
+}
+.r2-scale-daily__bar {
+  background: var(--ink-4);
+  height: 14px;
+  position: relative;
+  width: 100%;
+}
+.r2-scale-daily__fill { height: 100%; background: var(--red); }
+.r2-scale-daily__total {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink);
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+}
+.r2-scale-daily__caption {
+  margin: 12px 0 0;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+/* Examples — list of representative enforcement actions. */
+.r2-scale-examples { display: flex; flex-direction: column; }
+.r2-scale-examples__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--ink-4);
+}
+.r2-scale-examples__row:last-of-type { border-bottom: 1px solid var(--ink-4); }
+.r2-scale-examples__name {
+  font-family: var(--sans);
+  font-size: 14.5px;
+  color: var(--ink);
+  line-height: 1.4;
+}
+.r2-scale-examples__meta {
+  display: inline-flex;
+  gap: 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.4px;
+  white-space: nowrap;
+}
+.r2-scale-examples__year { font-weight: 700; }
+.r2-scale-examples__caption {
+  margin: 12px 0 0;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--ink-3);
+}
+
+/* Ladder — vertical escalation steps. */
+.r2-scale-ladder { display: flex; flex-direction: column; gap: 8px; }
+.r2-scale-ladder__step {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  column-gap: 10px;
+  row-gap: 2px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--ink-4);
+  background: rgba(31, 29, 26, 0.02);
+}
+.r2-scale-ladder__num {
+  grid-column: 1 / 2;
+  grid-row: 1 / 3;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-3);
+  letter-spacing: 0.4px;
+  font-weight: 700;
+  align-self: start;
+  padding-top: 2px;
+}
+.r2-scale-ladder__label {
+  grid-column: 2 / 3;
+  font-family: var(--sans);
+  font-weight: 700;
+  font-size: 14.5px;
+  color: var(--ink);
+  line-height: 1.3;
+}
+.r2-scale-ladder__note {
+  grid-column: 2 / 3;
+  font-family: var(--sans);
+  font-size: 12.5px;
+  color: var(--ink-2);
+  line-height: 1.4;
+}
+.r2-scale-ladder__step--top { border-left: 2px solid var(--red); }
