@@ -630,6 +630,19 @@ function RiskCalculator() {
 }
 
 // ── Sticky tabs ────────────────────────────────────────────────────────
+function worstCaseText(r: Reg): string {
+  switch (r.id) {
+    case "eu":    return "€35M / 7%";
+    case "co":    return "No statutory cap";
+    case "tx":    return "$200K · per violation";
+    case "ca":    return "$5,000 · per day";
+    case "finra": return "Existing rules apply";
+    case "hipaa": return "$2.1M · per category/yr";
+    case "fda":   return "Recall + ban";
+    default:      return r.fine?.big ?? "—";
+  }
+}
+
 function RegsV2Tabs({
   active,
   onClick,
@@ -649,6 +662,7 @@ function RegsV2Tabs({
               key={r.id}
               className="r2-tab"
               data-active={active === r.id ? "true" : "false"}
+              data-tier={r.tier}
               onClick={() => onClick(r.id)}
             >
               <span>{r.label}</span>
@@ -656,6 +670,7 @@ function RegsV2Tabs({
               <span className="r2-tab__state" data-state={ds.state}>
                 {ds.state === "live" ? "● IN FORCE" : `● ${ds.deadlineLine}`}
               </span>
+              <span className="r2-tab__worst">{worstCaseText(r)}</span>
             </button>
           );
         })}
