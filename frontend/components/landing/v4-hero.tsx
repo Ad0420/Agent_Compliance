@@ -53,9 +53,9 @@ export function V4Hero() {
             fontWeight: 400,
           }}
         >
-          Vera records every agent action into a tamper-proof, cryptographically-
-          signed audit chain. So when something goes wrong, or a regulator asks,
-          the answer is provable in seconds.
+          When something goes wrong, or a regulator asks, the answer is provable
+          in seconds. Vera seals every AI decision the moment it happens, into a
+          record that holds up later.
         </p>
         <div
           style={{
@@ -87,7 +87,7 @@ export function V4Hero() {
               Get started free →
             </Link>
             <a
-              href="#"
+              href="#contact"
               style={{
                 background: "var(--paper)",
                 color: "var(--ink)",
@@ -103,7 +103,7 @@ export function V4Hero() {
                 display: "inline-block",
               }}
             >
-              View docs
+              Talk to our team
             </a>
           </div>
           <div
@@ -117,18 +117,7 @@ export function V4Hero() {
               color: "var(--ink-3)",
             }}
           >
-            <span
-              style={{
-                padding: "5px 10px",
-                background: "var(--paper-2)",
-                border: "1px solid var(--ink-4)",
-                borderRadius: 6,
-              }}
-            >
-              pip install vera-sdk
-            </span>
-            <span>·</span>
-            <span>30s · no credit card</span>
+            <span>Free to start · 30 seconds to your first sealed decision</span>
           </div>
         </div>
       </div>

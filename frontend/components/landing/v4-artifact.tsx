@@ -3,10 +3,10 @@ import { V4SectionHeader } from "./v4-section-header";
 import { SignedPdfArtifact } from "./v4-signed-pdf-artifact";
 
 const ITEMS: [string, string][] = [
-  ["Chain integrity stamp", "verified offline · 13 records"],
-  ["Checkpoint table", "every signature, every timestamp"],
-  ["KMS signature block", "designed against FRE 901/902"],
-  ["Verifier-friendly", "any tool with sha-256 can validate"],
+  ["Tamper-evident seal", "verified without our help"],
+  ["Step-by-step record of every decision", "every signer, every timestamp"],
+  ["Real cryptographic signature", "anchored to a hardware-secured key"],
+  ["Forwardable proof", "your regulator, auditor, or counsel can verify it themselves"],
 ];
 
 export function V4Artifact() {
@@ -19,11 +19,11 @@ export function V4Artifact() {
           <>
             One click.{" "}
             <span style={{ color: "var(--amber-ink)" }}>
-              Court-admissible PDF.
+              Regulator-ready PDF.
             </span>
           </>
         }
-        sub="When the regulator emails, you respond with a single attachment. Chain integrity stamp, checkpoint table, KMS signature block — verifiable offline by anyone with a hash function."
+        sub="When the regulator emails, you respond with one attachment. Sealed, signed, and verifiable by anyone, without a Vera account or special software."
       />
       <div className="v4-grid-2" style={{ alignItems: "center" }}>
         <div>

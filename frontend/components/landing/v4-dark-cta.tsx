@@ -34,14 +34,14 @@ export function V4DarkCTA() {
           />
           <span
             style={{
-              fontFamily: "var(--mono)",
+              fontFamily: "var(--sans)",
               fontSize: 11,
               fontWeight: 700,
               color: "var(--emerald)",
-              letterSpacing: 1.8,
+              letterSpacing: 1.4,
             }}
           >
-            SHIP IT
+            GET PROTECTED
           </span>
         </div>
         <div className="v4-row-stack">
@@ -103,7 +103,7 @@ export function V4DarkCTA() {
                 color: "var(--night-text-3)",
               }}
             >
-              pip install vera-sdk · 30s to first signed action
+              One line. 30 seconds. Works alongside the AI you already run.
             </span>
           </div>
         </div>
