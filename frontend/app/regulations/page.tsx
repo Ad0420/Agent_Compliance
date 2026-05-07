@@ -6,11 +6,13 @@ import { HashStamp, PrototypeDisclaimer, Wordmark } from "@/components/landing/b
 import { V4Nav } from "@/components/landing/v4-nav";
 import { Scale } from "@/components/regulations/Scale";
 import {
+  LATEST_VERIFIED,
   REGS,
-  TODAY,
   computeDeadlineState,
+  describeAgo,
   formatDate,
   getToday,
+  monthsBetween,
   type DeadlineInfo,
   type Reg,
 } from "@/lib/regulations-data";
@@ -74,6 +76,9 @@ export default function RegulationsPage() {
 
 // ── Hero ───────────────────────────────────────────────────────────────
 function RegsV2Hero() {
+  const today = useToday();
+  const verifiedRel = today ? describeAgo(LATEST_VERIFIED, today) : null;
+  const stamp = `last fact-checked · ${formatDate(LATEST_VERIFIED)}${verifiedRel ? ` · ${verifiedRel}` : ""}`;
   return (
     <section className="v3-section" style={{ paddingTop: 56, paddingBottom: 32 }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 18, marginBottom: 24 }}>
@@ -89,7 +94,7 @@ function RegsV2Hero() {
           EXHIBIT R · REGULATORY MANIFEST
         </span>
         <span style={{ flex: 1, height: 1, background: "var(--ink-4)" }} />
-        <HashStamp value="last fact-checked · 2026-04-30" tone="emerald" />
+        <HashStamp value={stamp} tone="emerald" />
       </div>
 
       <h1 className="v3-hero-h1" style={{ marginBottom: 22 }}>
@@ -181,6 +186,9 @@ function RegsV2DeadlineGantt({
   const start = Math.min(...ALL_DATES, today) - ONE_MONTH;
   const end = Math.max(...ALL_DATES, today) + ONE_MONTH;
   const span = end - start;
+  // Round-up months from today to the far edge of the visible window so the
+  // header label tracks the actual scrubbed range as time advances.
+  const monthsAhead = monthsBetween(todayDate, new Date(end));
   const pctOf = (iso: string) => {
     const t = new Date(iso).getTime();
     return Math.max(0, Math.min(100, ((t - start) / span) * 100));
@@ -277,7 +285,7 @@ function RegsV2DeadlineGantt({
             letterSpacing: 1.6,
           }}
         >
-          ENFORCEMENT WINDOW · NEXT 18 MONTHS
+          ENFORCEMENT WINDOW · NEXT {monthsAhead} MONTHS
         </span>
         <span style={{ flex: 1, height: 1, background: "var(--ink-4)" }} />
         <span
@@ -680,6 +688,8 @@ function RegsV2Tabs({
 
 // ── Dossier card ───────────────────────────────────────────────────────
 function DossierCard({ reg, onOpen }: { reg: Reg; onOpen: () => void }) {
+  const today = useToday();
+  const verifiedRel = today ? describeAgo(reg.source.lastVerified, today) : null;
   const ds: DeadlineInfo = reg.targetDate
     ? computeDeadlineState(reg.targetDate, reg.anchorDate)
     : {
@@ -825,6 +835,7 @@ function DossierCard({ reg, onOpen }: { reg: Reg; onOpen: () => void }) {
       <div className="r2-card__foot r2-card-v2-foot">
         <span className="r2-card-v2-source">
           Source: {reg.source.citation} · last verified {formatDate(reg.source.lastVerified)}
+          {verifiedRel ? ` · ${verifiedRel}` : ""}
         </span>
         <button className="r2-openfile" onClick={onOpen}>
           <span style={{ fontFamily: "var(--mono)", fontSize: 14, fontWeight: 700 }}>↗</span>
@@ -996,6 +1007,8 @@ function StatuteDrawer({
   open: boolean;
   onClose: () => void;
 }) {
+  const today = useToday();
+  const verifiedRel = reg && today ? describeAgo(reg.source.lastVerified, today) : null;
   return (
     <Fragment>
       <div
@@ -1127,6 +1140,7 @@ function StatuteDrawer({
                   <p className="r2-drawer__source">{reg.source.citation}</p>
                   <p className="r2-drawer__source-meta">
                     last verified {formatDate(reg.source.lastVerified)}
+                    {verifiedRel ? ` · ${verifiedRel}` : ""}
                   </p>
                 </div>
               )}
