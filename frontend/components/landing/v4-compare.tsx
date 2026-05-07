@@ -114,7 +114,7 @@ export function V4Compare() {
             .
           </>
         }
-        sub="Logs were designed for debugging, not evidence. Evidence has different requirements: capture point, immutability, signing, external storage."
+        sub="Logs were designed for debugging, not evidence. Evidence has to be sealed the moment it's created and impossible to alter afterward."
       />
       <div
         className="v4-compare-grid"
@@ -127,17 +127,21 @@ export function V4Compare() {
       >
         <V4CompareCol
           title="Conventional logging"
-          kicker="MUTABLE"
-          rows={["Mutable text logs", "Plaintext, copyable", "No signatures"]}
+          kicker="EDITABLE"
+          rows={[
+            "Anyone with access can rewrite history",
+            "No way to prove what really happened",
+            "An employee can quietly edit yesterday's record",
+          ]}
           tone="bad"
         />
         <V4CompareCol
           title="Vera evidence chain"
-          kicker="IMMUTABLE"
+          kicker="TAMPER-PROOF"
           rows={[
-            "Tamper-evident",
-            "Cryptographically sealed",
-            "Signed at every step",
+            "A single character change breaks the seal",
+            "Sealed by a third-party signer",
+            "Verifiable without our software",
           ]}
           tone="good"
         />

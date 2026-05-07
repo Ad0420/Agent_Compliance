@@ -5,7 +5,7 @@ const MILESTONES: { d: string; n: string; live?: boolean; big?: string }[] = [
   { d: "Jun 30, 2026", n: "Colorado AI Act" },
   {
     d: "Aug 2, 2026",
-    n: "EU AI Act · Art. 14/72",
+    n: "EU AI Act · high-risk systems",
     big: "€15M / 3% turnover",
   },
   { d: "Q4 2026", n: "SEC 17a-4 + FINRA" },
@@ -45,7 +45,7 @@ export function V4Deadline() {
             boxShadow: "var(--shadow-1)",
           }}
         >
-          STAMP · REGULATOR TIMELINE
+          REGULATORY TIMELINE
         </span>
         <div className="v4-grid-4" style={{ alignItems: "start", position: "relative" }}>
           <div className="v4-deadline-line" />

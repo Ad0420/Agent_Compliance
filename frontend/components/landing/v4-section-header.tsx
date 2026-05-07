@@ -31,11 +31,11 @@ export function V4SectionHeader({
         />
         <span
           style={{
-            fontFamily: "var(--mono)",
+            fontFamily: "var(--sans)",
             fontSize: 11,
             fontWeight: 700,
             color: c,
-            letterSpacing: 1.8,
+            letterSpacing: 1.4,
           }}
         >
           {kicker}

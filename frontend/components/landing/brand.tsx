@@ -195,7 +195,7 @@ export function PrototypeDisclaimer({
         }}
       >
         This website is a prototype built for testing and research purposes only.
-        No commercial activity takes place here — no services are sold, no revenue
+        No commercial activity takes place here. No services are sold, no revenue
         is generated, and no payment is accepted or solicited.
       </p>
     </div>
