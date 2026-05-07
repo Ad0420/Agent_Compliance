@@ -78,6 +78,27 @@ export function daysBetween(target: string | Date): number {
   return Math.round((t.getTime() - TODAY.getTime()) / (1000 * 60 * 60 * 24));
 }
 
+export function daysAgo(date: string | Date, today: Date = TODAY): number {
+  const d = new Date(date);
+  return Math.max(0, Math.round((today.getTime() - d.getTime()) / (1000 * 60 * 60 * 24)));
+}
+
+export function describeAgo(date: string | Date, today: Date = TODAY): string {
+  const days = daysAgo(date, today);
+  if (days === 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 30) return `${days} days ago`;
+  const months = Math.round(days / 30.4375);
+  if (months < 12) return `${months} ${months === 1 ? "month" : "months"} ago`;
+  const years = Math.round(days / 365.25);
+  return `${years} ${years === 1 ? "year" : "years"} ago`;
+}
+
+export function monthsBetween(start: Date, end: Date): number {
+  const ms = end.getTime() - start.getTime();
+  return Math.max(0, Math.ceil(ms / (1000 * 60 * 60 * 24 * 30.4375)));
+}
+
 export type DeadlineInfo = {
   state: DeadlineState;
   deadlineLine: string;
@@ -771,3 +792,10 @@ export const REGS: Reg[] = [
     },
   },
 ];
+
+// Most recent fact-check across the regulatory manifest. ISO date strings sort
+// chronologically, so a string max is sufficient.
+export const LATEST_VERIFIED: string = REGS.reduce(
+  (acc, r) => (r.source.lastVerified > acc ? r.source.lastVerified : acc),
+  REGS[0]?.source.lastVerified ?? ""
+);
