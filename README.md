@@ -3,12 +3,12 @@
 [![PyPI](https://img.shields.io/pypi/v/vera-sdk.svg)](https://pypi.org/project/vera-sdk/)
 [![Python](https://img.shields.io/pypi/pyversions/vera-sdk.svg)](https://pypi.org/project/vera-sdk/)
 
-Tamper-proof audit trail for AI agents. Cryptographic hash chain with tamper-proof verification, built for teams that need to prove what their AI agents did, when, and why.
+Tamper-evident audit trail for AI agents. Cryptographic hash chain with tamper-evident verification, built for teams that need to prove what their AI agents did, when, and why.
 
 **Install:** `pip install vera-sdk`
 **Live:** [usevera.xyz](https://usevera.xyz) (password-protected testing environment)
 
-**The problem:** AI agents are taking consequential actions — approving loans, flagging transactions, making hiring recommendations — with no verifiable record. Regulators (EU AI Act Art. 12, GDPR, Colorado AI Act, SEC Rule 17a-4) are requiring tamper-proof logs. When something goes wrong, teams cannot answer: what did the agent do, did a human approve it, and has the log been touched since? AWS QLDB (the only comparable managed service) was deprecated July 2025. Vera fills that gap.
+**The problem:** AI agents are taking consequential actions — approving loans, flagging transactions, making hiring recommendations — with no verifiable record. Regulators (EU AI Act Art. 12, GDPR, Colorado AI Act, SEC Rule 17a-4) are requiring tamper-evident logs. When something goes wrong, teams cannot answer: what did the agent do, did a human approve it, and has the log been touched since? AWS QLDB (the only comparable managed service) was deprecated July 2025. Vera fills that gap.
 
 **The solution:** A four-layer immutability stack: database triggers prevent edits, a SHA-256 hash chain detects tampering, KMS-signed checkpoints prevent chain recomputation, and S3 WORM external proofs survive full database compromise. Drop-in Python SDK with integrations for LangChain, OpenAI, CrewAI, and Anthropic/Claude.
 
@@ -778,7 +778,7 @@ Frontend (Next.js 16)                SDK (Python)
 | 2 | PDF/CSV Export | **Done** | -- |
 | 3 | Deploy (Railway + Vercel) | **Done** | -- |
 | 4 | Self-serve signup + hardening | **Done** | -- |
-| 5 | Tamper alerting + Policy Enforcement Engine | **In progress** | Medium |
+| 5 | Tamper alerting + alerting rules (guardrails) | **In progress** | Medium |
 | 6 | Enterprise + Scale | Future | XL |
 
 <details>
@@ -815,7 +815,7 @@ Both endpoints accept the same filters: `start_date`, `end_date`, `agent_name`, 
 </details>
 
 <details>
-<summary><strong>Step 5 — Tamper Alerting + Policy Enforcement Engine (In progress)</strong></summary>
+<summary><strong>Step 5 — Tamper Alerting + Alerting Rules (Guardrails) (In progress)</strong></summary>
 
 **What was built (tamper alerting):**
 - `PATCH /v1/organizations/me/alert-email` — set a tamper-alert email address per org
@@ -827,9 +827,9 @@ Both endpoints accept the same filters: `start_date`, `end_date`, `agent_name`, 
 - Settings page: "Tamper Alert Email" card lets admins set/clear the address
 - 26 new tests covering schema validation, Resend API mock, graceful degradation, and route-level email triggering
 
-**What's next (Policy Enforcement Engine):**
-- Per-org policy rules stored in DB (`condition_type`, `threshold`, `action`, `severity`)
-- Policy evaluation runs after every record write — fire-and-forget, never slows audit trail
+**What's next (alerting rules / guardrails):**
+- Per-org alerting rules stored in DB (`condition_type`, `threshold`, `action`, `severity`)
+- Rule evaluation runs after every record write — fire-and-forget, never slows audit trail
 - Built-in condition types: `chain_tampered`, `failure_rate`, `unknown_agent`, `missing_reasoning`, `high_failure_burst`
 - Actions: EMAIL, FLAG (mark record with `policy_violation=true`), BLOCK (shipped — pre-action enforcement: 409 Conflict + audit record stored with `result="blocked"`), WEBHOOK (shipped — `policy.violation` event)
 - `POST /v1/policies`, `GET /v1/policies`, `GET /v1/violations`
@@ -903,7 +903,7 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 |---|---|---|---|
 | ~~Alerting on tampering~~ | ~~EU AI Act Art. 26, FINRA~~ | **Shipped** — email alert fires on chain/checkpoint failure | ✅ Done |
 | ~~Human oversight / approval workflow~~ | ~~EU AI Act Art. 14~~ | **Shipped** — `/v1/approvals` HITL endpoints with signed decisions, dual-approval, chain integration | ✅ Done |
-| Policy enforcement engine | EU AI Act Art. 9, NIST AI RMF | Rules engine not yet live | P0 (Step 5) |
+| Alerting rules / guardrails | EU AI Act Art. 9, NIST AI RMF | Rules engine not yet live | P0 (Step 5) |
 | Impact assessment templates | Colorado AI Act, ISO 42001 | Not generated or stored | P1 |
 | Training data provenance | ISO 42001 A.8.5, EU AI Act Annex IV | Logs actions, not training data lineage | P2 |
 | Bias/fairness metrics | NYC LL 144, Colorado | Data exists, analysis layer doesn't | P2 |

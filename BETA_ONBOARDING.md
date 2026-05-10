@@ -28,13 +28,13 @@ Most companies building AI agents today have none of this infrastructure.
 Vera is a compliance logging service for AI agents.
 
 You add one API call to your agent code. Every time the agent does something,
-it sends a record to Vera. Vera stores it in a tamper-proof chain and gives you
+it sends a record to Vera. Vera stores it in a tamper-evident chain and gives you
 a dashboard to search, monitor, and audit everything your agent has ever done.
 
 Think of it like Stripe for AI compliance — you add a few lines of code and
 the entire compliance infrastructure is handled.
 
-## Why the tamper-proof chain matters
+## Why the tamper-evident chain matters
 
 A normal database can be edited silently. Someone could go into the database
 and change a record — "the AI approved this loan" becomes "the AI rejected this
