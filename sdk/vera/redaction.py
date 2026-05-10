@@ -48,13 +48,36 @@ own redaction (this is documented in the SDK README).
 
 from __future__ import annotations
 
+import functools
 import logging
 import re
+import warnings
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
+
+
+@functools.lru_cache(maxsize=1)
+def _warn_positional_args_with_schema_once() -> None:
+    """Emit a once-per-process WARN when positional args meet schema mode.
+
+    Schema rules key on parameter names, which are not available at the
+    redactor layer when only positional args are passed. To avoid PHI
+    leaks (e.g. ``r.serialize_args(("Sarah Johnson",), {})`` slipping
+    through unredacted) we fail closed: positional args are replaced
+    wholesale with ``self.replacement``. Customers should bind args to
+    parameter names via ``inspect.signature`` in their decorator, or
+    pass kwargs.
+    """
+    logger.warning(
+        "vera.redaction: positional args passed to a schema-mode Redactor; "
+        "schema rules key on parameter names which are not visible at this "
+        "layer. Failing closed and redacting all positional args. Bind args "
+        "to parameter names (inspect.signature) or call with kwargs to get "
+        "schema-driven behaviour."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +139,11 @@ def _medtech_patterns() -> list[tuple[str, re.Pattern]]:
     matches too much normal English text to be a safe default.
     """
     return [
-        # MRN: "MRN-12345678", "MRN_12345678", "MRN12345678".
+        # MRN: matches ``MRN-12345678``, ``MRN_12345678``, ``MRN12345678``-style
+        # identifiers (an ``MRN`` prefix followed by 4-12 digits). Bare
+        # digit-only MRNs (no ``MRN`` prefix) are not matched — supply a
+        # custom ``Schema`` PATTERN rule with your own regex if your data
+        # uses bare numeric MRNs.
         ("mrn", re.compile(r"\bMRN[-_]?\d{4,12}\b", re.IGNORECASE)),
         # DOB: MM/DD/YYYY, M/D/YYYY, YYYY-MM-DD, DD-Mon-YYYY.
         (
@@ -231,15 +258,73 @@ class Schema:
     The escape hatch for backwards compat / gradual adoption is
     ``unmapped_policy=FieldPolicy.PASSTHROUGH`` — unmapped fields run
     the regex pass only.
+
+    .. warning::
+       ``unmapped_policy=FieldPolicy.PASSTHROUGH`` disables
+       deny-by-default for unmapped fields. PHI inside nested dicts (or
+       any unmapped key) leaks through, because the recursive walk uses
+       the same fallback policy at every level. Use only for gradual
+       schema rollout. ``unmapped_policy=FieldPolicy.REDACT`` is the
+       only safe choice for production medtech / HIPAA workflows.
+
+    Field-name lookup is **case-insensitive**: a schema declared with
+    ``"patient_name"`` matches dict keys ``"Patient_Name"``, ``"PATIENT_NAME"``,
+    etc. If two schema keys collide on lowercase (e.g. ``"MRN"`` and
+    ``"mrn"``), a WARN is logged at init time and the last-declared rule
+    wins. Use distinct names instead.
     """
 
     fields: dict[str, FieldRule] = field(default_factory=dict)
     unmapped_policy: FieldPolicy = FieldPolicy.REDACT
 
+    def __post_init__(self) -> None:
+        # Build a case-insensitive view of fields once at init. Schema
+        # objects are treated as immutable post-construction (mutating
+        # ``fields`` after init would skip this index — documented gotcha).
+        self._fields_lower: dict[str, FieldRule] = {}
+        seen: dict[str, str] = {}  # lower -> original key
+        for k, v in self.fields.items():
+            kl = k.lower()
+            if kl in seen and seen[kl] != k:
+                logger.warning(
+                    "vera.redaction: Schema fields collide on lowercase: "
+                    "%r and %r both normalize to %r — last-declared wins",
+                    seen[kl],
+                    k,
+                    kl,
+                )
+            seen[kl] = k
+            self._fields_lower[kl] = v
+
+        # Loud warning when PASSTHROUGH disables deny-by-default — this is
+        # the documented "gradual rollout" escape hatch but it leaks PHI
+        # through unmapped fields, including everything nested under a
+        # PASSTHROUGH parent.
+        if self.unmapped_policy == FieldPolicy.PASSTHROUGH:
+            warnings.warn(
+                "Schema.unmapped_policy=PASSTHROUGH disables deny-by-default "
+                "for unmapped fields. PHI in unmapped fields (including "
+                "nested dicts under a PASSTHROUGH parent) will leak. Use "
+                "only for gradual schema rollout. Recommend "
+                "Schema.unmapped_policy=REDACT for production.",
+                stacklevel=2,
+            )
+
     def rule_for(self, key: str) -> FieldRule:
-        """Return the rule for ``key``, falling back to ``unmapped_policy``."""
-        if key in self.fields:
-            return self.fields[key]
+        """Return the rule for ``key`` (case-insensitive), falling back to
+        ``unmapped_policy``.
+
+        Non-string keys are routed to the fallback policy — schema rules
+        key on parameter / dict-key names which are conventionally strings.
+        """
+        if not isinstance(key, str):
+            return FieldRule(
+                policy=self.unmapped_policy,
+                description="non-string key — fallback policy",
+            )
+        kl = key.lower()
+        if kl in self._fields_lower:
+            return self._fields_lower[kl]
         return FieldRule(
             policy=self.unmapped_policy,
             description="unmapped field — fallback policy",
@@ -319,6 +404,24 @@ class Redactor:
     ``notes`` while passing ``patient_id`` through. Schema rule lookup
     on dicts at any nesting level uses the leaf key only — path-based
     rules are intentionally out of scope for this PR.
+
+    Pattern layering
+    ----------------
+    Two distinct uses of named patterns:
+
+    1. The default pass: every ``(name, pattern)`` in ``self.patterns``
+       is applied to every string. Customers can replace this list via
+       the ``patterns`` constructor arg.
+    2. Schema ``PATTERN`` rules: look up a pattern by name in
+       ``self._patterns_by_name`` (built from ``self.patterns`` plus
+       :func:`_medtech_patterns` for opt-in extras like ``"icd10"``).
+
+    A custom ``patterns`` list shadows the default pass but does NOT
+    shadow the ``_medtech_patterns()`` registry — schema rules can
+    still reference ``"mrn"``, ``"dob"``, ``"icd10"`` even with custom
+    patterns. To override one, register your replacement under the same
+    name in ``patterns`` (it wins the index lookup via
+    ``setdefault``).
     """
 
     def __init__(
@@ -330,6 +433,18 @@ class Redactor:
         custom_serializer: Callable[[Any], str] | None = None,
         schema: Schema | None = None,
     ) -> None:
+        # Reject newlines / null bytes in the replacement string — this
+        # value is interpolated into log lines and audit records, so
+        # carriage returns and NULs would let a malicious customer-supplied
+        # value forge new log entries (CRLF injection / log smuggling).
+        if not isinstance(replacement, str):
+            raise TypeError("Redactor.replacement must be a string")
+        if "\n" in replacement or "\r" in replacement or "\x00" in replacement:
+            raise ValueError(
+                "Redactor.replacement must not contain newlines or null bytes "
+                "(log injection risk)"
+            )
+
         self.patterns = patterns if patterns is not None else _default_patterns()
         self.block_keys = {
             k.lower() for k in (block_keys if block_keys is not None else _default_block_keys())
@@ -392,6 +507,19 @@ class Redactor:
         if isinstance(value, (int, float, bool)) or value is None:
             return self._truncate(self._apply_patterns(str(value)))
 
+        # In schema mode, refuse to ``repr()`` unknown object types. The
+        # repr of a pydantic model / dataclass / ORM row exposes attribute
+        # values, but the schema is keyed on dict keys / parameter names
+        # and never inspects object attributes — so a Patient(name='Sarah',
+        # mrn='99887766') would slip through. Fail closed: emit a tagged
+        # placeholder so the audit reviewer can see what type was scrubbed.
+        # Customers who explicitly want to expand whitelisted types should
+        # convert to ``dict`` first (or, future work, supply a
+        # ``serialize_object`` hook — TODO).
+        if self.schema is not None:
+            type_name = type(value).__name__
+            return self._tagged_replacement(type_name)
+
         # Anything else: try repr, fall back to str on failure.
         try:
             text = repr(value)
@@ -414,15 +542,30 @@ class Redactor:
         against the schema's field names. ``block_keys`` is checked
         first as defense-in-depth: a key in ``block_keys`` is always
         replaced even if the schema says ``PASSTHROUGH``.
+
+        Schema mode + positional args: fails closed. Schema rules key on
+        parameter names, which are not visible at this layer when only
+        positional args are passed. Rather than letting PHI slip through,
+        every positional arg is replaced with ``self.replacement`` and a
+        once-per-process WARN is emitted. Callers that need schema-driven
+        redaction over positional args should bind args to parameter
+        names (``inspect.signature``) in their decorator before calling
+        ``serialize_args``.
         """
-        try:
-            serialized_args = [self.serialize(a) for a in args]
-        except Exception:  # noqa: BLE001 — fail open
-            logger.warning(
-                "vera.redaction: failed to serialize positional args",
-                exc_info=True,
-            )
-            serialized_args = [self._safe_str(a) for a in args]
+        if args and self.schema is not None:
+            # Schema cannot apply to positional args (no parameter names
+            # available at this layer). Fail closed: redact every arg.
+            _warn_positional_args_with_schema_once()
+            serialized_args = [self.replacement for _ in args]
+        else:
+            try:
+                serialized_args = [self.serialize(a) for a in args]
+            except Exception:  # noqa: BLE001 — fail open
+                logger.warning(
+                    "vera.redaction: failed to serialize positional args",
+                    exc_info=True,
+                )
+                serialized_args = [self._safe_str(a) for a in args]
 
         serialized_kwargs: dict[str, Any] = {}
         for k, v in kwargs.items():
@@ -461,6 +604,14 @@ class Redactor:
         - ``street_address``, ``address``, ``city``, ``zip``: ``REDACT``.
         - ``email``, ``phone``: ``REDACT`` (regex pass also catches them).
         - ``ip_address``: ``PATTERN`` with ``"ipv4"``.
+        - Common free-text fields (``description``, ``summary``,
+          ``comment``, ``comments``, ``message``, ``transcript``,
+          ``audio_transcript``, ``email_body``, ``body``, ``text``):
+          ``REDACT``. Free-text fields cannot be safely scrubbed via
+          patterns — names, dates, and identifiers slip through any
+          regex pass. The starter schema redacts these wholesale by
+          default. Override per-field if your application uses these
+          names for non-PHI content (e.g. ``"summary"`` of a report).
 
         This classmethod returns a :class:`Schema` (not a
         :class:`Redactor`) — the customer flow is::
@@ -578,6 +729,49 @@ class Redactor:
                     pattern_name="ipv4",
                     description="Client IPv4 address — masked via ipv4 pattern.",
                 ),
+                # Common free-text fields. Regex cannot reliably scrub PHI
+                # from prose, so these are REDACTed wholesale. Override
+                # per-field if your domain uses these names for non-PHI.
+                "description": FieldRule(
+                    FieldPolicy.REDACT,
+                    description="Free-text description — likely contains PHI.",
+                ),
+                "summary": FieldRule(
+                    FieldPolicy.REDACT,
+                    description="Free-text summary — likely contains PHI.",
+                ),
+                "comment": FieldRule(
+                    FieldPolicy.REDACT,
+                    description="Free-text comment.",
+                ),
+                "comments": FieldRule(
+                    FieldPolicy.REDACT,
+                    description="Free-text comments.",
+                ),
+                "message": FieldRule(
+                    FieldPolicy.REDACT,
+                    description="Free-text message body.",
+                ),
+                "transcript": FieldRule(
+                    FieldPolicy.REDACT,
+                    description="Audio / text transcript — likely contains PHI.",
+                ),
+                "audio_transcript": FieldRule(
+                    FieldPolicy.REDACT,
+                    description="Audio transcript — likely contains PHI.",
+                ),
+                "email_body": FieldRule(
+                    FieldPolicy.REDACT,
+                    description="Email body — likely contains PHI.",
+                ),
+                "body": FieldRule(
+                    FieldPolicy.REDACT,
+                    description="Generic message body — likely contains PHI.",
+                ),
+                "text": FieldRule(
+                    FieldPolicy.REDACT,
+                    description="Generic free-text field — likely contains PHI.",
+                ),
             },
             unmapped_policy=FieldPolicy.REDACT,
         )
@@ -659,16 +853,29 @@ class Redactor:
             return self.serialize(value)
 
         pattern = self._patterns_by_name[name]
+        # Reuse ``_tagged_replacement`` so PATTERN-mode output matches REDACT-mode
+        # output: bracketed default → ``[REDACTED:fieldname]``; non-bracketed
+        # custom replacement (``<scrubbed>``) → used verbatim. Pre-fixes a bug
+        # where ``"<scrubbed>"`` produced ``"<scrubbed:mrn]"``.
+        tag = self._tagged_replacement(name)
         try:
-            replaced = pattern.sub(f"{self.replacement[:-1]}:{name}]", value)
+            # Use a callable replacement so ``re.sub`` does NOT interpret
+            # backreferences (``\1``, ``\g<...>``) in customer-supplied
+            # replacement strings. The previous string form would raise
+            # ``re.error`` on something like ``replacement="[MASK\\1]"`` and
+            # the bare ``except`` below would fall through, leaking PHI.
+            # ``t=tag`` binds at lambda-creation time (no late-binding).
+            replaced = pattern.sub(lambda m, t=tag: t, value)
         except Exception:  # noqa: BLE001 — fail open
             logger.warning(
-                "vera.redaction: pattern %r raised on field %r; falling through",
+                "vera.redaction: pattern %r raised on field %r; falling closed (REDACT)",
                 name,
                 key,
                 exc_info=True,
             )
-            replaced = value
+            # Fail CLOSED on pattern errors — returning the raw value here
+            # would leak PHI in the very case we're trying to scrub.
+            return tag
 
         # Run the default pass on top — defense-in-depth.
         return self._truncate(self._apply_patterns(replaced))
@@ -692,19 +899,20 @@ class Redactor:
             return text
         try:
             for name, pattern in self.patterns:
+                # Callable replacement — re.sub does NOT interpret backrefs
+                # in customer-supplied replacement strings. Pre-bind ``tag``
+                # via default-arg trick so the lambda captures the value at
+                # creation time (avoids late-binding bugs in this loop).
+                tag = self._tagged_replacement(name)
                 if name == "credit_card":
                     text = pattern.sub(
-                        lambda m, n=name: (
-                            f"{self.replacement[:-1]}:{n}]"
-                            if _luhn_valid(m.group(0))
-                            else m.group(0)
+                        lambda m, t=tag: (
+                            t if _luhn_valid(m.group(0)) else m.group(0)
                         ),
                         text,
                     )
                 else:
-                    text = pattern.sub(
-                        f"{self.replacement[:-1]}:{name}]", text
-                    )
+                    text = pattern.sub(lambda m, t=tag: t, text)
             return text
         except Exception:  # noqa: BLE001 — fail open
             logger.warning(

@@ -13,8 +13,10 @@ schema and asserts no PHI substrings remain in the serialized output.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
+import warnings
 
 import pytest
 
@@ -23,6 +25,7 @@ from vera.redaction import (
     FieldRule,
     Redactor,
     Schema,
+    _warn_positional_args_with_schema_once,
 )
 
 
@@ -446,3 +449,456 @@ class TestCustomReplacementWithSchema:
         out = r.serialize({"x": "secret"})
         # Non-bracketed replacement is used verbatim (no field-tag suffix).
         assert out["x"] == "<scrubbed>"
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL #1: case-insensitive schema lookup
+# ---------------------------------------------------------------------------
+
+class TestCaseInsensitiveSchemaLookup:
+    """Schema field names match dict keys case-insensitively.
+
+    Pre-fix: ``r.serialize({'Patient_Name': 'Sarah'})`` returned the name
+    verbatim because schema lookup used ``key in self.fields``
+    (case-sensitive) while ``block_keys`` was case-insensitive.
+    """
+
+    def test_case_insensitive_schema_lookup(self):
+        """Schema declared lowercase, dict keys mixed-case → still matches."""
+        schema = Schema(
+            fields={
+                "patient_name": FieldRule(FieldPolicy.REDACT),
+                "mrn": FieldRule(FieldPolicy.PATTERN, pattern_name="mrn"),
+                "notes": FieldRule(FieldPolicy.REDACT),
+            },
+            unmapped_policy=FieldPolicy.REDACT,
+        )
+        r = Redactor(schema=schema)
+        out = r.serialize(
+            {
+                "Patient_Name": "Sarah Johnson",
+                "MRN": "MRN-12345678",
+                "NOTES": "Patient John Smith presented with...",
+            }
+        )
+        # All three should be redacted regardless of case in input.
+        assert "Sarah Johnson" not in json.dumps(out)
+        assert "MRN-12345678" not in json.dumps(out)
+        assert "John Smith" not in json.dumps(out)
+
+    def test_schema_declared_uppercase_matches_lowercase_keys(self):
+        """Symmetry: schema can declare uppercase too."""
+        schema = Schema(
+            fields={"PATIENT_NAME": FieldRule(FieldPolicy.REDACT)},
+            unmapped_policy=FieldPolicy.PASSTHROUGH,
+        )
+        r = Redactor(schema=schema)
+        out = r.serialize({"patient_name": "Sarah Johnson"})
+        assert "Sarah Johnson" not in str(out)
+
+    def test_rule_for_non_string_key_falls_back(self):
+        """Non-string keys (ints, tuples) route to unmapped_policy."""
+        schema = Schema(
+            fields={"x": FieldRule(FieldPolicy.PASSTHROUGH)},
+            unmapped_policy=FieldPolicy.REDACT,
+        )
+        rule = schema.rule_for(42)  # type: ignore[arg-type]
+        assert rule.policy == FieldPolicy.REDACT
+
+    def test_lowercase_collision_logs_warning(self, caplog):
+        """Two schema keys colliding on lowercase → log a WARN at init."""
+        with caplog.at_level(logging.WARNING, logger="vera.redaction"):
+            Schema(
+                fields={
+                    "MRN": FieldRule(FieldPolicy.REDACT),
+                    "mrn": FieldRule(FieldPolicy.PATTERN, pattern_name="mrn"),
+                },
+                unmapped_policy=FieldPolicy.REDACT,
+            )
+        assert any(
+            "collide on lowercase" in rec.message for rec in caplog.records
+        ), f"expected collision WARN, got: {[r.message for r in caplog.records]}"
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL #2: positional args fail-closed in schema mode
+# ---------------------------------------------------------------------------
+
+class TestPositionalArgsInSchemaMode:
+    """Schema cannot apply to positional args (no parameter names).
+
+    Pre-fix: ``r.serialize_args(("Sarah Johnson",), {})`` returned the
+    name verbatim because ``serialize_args`` only routed kwargs through
+    the schema. Now schema-mode + positional-args fails closed.
+    """
+
+    def setup_method(self):
+        # Reset the once-per-process WARN cache so each test sees a fresh log.
+        _warn_positional_args_with_schema_once.cache_clear()
+
+    def test_schema_mode_redacts_positional_args(self):
+        schema = Schema(
+            fields={"patient_name": FieldRule(FieldPolicy.REDACT)},
+            unmapped_policy=FieldPolicy.REDACT,
+        )
+        r = Redactor(schema=schema)
+        out = r.serialize_args(("Sarah Johnson",), {})
+        assert out["args"] == ["[REDACTED]"]
+        assert "Sarah Johnson" not in json.dumps(out)
+
+    def test_schema_mode_redacts_multiple_positional_args(self):
+        schema = Schema(
+            fields={"patient_name": FieldRule(FieldPolicy.REDACT)},
+            unmapped_policy=FieldPolicy.REDACT,
+        )
+        r = Redactor(schema=schema)
+        out = r.serialize_args(("Sarah Johnson", "MRN-99887766", 42), {})
+        assert out["args"] == ["[REDACTED]", "[REDACTED]", "[REDACTED]"]
+
+    def test_schema_mode_kwargs_still_routed_through_schema(self):
+        """kwargs path is unchanged: schema rules still apply."""
+        schema = Schema(
+            fields={
+                "patient_id": FieldRule(FieldPolicy.PASSTHROUGH),
+                "patient_name": FieldRule(FieldPolicy.REDACT),
+            },
+            unmapped_policy=FieldPolicy.REDACT,
+        )
+        r = Redactor(schema=schema)
+        out = r.serialize_args(
+            (), {"patient_id": "PT-1", "patient_name": "Sarah"}
+        )
+        assert out["kwargs"]["patient_id"] == "PT-1"
+        assert out["kwargs"]["patient_name"] == "[REDACTED:patient_name]"
+
+    def test_no_schema_mode_passes_positional_args(self):
+        """Backwards-compat: with no schema, positional args still work."""
+        r = Redactor()
+        out = r.serialize_args(("hello world", 42), {})
+        assert out["args"] == ["hello world", "42"]
+
+    def test_schema_mode_positional_args_logs_warning_once(self, caplog):
+        schema = Schema(
+            fields={"x": FieldRule(FieldPolicy.PASSTHROUGH)},
+            unmapped_policy=FieldPolicy.REDACT,
+        )
+        r = Redactor(schema=schema)
+        with caplog.at_level(logging.WARNING, logger="vera.redaction"):
+            r.serialize_args(("a",), {})
+            r.serialize_args(("b",), {})
+            r.serialize_args(("c",), {})
+        # WARN fires once thanks to lru_cache(maxsize=1).
+        warns = [r for r in caplog.records if "positional args" in r.message]
+        assert len(warns) == 1
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL #3: refuse repr() for unknown objects in schema mode
+# ---------------------------------------------------------------------------
+
+class TestSchemaModeRefusesUnknownObjects:
+    """In schema mode, unknown object types are not ``repr()``-ed.
+
+    Pre-fix: a pydantic / dataclass / ORM row's ``repr()`` exposed PHI in
+    attributes because the schema was keyed on dict keys, never inspecting
+    object attributes. Now schema mode emits a ``[REDACTED:TypeName]`` tag
+    instead.
+    """
+
+    def test_schema_mode_refuses_pydantic_like_object(self):
+        """Pydantic-style model with PHI attrs → tagged placeholder, no repr."""
+
+        class Patient:
+            def __init__(self, name, mrn):
+                self.name = name
+                self.mrn = mrn
+
+            def __repr__(self):
+                return f"Patient(name={self.name!r}, mrn={self.mrn!r})"
+
+        schema = Schema(
+            fields={"patient_name": FieldRule(FieldPolicy.REDACT)},
+            unmapped_policy=FieldPolicy.REDACT,
+        )
+        r = Redactor(schema=schema)
+        out = r.serialize(Patient("Sarah Johnson", "99887766"))
+        assert "Sarah Johnson" not in str(out)
+        assert "99887766" not in str(out)
+        assert out == "[REDACTED:Patient]"
+
+    def test_schema_mode_refuses_dataclass(self):
+        @dataclasses.dataclass
+        class Encounter:
+            patient_name: str
+            mrn: str
+
+        schema = Schema(
+            fields={"patient_name": FieldRule(FieldPolicy.REDACT)},
+            unmapped_policy=FieldPolicy.REDACT,
+        )
+        r = Redactor(schema=schema)
+        out = r.serialize(Encounter("Sarah Johnson", "MRN-99887766"))
+        assert "Sarah Johnson" not in str(out)
+        assert "MRN-99887766" not in str(out)
+        assert out == "[REDACTED:Encounter]"
+
+    def test_schema_mode_dict_with_object_value_redacts_object(self):
+        """A wrapper object inside a schema-routed dict still gets redacted."""
+
+        class Patient:
+            def __init__(self, name):
+                self.name = name
+
+            def __repr__(self):
+                return f"Patient(name={self.name!r})"
+
+        schema = Schema(
+            fields={"wrapper": FieldRule(FieldPolicy.PASSTHROUGH)},
+            unmapped_policy=FieldPolicy.REDACT,
+        )
+        r = Redactor(schema=schema)
+        out = r.serialize({"wrapper": Patient("Sarah Johnson")})
+        assert "Sarah Johnson" not in str(out)
+
+    def test_no_schema_mode_repr_path_still_works(self):
+        """Backwards-compat: without schema, repr() still runs (regex-scrubbed)."""
+
+        class Foo:
+            def __repr__(self):
+                return "Foo(value='hello')"
+
+        r = Redactor()
+        out = r.serialize(Foo())
+        # repr is preserved; only PII regexes would scrub it.
+        assert "Foo(value='hello')" == out
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL #4 + #5: regex metachars / non-bracketed replacement in PATTERN mode
+# ---------------------------------------------------------------------------
+
+class TestRegexMetacharsInReplacement:
+    """Customer-supplied replacement strings must not be parsed as regex.
+
+    Pre-fix: ``re.sub`` interpreted backreferences (``\\1``, ``\\g<...>``)
+    in the replacement string, raising ``re.error`` on bogus references
+    and the bare ``except`` returned the raw value (PHI leak). Fixed by
+    using a callable replacement.
+    """
+
+    def test_regex_metachars_in_replacement_dont_break_pattern_mode(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            schema = Schema(
+                fields={"mrn": FieldRule(FieldPolicy.PATTERN, pattern_name="mrn")},
+                unmapped_policy=FieldPolicy.PASSTHROUGH,
+            )
+        r = Redactor(schema=schema, replacement="[MASK\\1]")
+        out = r.serialize({"mrn": "MRN-12345678"})
+        # PHI is gone — no leak even though the replacement contains \1.
+        assert "MRN-12345678" not in out["mrn"]
+
+    def test_regex_metachars_in_replacement_default_pass(self):
+        """Same fix in the default regex pass."""
+        r = Redactor(replacement="[MASK\\1]")
+        out = r.serialize("Patient SSN 123-45-6789 admitted")
+        assert "123-45-6789" not in out
+
+    def test_named_group_backref_in_replacement(self):
+        r = Redactor(replacement="[MASK\\g<foo>]")
+        out = r.serialize("Patient SSN 123-45-6789 admitted")
+        assert "123-45-6789" not in out
+
+    def test_non_bracketed_replacement_in_pattern_mode(self):
+        """``replacement='<scrubbed>'`` produces ``<scrubbed>`` not ``<scrubbed:mrn]``."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            schema = Schema(
+                fields={"mrn": FieldRule(FieldPolicy.PATTERN, pattern_name="mrn")},
+                unmapped_policy=FieldPolicy.PASSTHROUGH,
+            )
+        r = Redactor(schema=schema, replacement="<scrubbed>")
+        out = r.serialize({"mrn": "MRN-12345678"})
+        assert "MRN-12345678" not in out["mrn"]
+        # The broken-syntax bug would have produced "<scrubbed:mrn]".
+        assert "<scrubbed:mrn]" not in out["mrn"]
+        assert "<scrubbed>" in out["mrn"]
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL #6: warn at Schema init when unmapped_policy=PASSTHROUGH
+# ---------------------------------------------------------------------------
+
+class TestPassthroughUnmappedWarning:
+    def test_passthrough_unmapped_emits_warning_at_init(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            Schema(
+                fields={"x": FieldRule(FieldPolicy.REDACT)},
+                unmapped_policy=FieldPolicy.PASSTHROUGH,
+            )
+        assert any(
+            "PASSTHROUGH" in str(w.message) and "deny-by-default" in str(w.message)
+            for w in caught
+        ), f"expected PASSTHROUGH warning, got: {[str(w.message) for w in caught]}"
+
+    def test_redact_unmapped_does_not_warn(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            Schema(
+                fields={"x": FieldRule(FieldPolicy.REDACT)},
+                unmapped_policy=FieldPolicy.REDACT,
+            )
+        # No PASSTHROUGH warning should fire.
+        msgs = [str(w.message) for w in caught]
+        assert not any("PASSTHROUGH" in m for m in msgs), msgs
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL #7: starter schema redacts common free-text field names
+# ---------------------------------------------------------------------------
+
+class TestStarterSchemaFreeText:
+    def test_starter_schema_redacts_common_free_text_fields(self):
+        schema = Redactor.medtech_starter_schema()
+        for fname in (
+            "description",
+            "summary",
+            "comment",
+            "comments",
+            "message",
+            "transcript",
+            "audio_transcript",
+            "email_body",
+            "body",
+            "text",
+        ):
+            assert fname in schema.fields, f"starter schema missing {fname!r}"
+            assert schema.fields[fname].policy == FieldPolicy.REDACT
+
+    def test_starter_schema_redacts_free_text_in_practice(self):
+        """End-to-end: PHI in free-text fields must not leak."""
+        r = Redactor(schema=Redactor.medtech_starter_schema())
+        out = r.serialize(
+            {
+                "patient_id": "PT-1",
+                "transcript": "Patient Sarah Johnson said her MRN is MRN-12345678.",
+                "email_body": "Hi Dr. Smith, sending notes for John Q.",
+                "summary": "Sarah Johnson, age 54, presented with...",
+            }
+        )
+        blob = json.dumps(out)
+        for phi in (
+            "Sarah Johnson",
+            "MRN-12345678",
+            "John Q",
+            "Dr. Smith",
+        ):
+            assert phi not in blob, f"PHI leaked: {phi!r} in {blob!r}"
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL #8: nested + list coverage gap
+# ---------------------------------------------------------------------------
+
+class TestNestedAndListCoverage:
+    """Coverage gap from review: nested dicts and lists of records.
+
+    Realistic usage: customers declare wrapper keys (``patient``,
+    ``records``) as PASSTHROUGH so the redactor recurses through them,
+    and rely on per-leaf rules to redact PHI at the bottom.
+    """
+
+    def test_synthetic_patient_with_nested_dict(self):
+        """Schema rules apply at leaf keys when dicts are nested."""
+        # Build on top of the starter schema: declare wrapper keys as
+        # PASSTHROUGH so recursion reaches the leaf rules.
+        starter = Redactor.medtech_starter_schema()
+        fields = dict(starter.fields)
+        fields["patient"] = FieldRule(FieldPolicy.PASSTHROUGH)
+        fields["encounter"] = FieldRule(FieldPolicy.PASSTHROUGH)
+        schema = Schema(fields=fields, unmapped_policy=FieldPolicy.REDACT)
+        r = Redactor(schema=schema)
+
+        payload = {
+            "patient": {
+                "patient_name": "Sarah Johnson",
+                "mrn": "MRN-12345678",
+            },
+            "encounter": {
+                "encounter_id": "EN-9",
+                "notes": "Patient presented with shortness of breath.",
+            },
+        }
+        out = r.serialize(payload)
+        blob = json.dumps(out)
+        # PHI at leaf keys is redacted even inside nested dicts.
+        assert "Sarah Johnson" not in blob
+        assert "MRN-12345678" not in blob
+        assert "shortness of breath" not in blob
+        # Structure preserved — wrapper keys still produce dicts.
+        assert isinstance(out["patient"], dict)
+        assert isinstance(out["encounter"], dict)
+        # Opaque IDs survive.
+        assert out["encounter"]["encounter_id"] == "EN-9"
+
+    def test_synthetic_patient_with_list_of_records(self):
+        """Lists of dicts are iterated; schema applies to each leaf."""
+        starter = Redactor.medtech_starter_schema()
+        fields = dict(starter.fields)
+        fields["records"] = FieldRule(FieldPolicy.PASSTHROUGH)
+        schema = Schema(fields=fields, unmapped_policy=FieldPolicy.REDACT)
+        r = Redactor(schema=schema)
+
+        payload = {
+            "records": [
+                {"mrn": "MRN-1111", "patient_name": "Alice"},
+                {"mrn": "MRN-2222", "patient_name": "Bob"},
+            ]
+        }
+        out = r.serialize(payload)
+        blob = json.dumps(out)
+        assert "MRN-1111" not in blob
+        assert "MRN-2222" not in blob
+        assert "Alice" not in blob
+        assert "Bob" not in blob
+        # Structure preserved.
+        assert isinstance(out["records"], list) and len(out["records"]) == 2
+
+    def test_unmapped_redact_leaks_nothing_at_top_level(self):
+        """Top-level unmapped keys with default policy → fully redacted."""
+        # No wrapper-key declaration → unmapped_policy=REDACT consumes the whole
+        # subtree. This is the safe default and should be loud about it.
+        r = Redactor(schema=Redactor.medtech_starter_schema())
+        out = r.serialize(
+            {"unknown_wrapper": {"patient_name": "Sarah Johnson"}}
+        )
+        blob = json.dumps(out)
+        assert "Sarah Johnson" not in blob
+        # The wrapper key itself is fully redacted (deny-by-default).
+        assert out["unknown_wrapper"] == "[REDACTED:unknown_wrapper]"
+
+
+# ---------------------------------------------------------------------------
+# INFO #9: log injection via replacement
+# ---------------------------------------------------------------------------
+
+class TestReplacementValidation:
+    def test_newline_in_replacement_rejected(self):
+        with pytest.raises(ValueError, match="newlines or null bytes"):
+            Redactor(replacement="[BAD\nINJECT]")
+
+    def test_carriage_return_in_replacement_rejected(self):
+        with pytest.raises(ValueError, match="newlines or null bytes"):
+            Redactor(replacement="[BAD\rINJECT]")
+
+    def test_null_byte_in_replacement_rejected(self):
+        with pytest.raises(ValueError, match="newlines or null bytes"):
+            Redactor(replacement="[BAD\x00INJECT]")
+
+    def test_normal_replacements_accepted(self):
+        # Default and a few customer-style replacements should be fine.
+        Redactor(replacement="[REDACTED]")
+        Redactor(replacement="<scrubbed>")
+        Redactor(replacement="***")
+        Redactor(replacement="[MASK\\1]")
