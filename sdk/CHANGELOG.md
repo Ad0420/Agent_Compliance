@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Schema-driven redaction mode. `Redactor(schema=...)` with `Schema`,
+  `FieldRule`, `FieldPolicy` types from `vera.redaction`. Deny-by-default
+  for unmapped fields; PHI fields explicitly tagged. `Redactor.medtech_starter_schema()`
+  provides a canonical patient-encounter schema as a starting point.
+  Defense-in-depth: existing regex pass and `block_keys` still apply on
+  top of schema rules.
+- Default redaction patterns for MRN, DOB (multiple formats), IPv4/IPv6
+  addresses. ICD-10 pattern is available via schema (`pattern_name="icd10"`)
+  but intentionally excluded from the default regex pass — it collides
+  with normal English text.
 - Branded exception hierarchy in `vera.errors` (public API ahead of v0.4 client integration)
 - Single-WARN on first `@audit` invocation when no Vera client is configured
 - DeprecationWarning utility for orderly behavioral changes
