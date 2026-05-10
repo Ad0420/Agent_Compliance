@@ -6,16 +6,45 @@ by default so audit calls don't add latency to the wrapped function.
 
 import asyncio
 import functools
+import logging
 import time
 import traceback
 
 from .redaction import Redactor
+
+
+logger = logging.getLogger(__name__)
 
 _default_async_client = None
 
 # Module-level redactor — used unless the caller passes ``redactor=`` to
 # ``@async_audit``. Mirrors the sync decorator.
 _default_redactor = Redactor()
+
+# Tracks whether we have already emitted the "no client configured" WARN
+# for this process. Mirrors the sync decorator's behaviour — one WARN per
+# process, never per call.
+_empty_client_warned = False
+
+_EMPTY_CLIENT_WARNING = (
+    "vera.audit: @audit decorator invoked but no Vera client is configured. "
+    "Audit records are NOT being captured. Call vera.set_default_client() "
+    "or pass client=."
+)
+
+
+def _warn_empty_client_once() -> None:
+    """Emit a single WARNING per process when @async_audit runs with no client."""
+    global _empty_client_warned
+    if not _empty_client_warned:
+        _empty_client_warned = True
+        logger.warning(_EMPTY_CLIENT_WARNING)
+
+
+def _reset_empty_client_warning() -> None:
+    """Reset the once-per-process WARN flag. Intended for tests."""
+    global _empty_client_warned
+    _empty_client_warned = False
 
 
 def set_default_async_client(client):
@@ -63,6 +92,7 @@ def async_audit(
             async def async_wrapper(*args, **kwargs):
                 effective_client = client or _default_async_client
                 if effective_client is None:
+                    _warn_empty_client_once()
                     return await func(*args, **kwargs)
 
                 effective_redactor = redactor or _default_redactor
@@ -72,24 +102,6 @@ def async_audit(
                 start = time.perf_counter()
                 try:
                     result_value = await func(*args, **kwargs)
-                    elapsed_ms = int((time.perf_counter() - start) * 1000)
-
-                    record_kwargs = dict(
-                        action_name=resolved_name,
-                        action_type=action_type,
-                        result="success",
-                        input_data=input_data,
-                        outcome={"return_value": effective_redactor.serialize(result_value)},
-                        duration_ms=elapsed_ms,
-                    )
-
-                    if blocking:
-                        await effective_client.record_action(**record_kwargs)
-                    else:
-                        effective_client.enqueue_action(**record_kwargs)
-
-                    return result_value
-
                 except Exception as exc:
                     elapsed_ms = int((time.perf_counter() - start) * 1000)
 
@@ -105,12 +117,46 @@ def async_audit(
                         duration_ms=elapsed_ms,
                     )
 
+                    # Vera-side failures must NEVER mask the customer's
+                    # exception. Swallow any exception from the audit
+                    # call and log at WARNING.
+                    try:
+                        if blocking:
+                            await effective_client.record_action(**record_kwargs)
+                        else:
+                            effective_client.enqueue_action(**record_kwargs)
+                    except Exception as audit_exc:  # noqa: BLE001
+                        logger.warning(
+                            "vera.audit: failed to record failure for %s: %s",
+                            resolved_name,
+                            audit_exc,
+                        )
+                    raise
+
+                elapsed_ms = int((time.perf_counter() - start) * 1000)
+
+                record_kwargs = dict(
+                    action_name=resolved_name,
+                    action_type=action_type,
+                    result="success",
+                    input_data=input_data,
+                    outcome={"return_value": effective_redactor.serialize(result_value)},
+                    duration_ms=elapsed_ms,
+                )
+
+                try:
                     if blocking:
                         await effective_client.record_action(**record_kwargs)
                     else:
                         effective_client.enqueue_action(**record_kwargs)
+                except Exception as audit_exc:  # noqa: BLE001
+                    logger.warning(
+                        "vera.audit: failed to record success for %s: %s",
+                        resolved_name,
+                        audit_exc,
+                    )
 
-                    raise
+                return result_value
 
             return async_wrapper
         else:
@@ -118,6 +164,7 @@ def async_audit(
             def sync_wrapper(*args, **kwargs):
                 effective_client = client or _default_async_client
                 if effective_client is None:
+                    _warn_empty_client_once()
                     return func(*args, **kwargs)
 
                 effective_redactor = redactor or _default_redactor
@@ -127,8 +174,32 @@ def async_audit(
                 start = time.perf_counter()
                 try:
                     result_value = func(*args, **kwargs)
+                except Exception as exc:
                     elapsed_ms = int((time.perf_counter() - start) * 1000)
 
+                    try:
+                        effective_client.enqueue_action(
+                            action_name=resolved_name,
+                            action_type=action_type,
+                            result="failure",
+                            input_data=input_data,
+                            error_message=str(exc),
+                            outcome={
+                                "traceback": effective_redactor.serialize(traceback.format_exc())
+                            },
+                            duration_ms=elapsed_ms,
+                        )
+                    except Exception as audit_exc:  # noqa: BLE001
+                        logger.warning(
+                            "vera.audit: failed to record failure for %s: %s",
+                            resolved_name,
+                            audit_exc,
+                        )
+                    raise
+
+                elapsed_ms = int((time.perf_counter() - start) * 1000)
+
+                try:
                     effective_client.enqueue_action(
                         action_name=resolved_name,
                         action_type=action_type,
@@ -137,23 +208,13 @@ def async_audit(
                         outcome={"return_value": effective_redactor.serialize(result_value)},
                         duration_ms=elapsed_ms,
                     )
-                    return result_value
-
-                except Exception as exc:
-                    elapsed_ms = int((time.perf_counter() - start) * 1000)
-
-                    effective_client.enqueue_action(
-                        action_name=resolved_name,
-                        action_type=action_type,
-                        result="failure",
-                        input_data=input_data,
-                        error_message=str(exc),
-                        outcome={
-                            "traceback": effective_redactor.serialize(traceback.format_exc())
-                        },
-                        duration_ms=elapsed_ms,
+                except Exception as audit_exc:  # noqa: BLE001
+                    logger.warning(
+                        "vera.audit: failed to record success for %s: %s",
+                        resolved_name,
+                        audit_exc,
                     )
-                    raise
+                return result_value
 
             return sync_wrapper
     return decorator
