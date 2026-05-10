@@ -1,8 +1,12 @@
 import functools
+import logging
 import time
 import traceback
 
 from .redaction import Redactor
+
+
+logger = logging.getLogger(__name__)
 
 
 # Module-level client reference — set by the user
@@ -13,6 +17,31 @@ _default_client = None
 # strings/numbers without secrets round-trip unchanged, so existing
 # callers see no behavioural change.
 _default_redactor = Redactor()
+
+# Tracks whether we have already emitted the "no client configured" WARN
+# for this process. We only want one warning per process so production
+# logs don't get spammed once per audited call.
+_empty_client_warned = False
+
+_EMPTY_CLIENT_WARNING = (
+    "vera.audit: @audit decorator invoked but no Vera client is configured. "
+    "Audit records are NOT being captured. Call vera.set_default_client() "
+    "or pass client=."
+)
+
+
+def _warn_empty_client_once() -> None:
+    """Emit a single WARNING per process when @audit runs with no client."""
+    global _empty_client_warned
+    if not _empty_client_warned:
+        _empty_client_warned = True
+        logger.warning(_EMPTY_CLIENT_WARNING)
+
+
+def _reset_empty_client_warning() -> None:
+    """Reset the once-per-process WARN flag. Intended for tests."""
+    global _empty_client_warned
+    _empty_client_warned = False
 
 
 def set_default_client(client):
@@ -69,7 +98,10 @@ def audit(
         def wrapper(*args, **kwargs):
             effective_client = client or _default_client
             if effective_client is None:
-                # No client configured — just run the function
+                # No client configured — warn once, then run the function
+                # without any audit record. Customer code MUST keep working
+                # in this state so missing config doesn't break their app.
+                _warn_empty_client_once()
                 return func(*args, **kwargs)
 
             effective_redactor = redactor or _default_redactor
@@ -81,8 +113,35 @@ def audit(
             start = time.perf_counter()
             try:
                 result_value = func(*args, **kwargs)
+            except Exception as exc:
                 elapsed_ms = int((time.perf_counter() - start) * 1000)
 
+                # Vera-side failures (e.g. network errors talking to the
+                # ledger) must NEVER mask the customer's exception. Swallow
+                # any exception from record_action and log at WARNING.
+                try:
+                    effective_client.record_action(
+                        action_name=resolved_name,
+                        action_type=action_type,
+                        result="failure",
+                        input_data=input_data,
+                        error_message=str(exc),
+                        outcome={
+                            "traceback": effective_redactor.serialize(traceback.format_exc())
+                        },
+                        duration_ms=elapsed_ms,
+                    )
+                except Exception as audit_exc:  # noqa: BLE001
+                    logger.warning(
+                        "vera.audit: failed to record failure for %s: %s",
+                        resolved_name,
+                        audit_exc,
+                    )
+                raise
+
+            elapsed_ms = int((time.perf_counter() - start) * 1000)
+
+            try:
                 effective_client.record_action(
                     action_name=resolved_name,
                     action_type=action_type,
@@ -91,23 +150,13 @@ def audit(
                     outcome={"return_value": effective_redactor.serialize(result_value)},
                     duration_ms=elapsed_ms,
                 )
-                return result_value
-
-            except Exception as exc:
-                elapsed_ms = int((time.perf_counter() - start) * 1000)
-
-                effective_client.record_action(
-                    action_name=resolved_name,
-                    action_type=action_type,
-                    result="failure",
-                    input_data=input_data,
-                    error_message=str(exc),
-                    outcome={
-                        "traceback": effective_redactor.serialize(traceback.format_exc())
-                    },
-                    duration_ms=elapsed_ms,
+            except Exception as audit_exc:  # noqa: BLE001
+                logger.warning(
+                    "vera.audit: failed to record success for %s: %s",
+                    resolved_name,
+                    audit_exc,
                 )
-                raise
+            return result_value
 
         return wrapper
     return decorator
