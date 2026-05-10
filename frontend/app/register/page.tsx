@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { SignUp } from "@clerk/nextjs";
 import { useAuth } from "@/hooks/use-auth";
 import { registerOrg, type RegisterResult } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
@@ -10,6 +11,10 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ShieldCheck, Copy, Check, AlertCircle, ArrowRight } from "lucide-react";
 
+// Phase 2 (narrow): the legacy two-step org-creation + API-key issuance flow
+// is the primary path. Clerk sign-up is exposed as a secondary "preview" path
+// inside a <details> disclosure. Phase 3 (E4) rebuilds API-key issuance on top
+// of Clerk-authenticated sessions.
 export default function RegisterPage() {
   const [orgName, setOrgName] = useState("");
   const [loading, setLoading] = useState(false);
@@ -128,63 +133,79 @@ export default function RegisterPage() {
   // ── Step 1: Enter org name ───────────────────────────────────────────────────
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader className="text-center">
-          <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-lg bg-emerald-500/10">
-            <ShieldCheck className="h-7 w-7 text-emerald-400" />
-          </div>
-          <CardTitle className="text-xl">Create your account</CardTitle>
-          <CardDescription>
-            Set up your organization to start recording AI actions
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <Input
-                type="text"
-                placeholder="Acme Corp"
-                value={orgName}
-                onChange={(e) => setOrgName(e.target.value)}
-                maxLength={200}
-                autoFocus
-              />
-              <p className="mt-1.5 text-xs text-muted-foreground">
-                Your company or project name
-              </p>
+      <div className="w-full max-w-md space-y-4">
+        <Card className="w-full">
+          <CardHeader className="text-center">
+            <div className="mx-auto mb-2 flex h-12 w-12 items-center justify-center rounded-lg bg-emerald-500/10">
+              <ShieldCheck className="h-7 w-7 text-emerald-400" />
             </div>
-
-            {error && (
-              <div className="flex items-center gap-2 rounded-md bg-red-500/10 p-3 text-sm text-red-400">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                {error}
+            <CardTitle className="text-xl">Create your account</CardTitle>
+            <CardDescription>
+              Set up your organization to start recording AI actions
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <Input
+                  type="text"
+                  placeholder="Acme Corp"
+                  value={orgName}
+                  onChange={(e) => setOrgName(e.target.value)}
+                  maxLength={200}
+                  autoFocus
+                />
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  Your company or project name
+                </p>
               </div>
-            )}
 
-            <Button
-              type="submit"
-              className="w-full"
-              disabled={loading || !orgName.trim()}
-            >
-              {loading ? (
-                <span className="flex items-center gap-2">
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
-                  Creating...
-                </span>
-              ) : (
-                "Create account"
+              {error && (
+                <div className="flex items-center gap-2 rounded-md bg-red-500/10 p-3 text-sm text-red-400">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  {error}
+                </div>
               )}
-            </Button>
 
-            <p className="text-center text-sm text-muted-foreground">
-              Already have an account?{" "}
-              <Link href="/login" className="text-emerald-400 hover:text-emerald-300 underline underline-offset-4">
-                Sign in
-              </Link>
-            </p>
-          </form>
-        </CardContent>
-      </Card>
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={loading || !orgName.trim()}
+              >
+                {loading ? (
+                  <span className="flex items-center gap-2">
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                    Creating...
+                  </span>
+                ) : (
+                  "Create account"
+                )}
+              </Button>
+
+              <p className="text-center text-sm text-muted-foreground">
+                Already have an account?{" "}
+                <Link href="/login" className="text-emerald-400 hover:text-emerald-300 underline underline-offset-4">
+                  Sign in
+                </Link>
+              </p>
+            </form>
+
+            <details className="mt-6 group">
+              <summary className="cursor-pointer text-sm text-muted-foreground hover:text-foreground select-none">
+                Or sign up with email (preview)
+              </summary>
+              <div className="mt-4 flex justify-center">
+                <SignUp
+                  path="/register"
+                  routing="path"
+                  signInUrl="/login"
+                  forceRedirectUrl="/dashboard"
+                />
+              </div>
+            </details>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
