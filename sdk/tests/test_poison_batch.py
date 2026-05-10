@@ -15,6 +15,8 @@ mocked httpx transports so the assertions are deterministic.
 from __future__ import annotations
 
 import logging
+import os
+import time
 
 import httpx
 import pytest
@@ -202,6 +204,153 @@ def test_circuit_breaker_resets_on_success(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# CRITICAL #4 — permanent-failure breaker blocks enqueue
+# ---------------------------------------------------------------------------
+
+
+def test_permanent_4xx_breaker_blocks_enqueue(caplog, monkeypatch):
+    """Persistent 401 must trip the permanent breaker; new enqueues are refused.
+
+    Reproduces the customer-with-bad-API-key failure mode:
+    - server returns 401 forever
+    - the queue keeps accepting until it overflows, drops oldest, and the
+      customer silently loses every audit record
+    - one ERROR per process surfaces the misconfiguration so the customer
+      can't miss it
+
+    The transient-5xx path is exercised by
+    ``test_transient_5xx_breaker_does_not_block_enqueue`` below — that
+    path MUST keep accepting records (the queue is the buffer for retry).
+    """
+    import vera.client as cm
+
+    monkeypatch.setattr(cm, "MAX_RETRIES", 1)
+    cm._reset_permanent_breaker_warning()
+
+    c = _make_sync_client(circuit_breaker_threshold=2)
+    _install_sync_transport(c, lambda req: httpx.Response(401))
+
+    # Drain twice with 401s — the breaker opens with cause="permanent".
+    # Keep RETRY_BACKOFF_BASE at the production default so the breaker's
+    # ``open_until`` timestamp is meaningfully in the future.
+    _enqueue_direct(c, 1)
+    c._drain_once()
+    _enqueue_direct(c, 1)
+    c._drain_once()
+    assert c._breaker_open_until > time.monotonic(), (
+        "breaker open_until must be in the future to gate enqueue"
+    )
+    assert c._breaker_cause == "permanent"
+
+    # The helper installs a sentinel _owner_pid so enqueue_action would
+    # call _init_runtime_state and reset the queue. For the assertion
+    # below we want enqueue_action to take the breaker-rejection path
+    # WITHOUT rebuilding state. Pin pid so the fork-safety fast path
+    # short-circuits.
+    c._owner_pid = os.getpid()
+
+    # Now the customer's code keeps calling enqueue_action. Records MUST
+    # NOT be added — we'd silently fill the queue while every flush was
+    # rejected.
+    queue_size_before = c._queue.qsize()
+    with caplog.at_level(logging.ERROR, logger="vera.client"):
+        for i in range(50):
+            c.enqueue_action(action_name=f"after_breaker_{i}")
+    assert c._queue.qsize() == queue_size_before, (
+        f"permanent breaker must refuse new enqueues; "
+        f"queue grew from {queue_size_before} to {c._queue.qsize()}"
+    )
+    permanent_errors = [
+        r for r in caplog.records
+        if r.levelno == logging.ERROR
+        and "PERMANENT failure" in r.getMessage()
+    ]
+    # Exactly one ERROR — once-per-client-instance, not per call.
+    assert len(permanent_errors) == 1, (
+        f"expected exactly 1 ERROR for permanent breaker, got {len(permanent_errors)}"
+    )
+
+
+def test_transient_5xx_breaker_does_not_block_enqueue(monkeypatch):
+    """Persistent 5xx opens the breaker but enqueue STILL accepts records.
+
+    The whole point of the queue is to buffer through transient outages.
+    A 5xx (or network error) breaker must NOT stop the producer — when
+    Vera comes back, the buffered records flush.
+    """
+    import vera.client as cm
+
+    monkeypatch.setattr(cm, "MAX_RETRIES", 1)
+    monkeypatch.setattr(cm, "RETRY_BACKOFF_BASE", 0.0)
+    cm._reset_permanent_breaker_warning()
+
+    c = _make_sync_client(circuit_breaker_threshold=2, requeue_max_attempts=100)
+    _install_sync_transport(c, lambda req: httpx.Response(503))
+
+    _enqueue_direct(c, 1)
+    c._drain_once()
+    _enqueue_direct(c, 1)
+    c._drain_once()
+    # Force a future breaker window so the breaker check is meaningful
+    # (RETRY_BACKOFF_BASE=0 makes the natural window 0.0).
+    c._breaker_open_until = time.monotonic() + 60.0
+    assert c._breaker_cause == "transient"
+
+    # Pin pid so enqueue_action's fork-safety fast path doesn't reset
+    # the queue when called from this test.
+    c._owner_pid = os.getpid()
+
+    # Queue must still accept new records — it's the retry buffer.
+    queue_size_before = c._queue.qsize()
+    for i in range(20):
+        c.enqueue_action(action_name=f"during_5xx_{i}")
+    assert c._queue.qsize() == queue_size_before + 20, (
+        "transient breaker must NOT block enqueue — the queue is the retry buffer"
+    )
+
+
+def test_permanent_breaker_resets_on_successful_flush(monkeypatch):
+    """A successful flush after a permanent failure clears the breaker cause.
+
+    Some failure modes are transient-permanent (e.g. brief 401 during a
+    secret rotation that resolves itself). Once a flush succeeds, the
+    breaker MUST clear so enqueue_action goes back to accepting records.
+    """
+    import vera.client as cm
+
+    monkeypatch.setattr(cm, "MAX_RETRIES", 1)
+    monkeypatch.setattr(cm, "RETRY_BACKOFF_BASE", 0.0)
+    cm._reset_permanent_breaker_warning()
+
+    state = {"calls": 0}
+
+    def handler(req):
+        state["calls"] += 1
+        if state["calls"] <= 2:
+            return httpx.Response(401)
+        return httpx.Response(200, json={"ok": True})
+
+    c = _make_sync_client(circuit_breaker_threshold=2)
+    _install_sync_transport(c, handler)
+    _enqueue_direct(c, 1)
+    c._drain_once()
+    _enqueue_direct(c, 1)
+    c._drain_once()
+    assert c._breaker_cause == "permanent"
+
+    # Force breaker to be already-elapsed so the next drain runs.
+    c._breaker_open_until = 0.0
+    _enqueue_direct(c, 1)
+    c._drain_once()  # 200 — clears the breaker cause
+    assert c._breaker_cause is None
+
+    # enqueue_action accepts records again.
+    pre = c._queue.qsize()
+    c.enqueue_action(action_name="after_recovery")
+    assert c._queue.qsize() == pre + 1
+
+
+# ---------------------------------------------------------------------------
 # Re-queue cap
 # ---------------------------------------------------------------------------
 
@@ -226,6 +375,87 @@ def test_requeue_depth_cap(caplog, monkeypatch):
         if "poison-record cap" in r.getMessage()
     ]
     assert cap_warns, "expected a poison-cap WARN"
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL #5 — wrap_httpx_error covers every httpx exception class
+# ---------------------------------------------------------------------------
+
+
+def test_wrap_httpx_error_handles_all_exception_classes():
+    """Every httpx error subclass we'd see in production maps to a VeraError.
+
+    Previously: ``LocalProtocolError``, ``DecodingError``, ``TooManyRedirects``,
+    ``ProxyError``, ``UnsupportedProtocol`` fell through to "return exc" —
+    customers caught raw httpx exceptions instead of a branded VeraError,
+    breaking the SDK's "you only need to know vera.errors" promise.
+    """
+    from vera.client import wrap_httpx_error
+    from vera.errors import (
+        VeraAuthError,
+        VeraError,
+        VeraNetworkError,
+        VeraRateLimitError,
+        VeraServerError,
+        VeraTimeoutError,
+        VeraValidationError,
+    )
+
+    fake_request = httpx.Request("POST", "http://localhost/v1/actions/batch")
+
+    def _status_error(code: int) -> httpx.HTTPStatusError:
+        resp = httpx.Response(code, request=fake_request)
+        return httpx.HTTPStatusError(f"HTTP {code}", request=fake_request, response=resp)
+
+    cases: list[tuple[Exception, type]] = [
+        # --- HTTP status branches ---
+        (_status_error(401), VeraAuthError),
+        (_status_error(403), VeraAuthError),
+        (_status_error(429), VeraRateLimitError),
+        (_status_error(500), VeraServerError),
+        (_status_error(502), VeraServerError),
+        (_status_error(503), VeraServerError),
+        (_status_error(400), VeraValidationError),
+        (_status_error(404), VeraValidationError),
+        (_status_error(422), VeraValidationError),
+        # --- Timeout family ---
+        (httpx.TimeoutException("slow"), VeraTimeoutError),
+        (httpx.ConnectTimeout("connect timeout"), VeraTimeoutError),
+        (httpx.ReadTimeout("read timeout"), VeraTimeoutError),
+        (httpx.WriteTimeout("write timeout"), VeraTimeoutError),
+        (httpx.PoolTimeout("pool timeout"), VeraTimeoutError),
+        # --- Network / transport family ---
+        (httpx.ConnectError("dns fail"), VeraNetworkError),
+        (httpx.NetworkError("net"), VeraNetworkError),
+        (httpx.RemoteProtocolError("remote"), VeraNetworkError),
+        (httpx.LocalProtocolError("local"), VeraNetworkError),
+        (httpx.ProxyError("proxy"), VeraNetworkError),
+        (httpx.UnsupportedProtocol("unsupported"), VeraNetworkError),
+        # --- Decode / redirect ---
+        (httpx.DecodingError("decode"), VeraNetworkError),
+        (httpx.TooManyRedirects("loop"), VeraServerError),
+    ]
+    for exc, expected_cls in cases:
+        wrapped = wrap_httpx_error(exc)
+        assert isinstance(wrapped, expected_cls), (
+            f"{type(exc).__name__} must wrap to {expected_cls.__name__}, "
+            f"got {type(wrapped).__name__}"
+        )
+
+    # Catch-all: an exotic httpx.HTTPError subclass we never enumerated must
+    # still wrap to VeraError, never leak as raw httpx.
+    class _NovelHttpxError(httpx.HTTPError):
+        pass
+
+    wrapped = wrap_httpx_error(_NovelHttpxError("novel"))
+    assert isinstance(wrapped, VeraError), (
+        "every httpx.HTTPError descendant must wrap to a VeraError subclass"
+    )
+
+    # Non-httpx exceptions pass through unchanged so we don't mask
+    # non-network bugs.
+    bug = ValueError("not an httpx error")
+    assert wrap_httpx_error(bug) is bug
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +507,73 @@ async def test_async_5xx_requeues(monkeypatch):
     assert len(c._queue) == 1
     await c._flush()
     assert not c._queue
+
+
+@pytest.mark.asyncio
+async def test_concurrent_flush_serializes(monkeypatch):
+    """Two concurrent ``_flush`` calls must produce exactly one batch on the wire.
+
+    CRITICAL #3 in the async-by-default review: ``_flush`` had no mutex.
+    The periodic flush_loop tick and the on-overflow ``create_task`` from
+    ``enqueue_action`` could both ``popleft`` from the same deque. Without
+    the lock, two tasks split the queue, each sent a partial batch, and
+    we observed interleaved POSTs in production.
+
+    With the ``asyncio.Lock`` added in this PR, the second caller waits;
+    only one batch goes out per cycle and no record is double-sent.
+    """
+    import asyncio as _asyncio
+
+    posted_batches: list[list[dict]] = []
+
+    async def slow_handler(req):
+        # Simulate latency so the second concurrent flush has a chance to
+        # observe the queue mid-drain. Without the lock the second flush
+        # would popleft the (now-empty) queue and observe records that
+        # the first flush had already taken.
+        body = req.content
+        import json as _json
+        payload = _json.loads(body)
+        posted_batches.append(payload.get("records", []))
+        await _asyncio.sleep(0.05)
+        return httpx.Response(200, json={"ok": True})
+
+    c = AsyncVeraClient(
+        api_url="http://localhost:1",
+        api_key="test",
+        flush_interval=60.0,
+        batch_size=10,
+        circuit_breaker_threshold=10,
+    )
+    _install_async_transport(c, slow_handler)
+    # Pre-load queue with enough for one batch.
+    for i in range(10):
+        c._queue.append(
+            {
+                "agent_name": "a",
+                "action_name": f"x{i}",
+                "_requeue_count": 0,
+                "_idempotency_key": f"k{i}",
+            }
+        )
+
+    # Kick off two concurrent flushes. Without the lock, both would
+    # popleft and the second would observe an empty queue (or a partial
+    # one, depending on timing) — one of them would no-op and we'd lose
+    # ordering, OR both would split the items.
+    t1 = _asyncio.create_task(c._flush())
+    t2 = _asyncio.create_task(c._flush())
+    await _asyncio.gather(t1, t2)
+
+    # Exactly one batch hit the wire — the other call observed the lock
+    # held, then saw an empty queue under the lock and returned.
+    assert len(posted_batches) == 1, (
+        f"expected exactly 1 batch on the wire, got {len(posted_batches)} "
+        "— concurrent _flush calls split the queue"
+    )
+    assert len(posted_batches[0]) == 10
+    # Queue must be empty — no record stranded by the racing pop.
+    assert len(c._queue) == 0
 
 
 @pytest.mark.asyncio

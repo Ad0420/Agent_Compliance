@@ -6,6 +6,45 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security / Reliability
+- **Fork-safety:** `_after_in_child` now closes the inherited `httpx.Client`
+  and creates a fresh one. Customers using `gunicorn --preload`, Celery
+  prefork, or `multiprocessing.Pool` are no longer at risk of TCP
+  connection corruption in worker children. Belt-and-suspenders pid-mismatch
+  detection in `_init_runtime_state` rebuilds the client on platforms
+  where `os.register_at_fork` doesn't fire.
+- **AsyncVeraClient.enqueue_action** no longer raises `RuntimeError`
+  (silently swallowed by the `@async_audit` sync-wrapper) when called from
+  a sync context with no running event loop. Records remain queued for
+  the next async caller. A single per-process WARN surfaces the misuse
+  without spamming logs.
+- **Concurrent `_flush` serialization:** added `asyncio.Lock` around
+  `AsyncVeraClient._flush` to prevent interleaved `popleft` from racing
+  the periodic flush_loop tick and the on-overflow `create_task`. Fixes
+  split batches and double-POSTs under high enqueue throughput.
+- **Permanent 4xx breaker:** `enqueue_action` now refuses to accept new
+  records once the circuit breaker has opened due to persistent 4xx
+  (e.g. bad API key). Surfaces a once-per-process ERROR. Transient 5xx
+  behavior is unchanged — the queue is still the buffer for retry.
+- **Branded error coverage:** `wrap_httpx_error` now handles
+  `LocalProtocolError`, `DecodingError`, `TooManyRedirects`, `ProxyError`,
+  `UnsupportedProtocol`, with a catch-all `VeraError` fallback for any
+  unmapped `httpx.HTTPError`. The SDK no longer leaks raw httpx classes.
+- **atexit lazy registration:** `VeraClient` registers `atexit` on first
+  `enqueue_action` rather than at construction, eliminating per-instance
+  hook leaks in long-running processes (notebooks, large test suites).
+- **Idempotency keys persist across re-queues:** re-queued batches now
+  retain their original `Idempotency-Key` (chosen at enqueue time, not
+  flush time). Eliminates duplicate inserts when a retry succeeds after
+  a previously-failed flush. Behavior change: customers with their own
+  server-side dedupe MAY observe fewer duplicate writes than before.
+- **Drop-oldest race fix:** the `get_nowait`/`put_nowait` pair on queue
+  overflow is now wrapped in `_overflow_get_put_lock` so concurrent
+  producers can't race into double-drops.
+- **Close-time fallback flush:** `_flush_from_calling_thread` now
+  acquires `_state_lock` for the get/post pair so a still-running daemon
+  worker can't race close() into double-popping the same records.
+
 ### Added
 - Branded exception hierarchy in `vera.errors` (public API ahead of v0.4 client integration)
 - Single-WARN on first `@audit` invocation when no Vera client is configured
@@ -29,6 +68,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   capped at 60s after `circuit_breaker_threshold` (default 5) consecutive
   failures. Per-record re-queue cap (default 10) drops poison records
   before they burn CPU. (workstream A8)
+
+### Operations notes
+- **AsyncVeraClient.close():** MUST be awaited explicitly before process
+  exit. `atexit` cannot reliably run async cleanup; records remaining in
+  the queue at exit are logged but NOT flushed. For sync codepaths or
+  any context where you can't guarantee an explicit `await client.close()`,
+  use `vera.VeraClient` (sync) — the sync client's atexit drain is reliable.
+- **AWS Lambda:** explicitly call `client.close()` in the handler shutdown
+  path. Long Lambda freezes between invocations may invalidate connection
+  state — the safest pattern is to construct the client at handler init
+  for cold-start safety and close it at end-of-invocation.
+- **Re-queue ordering:** the sync (`queue.Queue`) and async (`deque`)
+  paths use slightly different re-queue ordering — sync FIFO (re-queued
+  records go to the back), async LIFO-ish (re-queued records go to the
+  front via `appendleft`). Documented for visibility; will be unified in
+  v0.5.
 
 ### Changed
 - Default HTTP timeout reduced from 30s to 5s for fail-fast semantics

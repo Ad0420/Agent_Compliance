@@ -61,6 +61,7 @@ import httpx
 
 from .errors import (
     VeraAuthError,
+    VeraError,
     VeraNetworkError,
     VeraRateLimitError,
     VeraServerError,
@@ -114,12 +115,17 @@ def _request_id_from(exc: BaseException) -> str | None:
 def wrap_httpx_error(exc: Exception) -> Exception:
     """Translate an httpx error into the appropriate :mod:`vera.errors` type.
 
-    Falls through (returns the original exception unchanged) for unrecognised
-    inputs so callers can re-raise without losing information.
+    Falls through (returns the original exception unchanged) for inputs that
+    are not ``httpx`` errors so callers can re-raise without losing
+    information about non-network bugs. All ``httpx.HTTPError`` descendants
+    are guaranteed to map to a ``VeraError`` subclass — there's a catch-all
+    branch at the bottom so we don't silently mis-classify new httpx error
+    classes added in future releases.
     """
+    rid = _request_id_from(exc)
+    # 1) Status errors first — they carry the most-specific information.
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
-        rid = _request_id_from(exc)
         message = f"HTTP {status} from {exc.request.method} {exc.request.url}"
         if status in (401, 403):
             return VeraAuthError(message, request_id=rid, status_code=status)
@@ -129,11 +135,40 @@ def wrap_httpx_error(exc: Exception) -> Exception:
             return VeraServerError(message, request_id=rid, status_code=status)
         if 400 <= status < 500:
             return VeraValidationError(message, request_id=rid, status_code=status)
-        return exc
+        # Out-of-band status (1xx/2xx/3xx that raise_for_status flagged) —
+        # fall through to the catch-all rather than returning raw httpx.
+    # 2) Timeouts.
     if isinstance(exc, httpx.TimeoutException):
-        return VeraTimeoutError(str(exc) or "request timed out")
-    if isinstance(exc, (httpx.ConnectError, httpx.NetworkError, httpx.RemoteProtocolError)):
-        return VeraNetworkError(str(exc) or "network failure")
+        return VeraTimeoutError(str(exc) or "request timed out", request_id=rid)
+    # 3) Network / transport errors. Each of these classes shows up in the
+    #    field; missing any of them leaks raw httpx out of the SDK.
+    if isinstance(
+        exc,
+        (
+            httpx.ConnectError,
+            httpx.NetworkError,
+            httpx.RemoteProtocolError,
+            httpx.LocalProtocolError,
+            httpx.ProxyError,
+            httpx.UnsupportedProtocol,
+        ),
+    ):
+        return VeraNetworkError(str(exc) or "network failure", request_id=rid)
+    # 4) Response decode failures — server returned junk we couldn't parse.
+    if isinstance(exc, httpx.DecodingError):
+        return VeraNetworkError(
+            f"response decode failed: {exc}", request_id=rid
+        )
+    # 5) Redirect loops — surface as server error since we can't reach the
+    #    final destination. status_code is unknown at this layer.
+    if isinstance(exc, httpx.TooManyRedirects):
+        return VeraServerError(str(exc), request_id=rid, status_code=None)
+    # 6) Catch-all for any remaining httpx.HTTPError subclass. We'd rather
+    #    map to a generic VeraError than leak raw httpx through the SDK.
+    if isinstance(exc, httpx.HTTPError):
+        return VeraError(f"unhandled httpx error: {exc}", request_id=rid)
+    # 7) Not an httpx error — return unchanged so non-network bugs aren't
+    #    masked by the SDK.
     return exc
 
 
@@ -164,6 +199,34 @@ def _warn_gevent_once() -> None:
         "background flush worker assumes preemptive threads; cooperative "
         "schedulers may delay or starve flushes. Consider AsyncVeraClient."
     )
+
+
+# Once-per-process ERROR log when the breaker has opened due to a permanent
+# failure (e.g. bad API key) — used by ``VeraClient.enqueue_action`` so the
+# customer notices their misconfiguration on the very next call instead of
+# silently buffering then dropping records.
+_permanent_breaker_warned = False
+
+
+def _warn_breaker_permanent_once() -> None:
+    """Emit one ERROR per process when the permanent-failure breaker opens."""
+    global _permanent_breaker_warned
+    if _permanent_breaker_warned:
+        return
+    _permanent_breaker_warned = True
+    logger.error(
+        "vera.client: circuit breaker open due to PERMANENT failure (4xx). "
+        "Vera SDK is no longer accepting new audit records — the queue is "
+        "being drained but new enqueue_action() calls will be refused until "
+        "the underlying issue (likely bad API key or revoked credentials) is "
+        "fixed. Verify VERA_API_KEY / api_url and reconstruct the client."
+    )
+
+
+def _reset_permanent_breaker_warning() -> None:
+    """Reset the once-per-process flag. Intended for tests."""
+    global _permanent_breaker_warned
+    _permanent_breaker_warned = False
 
 
 class VeraClient:
@@ -220,11 +283,15 @@ class VeraClient:
         # preserves the current pass-through behaviour for direct callers
         # who construct their own payloads — opt-in by design (no surprises).
         self._redactor = redactor
-        self._client = httpx.Client(
-            base_url=self.api_url,
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=timeout,
-        )
+        # Save the kwargs needed to recreate the httpx.Client after fork().
+        # The child must NOT inherit the parent's TCP/TLS sockets — see
+        # _after_in_child for the rebuild path.
+        self._httpx_client_kwargs: dict[str, Any] = {
+            "base_url": self.api_url,
+            "headers": {"Authorization": f"Bearer {api_key}"},
+            "timeout": timeout,
+        }
+        self._client = httpx.Client(**self._httpx_client_kwargs)
 
         # Background-flush configuration.
         self._batch_size = max(1, batch_size)
@@ -254,6 +321,16 @@ class VeraClient:
         # Circuit-breaker bookkeeping (read/written from worker thread only).
         self._consecutive_failures = 0
         self._breaker_open_until: float = 0.0
+        # Why the breaker is open. ``"permanent"`` means the last failure was
+        # a 4xx-other-than-429 — we should reject new enqueues to avoid
+        # silently filling the queue while the customer's API key is bad.
+        # ``"transient"`` means 429/5xx/network — keep accepting; the queue
+        # is the buffer for retry. ``None`` means closed.
+        self._breaker_cause: str | None = None
+        # Lock for the overflow drop-oldest path. The get/put pair is racy
+        # under threaded enqueue without this — two producers can both pop
+        # an item and put their own, double-dropping a third item.
+        self._overflow_get_put_lock = threading.Lock()
 
         # Register os.register_at_fork to reset state proactively in children.
         # Some platforms / interpreters (Windows, very old CPython) lack it.
@@ -263,10 +340,16 @@ class VeraClient:
             except Exception:  # pragma: no cover — extremely defensive
                 pass
 
-        # Register atexit drain. We register unconditionally so that a client
-        # which only ever called record_action() still has its (empty) hook
-        # cleared on close().
-        atexit.register(self._atexit_drain)
+        # atexit drain is registered lazily on first ``enqueue_action`` call
+        # (see ``_ensure_atexit_registered``). Constructing many clients
+        # without using the queue path (e.g. notebooks, integration tests)
+        # used to leak one atexit hook per instance — they're never garbage
+        # collected because atexit holds a strong reference.
+        self._atexit_registered = False
+        # Idempotency: track once-per-process error logging for the
+        # permanent-failure breaker so a stuck-bad-key process doesn't spam
+        # ERRORs on every enqueue.
+        self._enqueue_blocked_warned = False
 
     # ------------------------------------------------------------------
     # Redaction
@@ -411,6 +494,12 @@ class VeraClient:
 
         Failure handling is fully internal — Vera-side errors never raise
         out of this call. See workstream A8 for the poison-batch policy.
+
+        Permanent-failure breaker: if the background worker has classified
+        the previous batch failure as permanent (4xx other than 429 — most
+        commonly a bad API key), this method refuses to enqueue further
+        records and emits a single ERROR for the process. We'd otherwise
+        silently fill the queue while every flush attempt was rejected.
         """
         # Fork-safety check first — cheap fast path when pid hasn't changed.
         if self._owner_pid != os.getpid():
@@ -418,6 +507,17 @@ class VeraClient:
 
         if _gevent_threading_patched():
             _warn_gevent_once()
+
+        # Refuse to accept new records when the breaker is open due to a
+        # permanent failure. Transient (429/5xx/network) breaker windows
+        # leave the queue accepting — those are expected to recover and the
+        # queue is the buffer for retry.
+        if (
+            self._breaker_cause == "permanent"
+            and time.monotonic() < self._breaker_open_until
+        ):
+            self._warn_enqueue_blocked_permanent_failure_once()
+            return
 
         payload = {
             "agent_name": self.agent_name,
@@ -433,23 +533,38 @@ class VeraClient:
 
         # Internal bookkeeping field — stripped before POST.
         payload.setdefault("_requeue_count", 0)
+        # Idempotency-Key chosen at enqueue time so retries — including
+        # re-queues across batch boundaries — reuse the same key. The
+        # server's dedupe table then collapses duplicate inserts when a
+        # network blip causes a retry of the same record.
+        payload.setdefault("_idempotency_key", uuid.uuid4().hex)
 
         assert self._queue is not None  # set by _init_runtime_state
+
+        # Lazy atexit registration — avoid one hook per VeraClient instance
+        # in long-running processes that construct many clients (notebooks,
+        # tests). The pid check inside _atexit_drain handles the case where
+        # fork() duplicates the parent's atexit list into the child.
+        self._ensure_atexit_registered()
 
         try:
             self._queue.put_nowait(payload)
         except queue.Full:
-            # Drop oldest then retry once.
-            try:
-                dropped = self._queue.get_nowait()
-            except queue.Empty:  # pragma: no cover — race
-                dropped = None
-            self._record_overflow_drop(dropped)
-            try:
-                self._queue.put_nowait(payload)
-            except queue.Full:  # pragma: no cover — pathological
-                self._record_overflow_drop(payload)
-                return
+            # Drop oldest then retry once. The get/put pair is racy under
+            # threaded enqueue without a lock — two producers can both pop
+            # an item and put their own, double-dropping a third. Hold the
+            # overflow lock across the pair to serialize.
+            with self._overflow_get_put_lock:
+                try:
+                    dropped = self._queue.get_nowait()
+                except queue.Empty:  # pragma: no cover — race
+                    dropped = None
+                self._record_overflow_drop(dropped)
+                try:
+                    self._queue.put_nowait(payload)
+                except queue.Full:  # pragma: no cover — pathological
+                    self._record_overflow_drop(payload)
+                    return
 
         # Wake the worker if a batch is full so we don't sit on it for the
         # full flush_interval.
@@ -458,6 +573,30 @@ class VeraClient:
             and self._queue.qsize() >= self._batch_size
         ):
             self._wakeup.set()
+
+    def _ensure_atexit_registered(self) -> None:
+        """Register the atexit drain hook on first use, idempotently.
+
+        Avoids the per-instance atexit leak that the eager registration in
+        ``__init__`` caused. Long-running processes that construct many
+        clients (notebooks, large test suites) used to accumulate one
+        ``_atexit_drain`` callback per instance — none of which can be
+        garbage-collected because atexit holds strong references.
+        """
+        if self._atexit_registered:
+            return
+        try:
+            atexit.register(self._atexit_drain)
+        except Exception:  # pragma: no cover — interpreter shutdown race
+            return
+        self._atexit_registered = True
+
+    def _warn_enqueue_blocked_permanent_failure_once(self) -> None:
+        """Emit one ERROR per client when the permanent breaker rejects an enqueue."""
+        if self._enqueue_blocked_warned:
+            return
+        self._enqueue_blocked_warned = True
+        _warn_breaker_permanent_once()
 
     # ------------------------------------------------------------------
     # Background-thread internals
@@ -496,11 +635,19 @@ class VeraClient:
             ):
                 return
             # Fresh state — child after fork, or first call ever.
+            # Belt-and-suspenders: if ``os.register_at_fork`` didn't fire
+            # (older interpreters, raw ``os.fork()`` paths that bypass fork
+            # hooks), we may still have the parent's ``httpx.Client`` here.
+            # Detect by pid mismatch and rebuild proactively.
+            if self._owner_pid is not None and self._owner_pid != current_pid:
+                self._reset_httpx_client_for_fork()
+                self._atexit_registered = False
             self._queue = queue.Queue(maxsize=self._max_queue_size)
             self._wakeup = threading.Event()
             self._stop_event = threading.Event()
             self._consecutive_failures = 0
             self._breaker_open_until = 0.0
+            self._breaker_cause = None
             self._owner_pid = current_pid
             self._closed = False
             t = threading.Thread(
@@ -516,9 +663,18 @@ class VeraClient:
 
         Discard the parent's queue + thread (they don't exist here) and let
         :meth:`_init_runtime_state` recreate everything on next use.
+
+        Also discard the parent's ``httpx.Client``. The child inherits the
+        parent's TCP connections + TLS session state across ``fork()``; reusing
+        them produces interleaved bytes on the wire (worst case) or hung
+        sockets (best case). This is the production-fatal bug for customers
+        using ``gunicorn --preload``, Celery prefork, or
+        ``multiprocessing.Pool`` — the parent warms a connection pool, then
+        every worker child silently corrupts requests on first POST.
         """
         # We deliberately do NOT take ``_state_lock`` here — fork() inside a
         # locked section is what creates the badness in the first place.
+        self._reset_httpx_client_for_fork()
         self._queue = None
         self._wakeup = None
         self._stop_event = None
@@ -526,12 +682,32 @@ class VeraClient:
         self._owner_pid = None
         self._consecutive_failures = 0
         self._breaker_open_until = 0.0
+        self._breaker_cause = None
         self._closed = False
         # Reset the lock object — children don't inherit a useful state.
         self._state_lock = threading.Lock()
         self._overflow_warn_lock = threading.Lock()
         self._overflow_drops_since_warn = 0
         self._overflow_last_warn_at = 0.0
+        # The parent's atexit registration is duplicated into the child's
+        # atexit list by fork(); the pid check inside ``_atexit_drain``
+        # short-circuits cross-pid drains, but we still want the child to
+        # register its own (with its own _closed gate) once it actually
+        # enqueues something.
+        self._atexit_registered = False
+
+    def _reset_httpx_client_for_fork(self) -> None:
+        """Close the inherited parent httpx.Client and create a fresh one.
+
+        Closing is best-effort — the underlying sockets may already be in a
+        corrupt state from ``fork()`` and ``close()`` itself can raise. We
+        always swap in a fresh client, even if close fails.
+        """
+        try:
+            self._client.close()
+        except Exception:  # pragma: no cover — defensive: post-fork sockets
+            pass
+        self._client = httpx.Client(**self._httpx_client_kwargs)
 
     def _worker_loop(self) -> None:
         """Background thread: drain the queue, flush, classify failures."""
@@ -576,7 +752,7 @@ class VeraClient:
             return
 
         records = [self._strip_internal_fields(r) for r in batch]
-        headers = {"Idempotency-Key": uuid.uuid4().hex}
+        headers = {"Idempotency-Key": self._batch_idempotency_key(batch)}
         try:
             self._request_with_retry(
                 "post",
@@ -586,6 +762,7 @@ class VeraClient:
             )
             self._consecutive_failures = 0
             self._breaker_open_until = 0.0
+            self._breaker_cause = None
             logger.debug("Flushed %d queued actions", len(batch))
         except Exception as exc:  # noqa: BLE001 — we classify below
             self._handle_flush_failure(batch, exc)
@@ -593,11 +770,27 @@ class VeraClient:
     @staticmethod
     def _strip_internal_fields(payload: dict) -> dict:
         """Return a copy of ``payload`` with internal bookkeeping removed."""
-        if "_requeue_count" not in payload:
+        # Internal fields are prefixed with ``_`` — strip all of them so we
+        # don't leak ``_requeue_count`` or ``_idempotency_key`` to the wire.
+        if not any(k.startswith("_") for k in payload):
             return payload
-        clean = dict(payload)
-        clean.pop("_requeue_count", None)
-        return clean
+        return {k: v for k, v in payload.items() if not k.startswith("_")}
+
+    @staticmethod
+    def _batch_idempotency_key(batch: list[dict]) -> str:
+        """Stable Idempotency-Key for a batch.
+
+        Uses the first record's per-record key so that a batch which is
+        re-queued and re-sent later carries the same key — server-side
+        dedupe collapses duplicate inserts after a network blip retry.
+        Falls back to a fresh uuid for legacy callers that put items on
+        the queue without an ``_idempotency_key`` (e.g. tests).
+        """
+        if batch:
+            key = batch[0].get("_idempotency_key")
+            if isinstance(key, str) and key:
+                return key
+        return uuid.uuid4().hex
 
     def _handle_flush_failure(self, batch: list[dict], exc: BaseException) -> None:
         """Apply the A8 poison-batch classification to a failed batch."""
@@ -615,6 +808,10 @@ class VeraClient:
             # Permanent failures still count toward the breaker — auth
             # errors and config errors should pause us from hammering.
             self._consecutive_failures += 1
+            # Latest cause is permanent — preserved for the breaker check
+            # in ``enqueue_action``. A subsequent transient or successful
+            # flush will overwrite this.
+            last_cause = "permanent"
         else:
             # 429 / 5xx / network / timeout — re-queue with backoff.
             self._consecutive_failures += 1
@@ -644,6 +841,7 @@ class VeraClient:
                 requeued,
                 dropped_for_age,
             )
+            last_cause = "transient"
 
         # Open the breaker after threshold consecutive failures. Backoff
         # grows exponentially up to 60s.
@@ -652,11 +850,19 @@ class VeraClient:
             cooldown = min(60.0, RETRY_BACKOFF_BASE * (2 ** over))
             jitter = cooldown * 0.1 * random.random()
             self._breaker_open_until = time.monotonic() + cooldown + jitter
+            self._breaker_cause = last_cause
             logger.warning(
-                "vera.client: circuit breaker open for %.2fs after %d consecutive failures.",
+                "vera.client: circuit breaker open for %.2fs after %d consecutive failures (cause=%s).",
                 cooldown + jitter,
                 self._consecutive_failures,
+                last_cause,
             )
+            if last_cause == "permanent":
+                # One ERROR per process so the customer's misconfiguration
+                # is impossible to miss. The next ``enqueue_action`` will
+                # short-circuit and re-emit the same ERROR (also gated to
+                # once-per-process) so customer code paths surface it too.
+                _warn_breaker_permanent_once()
 
     @staticmethod
     def _is_permanent_failure(exc: BaseException) -> bool:
@@ -738,21 +944,29 @@ class VeraClient:
             self._flush_from_calling_thread(deadline=deadline)
 
     def _flush_from_calling_thread(self, deadline: float) -> None:
-        """Synchronously drain the queue from the caller, bounded by ``deadline``."""
+        """Synchronously drain the queue from the caller, bounded by ``deadline``.
+
+        Acquires the state lock for the get/post pair so a still-running
+        background worker (the daemon thread can't be force-killed) doesn't
+        race us into double-popping or double-posting the same record.
+        """
         if self._queue is None:
             return
         while not self._queue.empty() and time.monotonic() < deadline:
-            batch: list[dict] = []
-            cap = min(_API_MAX_BATCH, max(self._batch_size, 1))
-            while len(batch) < cap:
-                try:
-                    batch.append(self._queue.get_nowait())
-                except queue.Empty:
+            with self._state_lock:
+                if self._queue is None:
+                    return
+                batch: list[dict] = []
+                cap = min(_API_MAX_BATCH, max(self._batch_size, 1))
+                while len(batch) < cap:
+                    try:
+                        batch.append(self._queue.get_nowait())
+                    except queue.Empty:
+                        break
+                if not batch:
                     break
-            if not batch:
-                break
-            records = [self._strip_internal_fields(r) for r in batch]
-            headers = {"Idempotency-Key": uuid.uuid4().hex}
+                records = [self._strip_internal_fields(r) for r in batch]
+                headers = {"Idempotency-Key": self._batch_idempotency_key(batch)}
             try:
                 self._request_with_retry(
                     "post",

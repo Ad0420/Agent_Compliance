@@ -293,3 +293,110 @@ def test_threaded_enqueue():
         assert server.received == 4 * per_thread, (
             f"expected {4 * per_thread}, got {server.received}"
         )
+
+
+# ---------------------------------------------------------------------------
+# CRITICAL #6 — atexit registration is lazy (per-instance leak fix)
+# ---------------------------------------------------------------------------
+
+
+def test_atexit_lazy_registration():
+    """atexit hook is NOT registered until the first ``enqueue_action`` call.
+
+    Long-running processes (notebooks, large test suites) used to construct
+    many VeraClient instances and accumulate one atexit hook per instance —
+    none of which can be garbage-collected because atexit holds a strong
+    reference. Lazy registration prevents the leak when a client is built
+    but never used (e.g. constructed by a fixture, then test takes the
+    sync record_action path or no path at all).
+    """
+    client = VeraClient(
+        api_url="http://localhost:1",
+        flush_interval=60.0,
+        batch_size=1000,
+        atexit_drain_timeout=0.5,
+    )
+    try:
+        # Construction alone must not register the hook.
+        assert client._atexit_registered is False, (
+            "atexit must not be registered at construction; lazy-only on first enqueue"
+        )
+
+        _patch_hung_transport(client)
+        client.enqueue_action(action_name="trigger")
+        # Now the hook is registered.
+        assert client._atexit_registered is True, (
+            "first enqueue_action must register the atexit hook"
+        )
+
+        # Subsequent calls do not re-register. We can't directly observe
+        # the atexit registry, but ``_ensure_atexit_registered`` is
+        # idempotent on the flag and ``atexit.register`` would be a no-op
+        # on a duplicate callable identity in this case. The flag stays
+        # True and we don't blow up.
+        client.enqueue_action(action_name="trigger2")
+        assert client._atexit_registered is True
+    finally:
+        client.close()
+
+
+# ---------------------------------------------------------------------------
+# INFO #14 — multi-thread latency benchmark
+# ---------------------------------------------------------------------------
+
+
+def test_p99_latency_under_concurrent_threads():
+    """Latency under realistic concurrent producer load.
+
+    The single-threaded latency test in the original PR could miss
+    contention bugs. With 8 threads × 1000 enqueues = 8000 calls against
+    a hung server, the lock around drop-oldest and the queue's internal
+    GIL-bound critical sections show up as p99 jitter if anything is
+    badly serialised.
+    """
+    client = VeraClient(
+        api_url="http://localhost:1",
+        flush_interval=60.0,
+        batch_size=10_000,
+        max_queue_size=50_000,
+        atexit_drain_timeout=0.5,
+    )
+    _patch_hung_transport(client)
+    try:
+        # Warm-up so lazy-init is amortised.
+        for _ in range(50):
+            client.enqueue_action(action_name="warm")
+
+        per_thread = 1000
+        n_threads = 8
+        all_samples: list[float] = []
+        samples_lock = threading.Lock()
+
+        def worker():
+            local_samples = []
+            for _ in range(per_thread):
+                t0 = time.perf_counter()
+                client.enqueue_action(action_name="bench")
+                local_samples.append((time.perf_counter() - t0) * 1000)
+            with samples_lock:
+                all_samples.extend(local_samples)
+
+        threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        all_samples.sort()
+        N = len(all_samples)
+        p50 = all_samples[N // 2]
+        p99 = all_samples[int(N * 0.99)]
+        # Concurrent path is allowed slightly more headroom than the
+        # single-threaded test (~5ms) but should still be well under
+        # 10ms on any sane CI runner.
+        assert p99 < 10.0, (
+            f"concurrent p99 latency {p99:.3f}ms (p50={p50:.3f}ms) — "
+            "lock contention or queue serialisation regression?"
+        )
+    finally:
+        client.close()

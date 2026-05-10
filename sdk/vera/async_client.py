@@ -88,6 +88,17 @@ class AsyncVeraClient:
         # Circuit-breaker bookkeeping (workstream A8).
         self._consecutive_failures = 0
         self._breaker_open_until: float = 0.0
+        # Serialize ``_flush`` calls. Both the periodic flush_loop and the
+        # on-overflow ``create_task`` from ``enqueue_action`` can race into
+        # ``_flush`` concurrently and double-popleft from the deque, sending
+        # interleaved batches and losing records. The lock is constructed
+        # lazily because ``asyncio.Lock()`` binds to the current loop —
+        # constructing it in __init__ when no loop is running raises in
+        # certain pytest-asyncio fixture flows.
+        self._flush_lock: asyncio.Lock | None = None
+        # Once-per-process WARN flag for the sync-context-no-loop branch in
+        # ``enqueue_action``.
+        self._sync_no_loop_warned = False
 
     def _redact_payload_fields(self, payload: dict) -> dict:
         """Apply ``self._redactor`` (if set) to user-supplied JSON-blob fields.
@@ -188,8 +199,26 @@ class AsyncVeraClient:
     def enqueue_action(self, **kwargs) -> None:
         """Add an action to the background queue (non-blocking).
 
-        Actions are batched and sent periodically. Call start_background_flush()
-        to begin the flush loop, and stop_background_flush() to drain and stop.
+        Actions are batched and sent periodically. Call
+        :meth:`start_background_flush` to begin the flush loop, and
+        :meth:`stop_background_flush` to drain and stop.
+
+        Sync-context-no-loop behavior
+        ------------------------------
+        When called from a sync context with no running event loop (e.g.
+        from a plain function, or from
+        :func:`vera.async_decorator.async_audit`'s sync-wrapper branch),
+        records are buffered in memory but **no flush is scheduled** —
+        ``asyncio.create_task`` requires a running loop. Records remain on
+        the queue and will be sent by the next flush triggered from an
+        async caller, by ``start_background_flush``, or by an explicit
+        ``await client.stop_background_flush()`` / ``await client.close()``.
+
+        Callers should ensure a running event loop exists at flush time, or
+        use :class:`vera.client.VeraClient` (sync) for fully sync codepaths.
+        Prior to this change, the no-loop path raised ``RuntimeError``,
+        which the decorator's broad exception handler swallowed silently —
+        records never made it to the queue **or** to the wire.
         """
         payload = {
             "agent_name": self.agent_name,
@@ -204,6 +233,9 @@ class AsyncVeraClient:
             payload = self._redact_payload_fields(payload)
         # Internal bookkeeping field — stripped before POST.
         payload.setdefault("_requeue_count", 0)
+        # Idempotency: stable per-record key, reused across re-queues so the
+        # server can dedupe a record that survived a network blip.
+        payload.setdefault("_idempotency_key", uuid.uuid4().hex)
         # Drop oldest if queue is at capacity
         if len(self._queue) >= self._max_queue_size:
             dropped = self._queue.popleft()
@@ -211,9 +243,31 @@ class AsyncVeraClient:
 
         self._queue.append(payload)
 
-        # Flush immediately if batch is full
+        # Flush immediately if batch is full. ``asyncio.create_task`` raises
+        # ``RuntimeError`` when no loop is running — the original
+        # implementation hit this when called from sync code (the
+        # ``async_audit`` sync-wrapper branch) and the decorator's broad
+        # ``except Exception`` swallowed it, silently dropping every audit
+        # record. Now we buffer in the queue regardless; the next flush
+        # from an async caller will pick the records up.
         if len(self._queue) >= self._batch_size:
-            asyncio.create_task(self._flush())
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # Sync caller, no loop — keep records queued. Warn once
+                # per process so customers notice the misuse without log
+                # spam on every audited call.
+                if not self._sync_no_loop_warned:
+                    self._sync_no_loop_warned = True
+                    logger.warning(
+                        "AsyncVeraClient.enqueue_action called from sync "
+                        "context with no running event loop — %d records "
+                        "queued, awaiting next async caller. Consider "
+                        "using vera.VeraClient (sync) for sync codepaths.",
+                        len(self._queue),
+                    )
+            else:
+                loop.create_task(self._flush())
 
     def _record_overflow_drop(self, dropped: dict | None) -> None:
         """Throttled WARN log on queue overflow."""
@@ -237,12 +291,14 @@ class AsyncVeraClient:
 
     @staticmethod
     def _strip_internal_fields(payload: dict) -> dict:
-        """Return a copy of ``payload`` with internal bookkeeping removed."""
-        if "_requeue_count" not in payload:
+        """Return a copy of ``payload`` with internal bookkeeping removed.
+
+        Strips every leading-underscore key so private fields (e.g.
+        ``_requeue_count``, ``_idempotency_key``) never reach the wire.
+        """
+        if not any(k.startswith("_") for k in payload):
             return payload
-        clean = dict(payload)
-        clean.pop("_requeue_count", None)
-        return clean
+        return {k: v for k, v in payload.items() if not k.startswith("_")}
 
     @staticmethod
     def _is_permanent_failure(exc: BaseException) -> bool:
@@ -255,37 +311,68 @@ class AsyncVeraClient:
         return False
 
     async def _flush(self) -> None:
-        """Send queued records as a batch with poison-batch handling."""
-        if not self._queue:
-            return
+        """Send queued records as a batch with poison-batch handling.
 
-        # Circuit breaker — pause flushing for the cool-down window.
-        if time.monotonic() < self._breaker_open_until:
-            return
+        Serialised by ``self._flush_lock`` — the periodic flush_loop and
+        the on-overflow ``create_task`` from ``enqueue_action`` can both
+        race into this method concurrently. Without the lock, both tasks
+        ``popleft`` from the same deque, splitting the batch, double-POSTing
+        records (because each task sends what it popped), and risking lost
+        records if one task fails and the other succeeds.
+        """
+        # Lazily construct the lock so we bind it to the running loop. Done
+        # inside the method (not __init__) because pytest-asyncio creates
+        # one loop per test and an asyncio.Lock built against an old loop
+        # raises ``RuntimeError: ... bound to a different event loop``.
+        if self._flush_lock is None:
+            self._flush_lock = asyncio.Lock()
 
-        batch: list[dict] = []
-        while self._queue and len(batch) < _API_MAX_BATCH:
-            batch.append(self._queue.popleft())
+        async with self._flush_lock:
+            if not self._queue:
+                return
 
-        records = [self._strip_internal_fields(r) for r in batch]
+            # Circuit breaker — pause flushing for the cool-down window.
+            if time.monotonic() < self._breaker_open_until:
+                return
 
-        # Generate one Idempotency-Key per flush call. The same key is
-        # reused across the 3-attempt retry loop inside _request_with_retry
-        # (so a network-blip retry of THIS batch dedupes server-side).
-        # When the batch is re-queued and a later _flush() picks it up,
-        # a fresh key is generated — duplicate writes are still possible
-        # across that batch boundary, which is the right tradeoff for a
-        # fire-and-forget queue.
-        headers = {"Idempotency-Key": uuid.uuid4().hex}
-        try:
-            await self._request_with_retry(
-                "post", "/v1/actions/batch", json={"records": records}, headers=headers
-            )
-            self._consecutive_failures = 0
-            self._breaker_open_until = 0.0
-            logger.debug("Flushed %d queued actions", len(batch))
-        except Exception as exc:  # noqa: BLE001 — classified below
-            self._handle_flush_failure(batch, exc)
+            batch: list[dict] = []
+            while self._queue and len(batch) < _API_MAX_BATCH:
+                batch.append(self._queue.popleft())
+
+            records = [self._strip_internal_fields(r) for r in batch]
+
+            # Use the first record's idempotency key (set at enqueue time).
+            # The key survives re-queues across batch boundaries, so a
+            # network-blip retry of the same record dedupes server-side.
+            # Falls back to a fresh uuid for legacy items that lack the
+            # private key (e.g. tests that hand-build queue items).
+            headers = {"Idempotency-Key": self._batch_idempotency_key(batch)}
+            try:
+                await self._request_with_retry(
+                    "post",
+                    "/v1/actions/batch",
+                    json={"records": records},
+                    headers=headers,
+                )
+                self._consecutive_failures = 0
+                self._breaker_open_until = 0.0
+                logger.debug("Flushed %d queued actions", len(batch))
+            except Exception as exc:  # noqa: BLE001 — classified below
+                self._handle_flush_failure(batch, exc)
+
+    @staticmethod
+    def _batch_idempotency_key(batch: list[dict]) -> str:
+        """Return a stable Idempotency-Key for ``batch``.
+
+        Uses the first record's ``_idempotency_key`` so a re-queued record
+        keeps its key across the batch boundary. Falls back to a fresh uuid
+        for legacy items.
+        """
+        if batch:
+            key = batch[0].get("_idempotency_key")
+            if isinstance(key, str) and key:
+                return key
+        return uuid.uuid4().hex
 
     def _handle_flush_failure(self, batch: list[dict], exc: BaseException) -> None:
         """Apply A8 poison-batch classification to a failed batch."""
@@ -481,6 +568,17 @@ class AsyncVeraClient:
             await asyncio.sleep(poll_interval)
 
     async def close(self):
+        """Drain the queue, stop the flush task, close the HTTP client.
+
+        MUST be awaited explicitly before process exit. ``atexit`` cannot
+        reliably run async cleanup — ``asyncio.run(self.close())`` from an
+        atexit hook fights the running loop and may hang or no-op
+        depending on the runtime. Records remaining in the queue at process
+        exit are logged via the ``_atexit_warning`` hook but are **not**
+        flushed. If you can't guarantee an explicit close (e.g. AWS Lambda
+        cold-start path), use :class:`vera.client.VeraClient` (sync)
+        instead — the sync client's atexit drain is reliable.
+        """
         await self.stop_background_flush()
         await self._client.aclose()
 

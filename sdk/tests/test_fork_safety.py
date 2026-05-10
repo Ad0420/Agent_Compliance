@@ -148,6 +148,91 @@ def _pool_worker(n: int) -> int:
     return n
 
 
+def test_child_only_enqueue_after_parent_warmed_connection():
+    """After fork(), the child can flush even when the parent already had open connections.
+
+    CRITICAL #7 in the async-by-default review. The original
+    ``_after_in_child`` reset ``_queue``, ``_thread``, ``_lock``,
+    ``_owner_pid`` but NOT ``self._client`` (the ``httpx.Client``). On
+    ``os.fork()`` the child inherits the parent's TCP connections + TLS
+    session state. If the parent had already made a request (warmed the
+    pool), the child's first POST hits a socket in undefined state —
+    interleaved bytes (worst case) or a hung connection (best case).
+
+    This is the gunicorn ``--preload`` / Celery prefork / multiprocessing
+    failure mode: parent imports + warms client, then forks worker
+    children, every child silently corrupts requests.
+
+    The previous ``test_fork_after_init`` masked this because the parent
+    *also* enqueued, so its still-working connection accepted the child's
+    re-queued payloads — the child's broken connection was never actually
+    used. This test deliberately keeps the parent OUT of the post-fork
+    write path so any child-side socket corruption is fatal.
+    """
+    with _CountingServer() as server:
+        parent = VeraClient(
+            api_url=server.url,
+            api_key="test",
+            flush_interval=0.05,
+            batch_size=10,
+            atexit_drain_timeout=5.0,
+        )
+        # Warm the parent's connection pool — open at least one TCP
+        # connection so the child inherits an in-use socket. We use
+        # record_action (sync, blocking) because it goes via the same
+        # httpx.Client and we know it round-trips.
+        parent.record_action(action_name="parent_warmup")
+        # Allow the response to fully flush.
+        time.sleep(0.1)
+        parent_received = server.received
+
+        pid = os.fork()
+        if pid == 0:
+            # Child only: no parent activity after this point. If the
+            # child reuses the parent's TCP socket, requests will
+            # interleave or hang and ``close()`` will time out without
+            # delivering records.
+            try:
+                for i in range(50):
+                    parent.enqueue_action(
+                        action_name=f"child_{i}",
+                        action_type="x",
+                        result="success",
+                    )
+                # Force a drain on the child's brand-new httpx.Client.
+                parent.close()
+                os._exit(0)
+            except BaseException:
+                # If anything failed (e.g. socket corruption), exit
+                # nonzero so the parent's assertion below catches it.
+                os._exit(1)
+        else:
+            # Parent: do NOT enqueue. Wait for child.
+            _, status = os.waitpid(pid, 0)
+            assert os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0, (
+                f"child process failed (status={status}) — likely TCP "
+                "corruption from inherited httpx.Client"
+            )
+
+        # Wait for all child records to land.
+        deadline = time.perf_counter() + 5.0
+        while server.received < parent_received + 50 and time.perf_counter() < deadline:
+            time.sleep(0.05)
+        # Exactly 50 records from the child must have arrived; no socket
+        # errors, no interleaved bytes that the test server would reject.
+        child_received = server.received - parent_received
+        assert child_received == 50, (
+            f"expected 50 records from child, got {child_received} — "
+            "post-fork httpx.Client was not rebuilt"
+        )
+
+        # Cleanup the parent's copy too. Note: post-fork, the parent's
+        # _after_in_child handler also fired (since register_at_fork
+        # triggers in BOTH children of fork()? No — only after_in_child
+        # fires in the child). The parent here is unmolested.
+        parent.close()
+
+
 def test_multiprocessing_pool():
     """4 workers × 100 enqueues each; expect 400 records server-side."""
     if mp.get_start_method(allow_none=True) != "fork":
