@@ -137,7 +137,7 @@ export function V4Compare() {
         />
         <V4CompareCol
           title="Vera evidence chain"
-          kicker="TAMPER-PROOF"
+          kicker="TAMPER-EVIDENT"
           rows={[
             "A single character change breaks the seal",
             "Sealed by a third-party signer",

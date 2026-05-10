@@ -135,7 +135,7 @@ Below: 7 concrete use cases across clinical, RCM, prior auth, pharma, and device
 
 - **The AI does the work.** Vera doesn't replace agents; it makes them deployable in regulated workflows.
 - **A human approves the consequential moves.** Approval surface is Slack / mobile / dashboard, designed for <60-second decisions.
-- **Every action is cryptographically signed.** Tamper-evident, exportable, court-admissible.
+- **Every action is cryptographically signed.** Tamper-evident, exportable, designed for FRE 901/902 admissibility (legal opinion in progress).
 - **The buyer is platform engineering or compliance**, not the clinician using it.
 - **Pricing scales with action volume**, not seats.
 
