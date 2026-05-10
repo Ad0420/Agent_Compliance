@@ -48,9 +48,9 @@ AUDIT_SIDE_EXCEPTIONS = [
 class TestSyncDecoratorIsolatesAuditExceptions:
     @pytest.mark.parametrize("audit_exc", AUDIT_SIDE_EXCEPTIONS)
     def test_success_branch_swallows_audit_exception(self, audit_exc, caplog):
-        """record_action raising on success must not break the wrapped function."""
+        """enqueue_action raising on success must not break the wrapped function."""
         mock_client = MagicMock()
-        mock_client.record_action.side_effect = audit_exc
+        mock_client.enqueue_action.side_effect = audit_exc
 
         @audit(action_name="will_succeed", client=mock_client)
         def add(a, b):
@@ -60,7 +60,7 @@ class TestSyncDecoratorIsolatesAuditExceptions:
             result = add(2, 3)
 
         assert result == 5
-        mock_client.record_action.assert_called_once()
+        mock_client.enqueue_action.assert_called_once()
         # Audit failure logged at WARNING.
         assert any(
             record.levelno == logging.WARNING and "will_succeed" in record.getMessage()
@@ -69,9 +69,9 @@ class TestSyncDecoratorIsolatesAuditExceptions:
 
     @pytest.mark.parametrize("audit_exc", AUDIT_SIDE_EXCEPTIONS)
     def test_failure_branch_swallows_audit_exception(self, audit_exc, caplog):
-        """record_action raising on failure must not mask the customer exception."""
+        """enqueue_action raising on failure must not mask the customer exception."""
         mock_client = MagicMock()
-        mock_client.record_action.side_effect = audit_exc
+        mock_client.enqueue_action.side_effect = audit_exc
 
         @audit(action_name="will_fail", client=mock_client)
         def fail():
@@ -81,7 +81,7 @@ class TestSyncDecoratorIsolatesAuditExceptions:
             with pytest.raises(ValueError, match="customer error"):
                 fail()
 
-        mock_client.record_action.assert_called_once()
+        mock_client.enqueue_action.assert_called_once()
         assert any(
             record.levelno == logging.WARNING and "will_fail" in record.getMessage()
             for record in caplog.records
@@ -90,7 +90,7 @@ class TestSyncDecoratorIsolatesAuditExceptions:
     def test_customer_exception_wins_over_audit_exception(self):
         """If both raise, the customer's exception is what propagates."""
         mock_client = MagicMock()
-        mock_client.record_action.side_effect = httpx.ConnectError("audit broke")
+        mock_client.enqueue_action.side_effect = httpx.ConnectError("audit broke")
 
         @audit(action_name="both_raise", client=mock_client)
         def fail():

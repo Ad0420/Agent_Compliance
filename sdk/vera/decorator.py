@@ -118,9 +118,12 @@ def audit(
 
                 # Vera-side failures (e.g. network errors talking to the
                 # ledger) must NEVER mask the customer's exception. Swallow
-                # any exception from record_action and log at WARNING.
+                # any exception from enqueue_action and log at WARNING.
+                # As of v0.4 we use enqueue_action() so the decorator never
+                # adds blocking latency to customer code; failures show up
+                # asynchronously via the worker thread's classification.
                 try:
-                    effective_client.record_action(
+                    effective_client.enqueue_action(
                         action_name=resolved_name,
                         action_type=action_type,
                         result="failure",
@@ -142,7 +145,7 @@ def audit(
             elapsed_ms = int((time.perf_counter() - start) * 1000)
 
             try:
-                effective_client.record_action(
+                effective_client.enqueue_action(
                     action_name=resolved_name,
                     action_type=action_type,
                     result="success",

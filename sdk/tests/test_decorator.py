@@ -16,8 +16,8 @@ class TestAuditDecorator:
         result = add(2, 3)
         assert result == 5
 
-        mock_client.record_action.assert_called_once()
-        call_kwargs = mock_client.record_action.call_args[1]
+        mock_client.enqueue_action.assert_called_once()
+        call_kwargs = mock_client.enqueue_action.call_args[1]
         assert call_kwargs["action_name"] == "my_action"
         assert call_kwargs["action_type"] == "computation"
         assert call_kwargs["result"] == "success"
@@ -36,8 +36,8 @@ class TestAuditDecorator:
         except ValueError:
             pass
 
-        mock_client.record_action.assert_called_once()
-        call_kwargs = mock_client.record_action.call_args[1]
+        mock_client.enqueue_action.assert_called_once()
+        call_kwargs = mock_client.enqueue_action.call_args[1]
         assert call_kwargs["result"] == "failure"
         assert call_kwargs["error_message"] == "test error"
 
@@ -60,7 +60,7 @@ class TestAuditDecorator:
             return "ok"
 
         my_custom_function()
-        call_kwargs = mock_client.record_action.call_args[1]
+        call_kwargs = mock_client.enqueue_action.call_args[1]
         assert call_kwargs["action_name"] == "my_custom_function"
 
     def test_captures_inputs(self):
@@ -71,7 +71,7 @@ class TestAuditDecorator:
             return f"{greeting} {name}"
 
         greet("world", greeting="hi")
-        call_kwargs = mock_client.record_action.call_args[1]
+        call_kwargs = mock_client.enqueue_action.call_args[1]
         assert "world" in str(call_kwargs["input_data"]["args"])
         assert "hi" in str(call_kwargs["input_data"]["kwargs"])
 
@@ -84,7 +84,7 @@ class TestAuditDecorator:
             return True
 
         do_work()
-        mock_client.record_action.assert_called_once()
+        mock_client.enqueue_action.assert_called_once()
 
         # Cleanup
         set_default_client(None)
