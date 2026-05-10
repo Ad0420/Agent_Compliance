@@ -49,13 +49,18 @@ async def require_clerk_auth(
     On success, populates ``request.state.clerk_user`` and returns the decoded
     JWT claims dict.
     """
-    if credentials is None or credentials.scheme.lower() != "bearer":
-        raise HTTPException(
-            status_code=401,
-            detail="Missing or invalid Authorization header",
-        )
+    request_id = getattr(request.state, "request_id", None)
 
-    claims = await verify_clerk_jwt(credentials.credentials)
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        # Generic 401 detail — don't leak whether the issue was a missing
+        # header vs a wrong scheme. The server-side log keeps the detail.
+        logger.info(
+            "Clerk JWT rejected: missing or non-bearer Authorization header",
+            extra={"request_id": request_id} if request_id else {},
+        )
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    claims = await verify_clerk_jwt(credentials.credentials, request_id=request_id)
     request.state.clerk_user = claims
     return claims
 
