@@ -229,7 +229,7 @@ class TestDecoratorIntegration:
 
         f(x="secret")
 
-        call_kwargs = mock_client.record_action.call_args[1]
+        call_kwargs = mock_client.enqueue_action.call_args[1]
         assert call_kwargs["input_data"]["kwargs"]["x"] == "[REDACTED]"
 
     def test_audit_default_redactor_redacts_ssn(self):
@@ -240,7 +240,7 @@ class TestDecoratorIntegration:
             return "done"
 
         process("ssn 123-45-6789 noted")
-        call_kwargs = mock_client.record_action.call_args[1]
+        call_kwargs = mock_client.enqueue_action.call_args[1]
         # The arg becomes a string in input_data["args"].
         assert "123-45-6789" not in call_kwargs["input_data"]["args"][0]
 
@@ -252,7 +252,7 @@ class TestDecoratorIntegration:
             return {"password": "hunter2", "ok": True}
 
         returns_secret()
-        call_kwargs = mock_client.record_action.call_args[1]
+        call_kwargs = mock_client.enqueue_action.call_args[1]
         rv = call_kwargs["outcome"]["return_value"]
         assert rv["password"] == "[REDACTED]"
         # 'ok' isn't a block key — its boolean value is preserved as a string.
@@ -267,7 +267,7 @@ class TestDecoratorIntegration:
             return None
 
         f(weird_key="boom", password="hunter2")
-        kw = mock_client.record_action.call_args[1]["input_data"]["kwargs"]
+        kw = mock_client.enqueue_action.call_args[1]["input_data"]["kwargs"]
         assert kw["weird_key"] == "[REDACTED]"
         # Default block_keys were replaced; "password" no longer triggers a
         # block_key match. The value contains no pattern, so it stays as-is.
