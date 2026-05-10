@@ -1,0 +1,55 @@
+# Trusted publishing via OIDC must be configured at https://pypi.org/manage/account/publishing/
+# for the `vera-sdk` project pointing at this workflow file. If not yet configured,
+# either add it OR set repository secret PYPI_API_TOKEN and switch the publish step
+# to password-auth (commented section below).
+
+name: SDK Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "sdk-v*"
+
+jobs:
+  publish:
+    name: Build and publish vera-sdk to PyPI
+    runs-on: ubuntu-latest
+    # `id-token: write` is required for PyPI Trusted Publishing via OIDC.
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Build sdist and wheel
+        working-directory: sdk
+        run: python -m build
+
+      - name: Publish to PyPI (Trusted Publishing / OIDC)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: sdk/dist
+          # No `password:` here — OIDC trusted publishing is used by default
+          # when `permissions: id-token: write` is granted and PyPI is configured
+          # to trust this repo + workflow.
+
+      # ---------------------------------------------------------------------
+      # Fallback: API-token auth (uncomment if Trusted Publishing isn't set up
+      # at PyPI yet). Requires repository secret PYPI_API_TOKEN.
+      # ---------------------------------------------------------------------
+      # - name: Publish to PyPI (API token fallback)
+      #   uses: pypa/gh-action-pypi-publish@release/v1
+      #   with:
+      #     packages-dir: sdk/dist
+      #     password: ${{ secrets.PYPI_API_TOKEN }}
