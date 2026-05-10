@@ -1,6 +1,11 @@
 import hashlib
+import logging
 import secrets
+import time
+from typing import Any
 
+import httpx
+import jwt
 from fastapi import Depends, HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
@@ -10,7 +15,123 @@ from ..config import settings
 from ..database import get_db
 from ..models import APIKey
 
+logger = logging.getLogger(__name__)
+
 security = HTTPBearer()
+
+# ── Clerk JWT verification ────────────────────────────────────────────────────
+# In-process JWKS cache. Keyed by `kid` → loaded RSA public key. Refreshed when
+# either (a) TTL has elapsed or (b) we encounter an unknown kid (key rotation).
+_JWKS_CACHE: dict[str, Any] = {"fetched_at": 0.0, "keys": {}}
+_JWKS_TTL_SECONDS = 3600
+
+
+async def _fetch_jwks(jwks_url: str) -> dict[str, Any]:
+    """Fetch a JWKS document over HTTPS. Separated for ease of testing."""
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.get(jwks_url)
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def get_jwks_keys(force_refresh: bool = False) -> dict[str, Any]:
+    """Return cached map of `kid` → RSA public key. Fetches on miss/expiry.
+
+    Raises HTTPException(503) if `CLERK_JWKS_URL` is unconfigured — refusing to
+    silently accept tokens beats failing open.
+    """
+    if not settings.clerk_jwks_url:
+        logger.warning("CLERK_JWKS_URL is not configured — refusing to verify Clerk JWTs")
+        raise HTTPException(
+            status_code=503,
+            detail="Clerk auth is not configured on this server",
+        )
+
+    now = time.time()
+    cache_fresh = (now - _JWKS_CACHE["fetched_at"]) < _JWKS_TTL_SECONDS
+    if not force_refresh and cache_fresh and _JWKS_CACHE["keys"]:
+        return _JWKS_CACHE["keys"]
+
+    try:
+        jwks = await _fetch_jwks(settings.clerk_jwks_url)
+    except httpx.HTTPError as exc:
+        logger.exception("Failed to fetch Clerk JWKS")
+        raise HTTPException(
+            status_code=503,
+            detail="Unable to fetch Clerk JWKS",
+        ) from exc
+
+    keys: dict[str, Any] = {}
+    for jwk in jwks.get("keys", []):
+        kid = jwk.get("kid")
+        if not kid:
+            continue
+        try:
+            keys[kid] = jwt.algorithms.RSAAlgorithm.from_jwk(jwk)
+        except (ValueError, TypeError, jwt.InvalidKeyError):
+            logger.warning("Skipping malformed JWK kid=%s", kid)
+            continue
+
+    _JWKS_CACHE["fetched_at"] = now
+    _JWKS_CACHE["keys"] = keys
+    return keys
+
+
+async def verify_clerk_jwt(token: str) -> dict[str, Any]:
+    """Verify a Clerk-issued RS256 JWT and return its claims.
+
+    Raises HTTPException(401) on any verification failure, HTTPException(503)
+    if Clerk auth is not configured.
+    """
+    try:
+        unverified_header = jwt.get_unverified_header(token)
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=401, detail=f"Malformed JWT: {exc}") from exc
+
+    kid = unverified_header.get("kid")
+    if not kid:
+        raise HTTPException(status_code=401, detail="JWT missing kid header")
+
+    keys = await get_jwks_keys()
+    key = keys.get(kid)
+    if key is None:
+        # Cache miss — refetch once in case Clerk rotated keys.
+        keys = await get_jwks_keys(force_refresh=True)
+        key = keys.get(kid)
+        if key is None:
+            raise HTTPException(status_code=401, detail="Unknown JWT kid")
+
+    decode_kwargs: dict[str, Any] = {
+        "algorithms": ["RS256"],
+        "options": {"require": ["exp", "iat"]},
+    }
+    if settings.clerk_issuer:
+        decode_kwargs["issuer"] = settings.clerk_issuer
+    if settings.clerk_audience:
+        decode_kwargs["audience"] = settings.clerk_audience
+    else:
+        # When no audience is configured, skip the aud claim verification (Clerk
+        # session tokens by default carry an `azp` rather than `aud`).
+        decode_kwargs["options"]["verify_aud"] = False
+
+    try:
+        claims = jwt.decode(token, key=key, **decode_kwargs)
+    except jwt.ExpiredSignatureError as exc:
+        raise HTTPException(status_code=401, detail="JWT expired") from exc
+    except jwt.InvalidIssuerError as exc:
+        raise HTTPException(status_code=401, detail="Invalid JWT issuer") from exc
+    except jwt.InvalidAudienceError as exc:
+        raise HTTPException(status_code=401, detail="Invalid JWT audience") from exc
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=401, detail=f"JWT verification failed: {exc}") from exc
+
+    return claims
+
+
+def _reset_jwks_cache_for_tests() -> None:
+    """Test-only helper. Wipes the JWKS cache so tests are isolated."""
+    _JWKS_CACHE["fetched_at"] = 0.0
+    _JWKS_CACHE["keys"] = {}
 
 
 def _hash_key(raw_key: str) -> str:

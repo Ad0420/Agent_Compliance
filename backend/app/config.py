@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     resend_api_key: str = ""
     alert_from_email: str = "alerts@usevera.xyz"
 
+    # ── Clerk auth (dashboard routes only — SDK keeps API-key auth) ────────────
+    # JWKS endpoint for Clerk's signing public keys. Per-instance URL like
+    # https://<your-instance>.clerk.accounts.dev/.well-known/jwks.json
+    clerk_jwks_url: str = ""
+    # Expected JWT issuer claim. Typically the Clerk frontend-api origin.
+    # Leave empty to skip issuer verification (NOT recommended in production).
+    clerk_issuer: str | None = None
+    # Optional audience claim. Only set if you've configured a custom JWT template.
+    clerk_audience: str | None = None
+
     model_config = {"env_file": ".env"}
 
 

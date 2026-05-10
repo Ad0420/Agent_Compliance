@@ -21,6 +21,7 @@ from .routes import (
     approvals_router,
     webhooks_router,
 )
+from .routes.dashboard_demo import router as dashboard_demo_router
 from .middleware import RateLimitMiddleware, RequestIDMiddleware
 from .services.immutability import install_sqlite_triggers
 
@@ -86,3 +87,7 @@ app.include_router(register_router, prefix="/v1")
 app.include_router(policies_router, prefix="/v1")
 app.include_router(approvals_router, prefix="/v1")
 app.include_router(webhooks_router, prefix="/v1")
+# Dashboard routes — authenticated via Clerk JWT (humans). The router defines
+# its own /v1/dashboard prefix, so no extra prefix here. Existing /v1/* routes
+# above continue to use API-key auth (machines).
+app.include_router(dashboard_demo_router)
