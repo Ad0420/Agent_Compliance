@@ -35,7 +35,7 @@ class AsyncVeraClient:
         agent_version: str | None = None,
         model_id: str | None = None,
         framework: str | None = None,
-        timeout: float = 30.0,
+        timeout: float = 5.0,
         batch_size: int = 50,
         flush_interval: float = 5.0,
         max_queue_size: int = 10_000,
