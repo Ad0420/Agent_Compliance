@@ -12,8 +12,8 @@ export function Topbar() {
   const { data: chainStatus } = useChainVerification();
   const router = useRouter();
 
-  const handleLogout = () => {
-    logout();
+  const handleLogout = async () => {
+    await logout();
     router.push("/login");
   };
 

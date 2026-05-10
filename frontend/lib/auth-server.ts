@@ -1,6 +1,12 @@
 import "server-only";
 import { auth } from "@clerk/nextjs/server";
 
+// TODO(Phase 3 / E4): Wire this helper into dashboard pages that call
+// /v1/dashboard/* routes. Currently exported but unused by design — Phase 2
+// only lands the helper alongside the Clerk infrastructure (provider,
+// middleware, login/register UI). The dashboard still uses the legacy
+// localStorage API-key flow until E4 migrates it. See mvp-hardening-plan.md.
+
 /**
  * Get a backend-bound Clerk session token for the current request.
  *
