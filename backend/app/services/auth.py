@@ -1,6 +1,12 @@
+import asyncio
 import hashlib
+import logging
 import secrets
+import time
+from typing import Any
 
+import httpx
+import jwt
 from fastapi import Depends, HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
@@ -10,7 +16,230 @@ from ..config import settings
 from ..database import get_db
 from ..models import APIKey
 
+logger = logging.getLogger(__name__)
+
 security = HTTPBearer()
+
+# ── Clerk JWT verification ────────────────────────────────────────────────────
+# In-process JWKS cache. Keyed by `kid` → loaded RSA public key. Refreshed when
+# either (a) TTL has elapsed or (b) we encounter an unknown kid (key rotation).
+_JWKS_CACHE: dict[str, Any] = {"fetched_at": 0.0, "keys": {}}
+_JWKS_TTL_SECONDS = 3600
+
+# Single-flight lock for JWKS fetch. Without it, a burst of requests with a
+# cold cache fan out to N concurrent JWKS HTTP requests; with it, the first
+# request fetches and the rest wait for the populated cache.
+_JWKS_FETCH_LOCK = asyncio.Lock()
+
+# Negative cache for unknown kids. Without a negative cache, an attacker
+# spamming random kids forces one outbound JWKS HTTP per request. TTL is
+# short (60s) so legitimate key rotation isn't blocked for long.
+_UNKNOWN_KID_CACHE: dict[str, float] = {}
+_UNKNOWN_KID_TTL_SECONDS = 60.0
+
+# Global cooldown on forced JWKS refresh (defense-in-depth alongside the
+# negative kid cache). Even if an attacker rotates kids faster than 60s,
+# we still cap forced refetches to once every 30s.
+_LAST_FORCED_REFRESH: float = 0.0
+_FORCED_REFRESH_COOLDOWN_SECONDS = 30.0
+
+# Clock-skew leeway. Industry-standard 30s slack on `exp` and `iat`.
+_JWT_LEEWAY_SECONDS = 30
+
+
+async def _fetch_jwks(jwks_url: str) -> dict[str, Any]:
+    """Fetch a JWKS document over HTTPS. Separated for ease of testing."""
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        resp = await client.get(jwks_url)
+        resp.raise_for_status()
+        return resp.json()
+
+
+async def get_jwks_keys(force_refresh: bool = False) -> dict[str, Any]:
+    """Return cached map of `kid` → RSA public key. Fetches on miss/expiry.
+
+    Single-flight: under burst load the lock collapses concurrent fetches
+    into one outbound HTTP. Other callers wait on the lock and read the
+    populated cache when they enter the critical section.
+
+    Raises HTTPException(503) if `CLERK_JWKS_URL` is unconfigured — refusing to
+    silently accept tokens beats failing open.
+    """
+    if not settings.clerk_jwks_url:
+        logger.warning("CLERK_JWKS_URL is not configured — refusing to verify Clerk JWTs")
+        raise HTTPException(
+            status_code=503,
+            detail="Clerk auth is not configured on this server",
+        )
+
+    # Fast path: cache is fresh and populated, no force-refresh requested.
+    # Avoid taking the lock so the common case stays uncontended.
+    now = time.time()
+    cache_fresh = (now - _JWKS_CACHE["fetched_at"]) < _JWKS_TTL_SECONDS
+    if not force_refresh and cache_fresh and _JWKS_CACHE["keys"]:
+        return _JWKS_CACHE["keys"]
+
+    async with _JWKS_FETCH_LOCK:
+        # Re-check inside the lock: a peer may have populated the cache while
+        # we were waiting for the lock. If so, return without re-fetching.
+        now = time.time()
+        cache_fresh = (now - _JWKS_CACHE["fetched_at"]) < _JWKS_TTL_SECONDS
+        if not force_refresh and cache_fresh and _JWKS_CACHE["keys"]:
+            return _JWKS_CACHE["keys"]
+
+        try:
+            jwks = await _fetch_jwks(settings.clerk_jwks_url)
+        except httpx.HTTPError as exc:
+            logger.exception("Failed to fetch Clerk JWKS")
+            raise HTTPException(
+                status_code=503,
+                detail="Unable to fetch Clerk JWKS",
+            ) from exc
+
+        keys: dict[str, Any] = {}
+        for jwk in jwks.get("keys", []):
+            kid = jwk.get("kid")
+            if not kid:
+                continue
+            try:
+                keys[kid] = jwt.algorithms.RSAAlgorithm.from_jwk(jwk)
+            except (ValueError, TypeError, jwt.InvalidKeyError):
+                logger.warning("Skipping malformed JWK kid=%s", kid)
+                continue
+
+        _JWKS_CACHE["fetched_at"] = now
+        _JWKS_CACHE["keys"] = keys
+        # A successful refresh likely surfaces previously-rotated kids; clear
+        # the negative cache so legitimate clients aren't held back.
+        _UNKNOWN_KID_CACHE.clear()
+        return keys
+
+
+def _reject(reason: str, request_id: str | None = None) -> HTTPException:
+    """Build a generic 401 while logging the specific reason server-side.
+
+    Returning a generic ``Unauthorized`` to the client avoids handing
+    attackers an oracle ("malformed header" vs "bad signature" vs "wrong
+    issuer" vs "kid not in JWKS") that helps them craft tokens. The
+    server-side log keeps the detail for operators, correlated by
+    request_id where available.
+    """
+    extra = {"request_id": request_id} if request_id else {}
+    logger.info("Clerk JWT rejected: %s", reason, extra=extra)
+    return HTTPException(status_code=401, detail="Unauthorized")
+
+
+async def verify_clerk_jwt(
+    token: str,
+    *,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    """Verify a Clerk-issued RS256 JWT and return its claims.
+
+    Raises HTTPException(401) on any verification failure, HTTPException(503)
+    if Clerk auth is not configured.
+
+    The caller may pass ``request_id`` so 401-rejection logs correlate
+    with the request log line emitted by ``RequestIDMiddleware``.
+    """
+    global _LAST_FORCED_REFRESH
+
+    try:
+        unverified_header = jwt.get_unverified_header(token)
+    except jwt.PyJWTError as exc:
+        raise _reject(f"malformed header: {exc}", request_id) from exc
+
+    # Reject `alg: none` and any non-RS256 algorithm at the header level.
+    # `jwt.decode` with explicit ``algorithms=["RS256"]`` already rejects
+    # these, but doing it here avoids a JWKS lookup for obvious garbage.
+    alg = unverified_header.get("alg")
+    if alg != "RS256":
+        raise _reject(f"unsupported alg: {alg!r}", request_id)
+
+    kid = unverified_header.get("kid")
+    if not kid:
+        raise _reject("missing kid header", request_id)
+
+    # Negative cache check: short-circuit known-bad kids without refetching
+    # JWKS. An attacker spamming random kids would otherwise force one
+    # outbound HTTP per request.
+    now = time.time()
+    cached_at = _UNKNOWN_KID_CACHE.get(kid)
+    if cached_at is not None and (now - cached_at) < _UNKNOWN_KID_TTL_SECONDS:
+        raise _reject(f"kid {kid!r} in negative cache", request_id)
+
+    keys = await get_jwks_keys()
+    key = keys.get(kid)
+    if key is None:
+        # Cache miss — refetch once in case Clerk rotated keys, but only if
+        # we haven't done a forced refresh recently (defense-in-depth: even
+        # if an attacker rotates kids faster than the negative-cache TTL,
+        # we still cap forced refetches).
+        now = time.time()
+        if (now - _LAST_FORCED_REFRESH) < _FORCED_REFRESH_COOLDOWN_SECONDS:
+            _UNKNOWN_KID_CACHE[kid] = now
+            raise _reject(
+                f"unknown kid {kid!r}; forced-refresh on cooldown",
+                request_id,
+            )
+
+        _LAST_FORCED_REFRESH = now
+        keys = await get_jwks_keys(force_refresh=True)
+        key = keys.get(kid)
+        if key is None:
+            _UNKNOWN_KID_CACHE[kid] = time.time()
+            raise _reject(f"unknown kid {kid!r} after refetch", request_id)
+
+    decode_kwargs: dict[str, Any] = {
+        "algorithms": ["RS256"],
+        "options": {"require": ["exp", "iat"]},
+        # 30s leeway on `exp`/`iat`/`nbf` for clock-skew tolerance.
+        "leeway": _JWT_LEEWAY_SECONDS,
+    }
+    if settings.clerk_issuer:
+        decode_kwargs["issuer"] = settings.clerk_issuer
+    if settings.clerk_audience:
+        decode_kwargs["audience"] = settings.clerk_audience
+    else:
+        # When no audience is configured, skip the aud claim verification (Clerk
+        # session tokens by default carry an `azp` rather than `aud`).
+        decode_kwargs["options"]["verify_aud"] = False
+
+    try:
+        claims = jwt.decode(token, key=key, **decode_kwargs)
+    except jwt.ExpiredSignatureError as exc:
+        raise _reject("expired", request_id) from exc
+    except jwt.InvalidIssuerError as exc:
+        raise _reject("invalid issuer", request_id) from exc
+    except jwt.InvalidAudienceError as exc:
+        raise _reject("invalid audience", request_id) from exc
+    except jwt.PyJWTError as exc:
+        raise _reject(f"signature verification failed: {exc}", request_id) from exc
+
+    # `azp` validation. Clerk session tokens carry `azp` (authorized party /
+    # frontend origin) rather than `aud`. If the operator has configured an
+    # allow-list of authorized parties, enforce it. This is the check Clerk
+    # explicitly recommends in their backend-handling docs:
+    # https://clerk.com/docs/backend-requests/handling/manual-jwt
+    authorized_parties = settings.clerk_authorized_parties
+    if authorized_parties:
+        azp = claims.get("azp")
+        if azp not in authorized_parties:
+            raise _reject(
+                f"azp {azp!r} not in authorized_parties allow-list",
+                request_id,
+            )
+
+    return claims
+
+
+def _reset_jwks_cache_for_tests() -> None:
+    """Test-only helper. Wipes the JWKS cache so tests are isolated."""
+    global _LAST_FORCED_REFRESH
+    _JWKS_CACHE["fetched_at"] = 0.0
+    _JWKS_CACHE["keys"] = {}
+    _UNKNOWN_KID_CACHE.clear()
+    _LAST_FORCED_REFRESH = 0.0
 
 
 def _hash_key(raw_key: str) -> str:

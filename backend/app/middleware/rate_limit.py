@@ -5,6 +5,7 @@ Uses an in-memory store — suitable for single-instance deployments.
 For multi-instance, swap the store for Redis.
 """
 
+import hashlib
 import time
 from collections import defaultdict, deque
 
@@ -13,6 +14,20 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
 from ..config import settings
+
+
+def _looks_like_jwt(token: str) -> bool:
+    """Heuristic JWT detection: 3 dot-separated non-empty segments.
+
+    We can't safely verify the JWT here (this middleware runs BEFORE the auth
+    dependency that talks to Clerk's JWKS), but the shape check is enough to
+    distinguish a JWT from an ``al_live_*`` / ``al_test_*`` API key so that
+    each user gets their own rate-limit bucket.
+    """
+    if not token:
+        return False
+    parts = token.split(".")
+    return len(parts) == 3 and all(parts)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -32,10 +47,27 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._requests: dict[str, deque[float]] = defaultdict(deque)
 
     def _get_key(self, request: Request) -> str:
-        """Extract rate limit key: API key if present, otherwise client IP."""
+        """Extract rate limit key: API key prefix, JWT hash, or client IP.
+
+        For API keys (``al_live_*``/``al_test_*``): use the first 16 chars of
+        the random suffix — the random portion gives uniqueness, and we never
+        store the full key.
+
+        For JWTs: every Clerk RS256 JWT begins with ``eyJhbGciOi...`` (the
+        base64url-encoded ``{"alg":"RS256",...}`` header), so a prefix-based
+        bucket would collapse every authenticated user into ONE bucket and
+        let any user DOS all others. Hash the full token instead so each
+        unique token gets its own bucket. Ideally we'd key on the verified
+        ``sub`` claim, but rate limiting fires before the auth dependency
+        runs, so token-hash is the right pre-auth move.
+        """
         auth = request.headers.get("authorization", "")
         if auth.startswith("Bearer ") and len(auth) > 10:
-            # Use first 16 chars of the key as the bucket (don't store full key)
+            token = auth[7:]
+            if _looks_like_jwt(token):
+                token_hash = hashlib.sha256(token.encode()).hexdigest()[:32]
+                return f"jwt:{token_hash}"
+            # API-key path: random suffix gives uniqueness across orgs.
             return f"key:{auth[7:23]}"
         return f"ip:{request.client.host if request.client else 'unknown'}"
 
