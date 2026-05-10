@@ -111,6 +111,13 @@ application code. If you need longer timeouts for specific deployments, pass
 
 Full docs, dashboard, and API reference: <https://usevera.xyz>.
 
+### Versioning policy
+
+`vera-sdk` follows [Semantic Versioning](https://semver.org/). Breaking
+behavioral changes ship behind a `DeprecationWarning` for at least one minor
+release before the default flips. See [`CHANGELOG.md`](./CHANGELOG.md) and
+[`MIGRATION.md`](./MIGRATION.md).
+
 ## License
 
 MIT.
