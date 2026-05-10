@@ -98,6 +98,15 @@ Every approval vote is KMS-signed and appended to the same audit chain as the
 underlying action — giving you a tamper-evident proof that a specific human
 approved a specific action at a specific time.
 
+### Timeouts and retry semantics
+
+`VeraClient` and `AsyncVeraClient` default to a 5-second HTTP timeout. Audit
+operations are designed to fail fast — your customer-facing code should never
+block on Vera availability. The decorator layer (`@audit`, `@async_audit`)
+catches transport failures internally so they never propagate to your
+application code. If you need longer timeouts for specific deployments, pass
+`timeout=...` explicitly to the constructor.
+
 ## Documentation
 
 Full docs, dashboard, and API reference: <https://usevera.xyz>.

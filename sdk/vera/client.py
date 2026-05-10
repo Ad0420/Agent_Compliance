@@ -38,7 +38,7 @@ class VeraClient:
         agent_version: str | None = None,
         model_id: str | None = None,
         framework: str | None = None,
-        timeout: float = 30.0,
+        timeout: float = 5.0,
         redactor: "Redactor | None" = None,
     ):
         self.api_url = api_url.rstrip("/")
