@@ -12,6 +12,15 @@ from .decorator import (
 from .async_client import AsyncVeraClient
 from .async_decorator import async_audit, set_default_async_client
 from .redaction import Redactor
+from .errors import (
+    VeraError,
+    VeraAuthError,
+    VeraRateLimitError,
+    VeraServerError,
+    VeraTimeoutError,
+    VeraNetworkError,
+    VeraValidationError,
+)
 
 # Back-compat aliases (deprecated — will be removed in v1.0)
 ActionLedgerClient = VeraClient
@@ -30,6 +39,14 @@ __all__ = [
     "Redactor",
     "set_default_redactor",
     "get_default_redactor",
+    # Branded errors (public API ahead of v0.4 client integration)
+    "VeraError",
+    "VeraAuthError",
+    "VeraRateLimitError",
+    "VeraServerError",
+    "VeraTimeoutError",
+    "VeraNetworkError",
+    "VeraValidationError",
     # Back-compat aliases (deprecated)
     "ActionLedgerClient",
     "AsyncActionLedgerClient",

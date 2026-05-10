@@ -21,7 +21,7 @@ from .routes import (
     approvals_router,
     webhooks_router,
 )
-from .middleware import RateLimitMiddleware
+from .middleware import RateLimitMiddleware, RequestIDMiddleware
 from .services.immutability import install_sqlite_triggers
 
 logger = logging.getLogger("vera")
@@ -55,6 +55,9 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 app.add_middleware(RateLimitMiddleware)
+# Added last so it is the outermost middleware: every response — including
+# rate-limit 429s and CORS preflights — carries an X-Request-ID header.
+app.add_middleware(RequestIDMiddleware)
 
 
 @app.get("/health")
