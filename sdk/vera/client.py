@@ -1081,6 +1081,49 @@ class VeraClient:
     # Lifecycle
     # ------------------------------------------------------------------
 
+    def flush(self, timeout: float = 30.0) -> bool:
+        """Block until the queue (and any in-flight retries) drain to the server.
+
+        Returns ``True`` when the queue is empty and no spool rows remain
+        pending, ``False`` when ``timeout`` elapsed first. Safe to call
+        multiple times. Does NOT stop the background worker — use
+        :meth:`close` for that.
+
+        Why this exists separately from ``close()``: customers who want
+        delivery-by-end-of-request semantics (Flask request handlers,
+        Celery tasks, multiprocessing pool workers about to exit) need a
+        synchronous "wait until durable" primitive that doesn't tear down
+        the client. ``close()``'s implicit drain is bounded by
+        ``atexit_drain_timeout`` and silently truncates on hit; ``flush()``
+        returns a clear bool so the caller can react.
+        """
+        # Lazy-init the queue + worker so flush() before any enqueue is a
+        # no-op rather than an AttributeError. Mirrors enqueue_action's
+        # fork-safety check so a forked child's flush() works too.
+        if self._owner_pid != os.getpid() or self._worker is None:
+            self._init_runtime_state()
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        # Wake the worker on every poll so it doesn't sit on flush_interval.
+        while time.monotonic() < deadline:
+            queue_empty = self._queue is None or self._queue.empty()
+            spool_empty = self._spool is None or self._spool.size() == 0
+            # Worker has its own in-flight batch outside the queue — also
+            # check that consecutive_failures hasn't spiked, indicating an
+            # active retry that hasn't been re-queued yet.
+            if queue_empty and spool_empty:
+                # Brief grace period to let any in-flight POST complete.
+                # The worker pulled the batch out of the queue but the
+                # actual network call may still be running.
+                time.sleep(0.05)
+                queue_empty = self._queue is None or self._queue.empty()
+                spool_empty = self._spool is None or self._spool.size() == 0
+                if queue_empty and spool_empty:
+                    return True
+            if self._wakeup is not None:
+                self._wakeup.set()
+            time.sleep(0.05)
+        return False
+
     def close(self) -> None:
         """Flush the queue, stop the background thread, close the HTTP client."""
         self._closed = True

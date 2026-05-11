@@ -51,9 +51,13 @@ import threading
 import time
 from typing import Any
 
-from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+# NOTE: ``cryptography`` is an optional extra (vera-sdk[spool]). We import it
+# lazily — only when ``Spool`` is actually instantiated or its crypto helpers
+# are invoked — so that ``import vera`` (and therefore every downstream import
+# of ``vera.client``) stays available to customers who never opt into the
+# durable spool. Eager top-level import would force every Vera SDK user to
+# install ``cryptography``, breaking lightweight environments (Lambda layers,
+# CI images for the simulator, etc.) that don't need the spool.
 
 logger = logging.getLogger("vera.spool")
 
@@ -83,6 +87,21 @@ class SpoolDecryptionError(SpoolError):
     corrupted ciphertext, or tampering)."""
 
 
+def _require_cryptography() -> None:
+    """Verify the optional ``cryptography`` dependency is installed.
+
+    Raises ``ImportError`` with a hint that points at the ``[spool]`` extra
+    so the customer gets a one-line fix instead of an opaque traceback.
+    """
+    try:
+        import cryptography  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(
+            "vera-sdk[spool] required for durable spool. "
+            "Install with: pip install 'vera-sdk[spool]'"
+        ) from exc
+
+
 def _derive_key(passphrase: str, salt: bytes) -> bytes:
     """Derive a 32-byte AES key from a passphrase using PBKDF2-HMAC-SHA256.
 
@@ -91,6 +110,11 @@ def _derive_key(passphrase: str, salt: bytes) -> bytes:
     across process restarts. One salt per spool file — never reuse keys across
     spools.
     """
+    # Lazy import so ``import vera.spool`` doesn't require ``cryptography``
+    # when the customer hasn't installed the [spool] extra.
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=_KEY_LENGTH,
@@ -156,6 +180,10 @@ class Spool:
                 "Spool requires a non-empty passphrase. Set VERA_SPOOL_KEY "
                 "or pass passphrase=... explicitly."
             )
+        # Fail with a friendly error if ``cryptography`` isn't installed.
+        # Doing this in ``__init__`` (rather than at module top) lets the
+        # SDK be importable in environments that never use the spool.
+        _require_cryptography()
         self._path = path
         self._max_bytes = max(1, int(max_bytes))
         self._passphrase = passphrase
@@ -299,6 +327,9 @@ class Spool:
     # ------------------------------------------------------------------
 
     def _encrypt(self, record: dict) -> tuple[bytes, bytes]:
+        # Lazy import — see module docstring note about the [spool] extra.
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
         aesgcm = AESGCM(self._key)
         nonce = secrets.token_bytes(_NONCE_LENGTH)
         plaintext = json.dumps(record, default=str).encode("utf-8")
@@ -306,6 +337,9 @@ class Spool:
         return ciphertext, nonce
 
     def _decrypt(self, ciphertext: bytes, nonce: bytes) -> dict:
+        # Lazy import — see module docstring note about the [spool] extra.
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
         aesgcm = AESGCM(self._key)
         plaintext = aesgcm.decrypt(nonce, ciphertext, associated_data=None)
         return json.loads(plaintext.decode("utf-8"))

@@ -14,7 +14,7 @@ import os
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 import pytest
 
@@ -45,7 +45,11 @@ class _CountingHandler(BaseHTTPRequestHandler):
         except Exception:
             payload = {}
         records = payload.get("records") or []
-        self.server.received_records += len(records)  # type: ignore[attr-defined]
+        # ``received_records`` is touched from multiple handler threads
+        # (ThreadingHTTPServer fans out requests). Guard with the server's
+        # lock so concurrent increments don't lose count.
+        with self.server.records_lock:  # type: ignore[attr-defined]
+            self.server.received_records += len(records)  # type: ignore[attr-defined]
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -54,8 +58,15 @@ class _CountingHandler(BaseHTTPRequestHandler):
 
 class _CountingServer:
     def __init__(self):
-        self.server = HTTPServer(("127.0.0.1", 0), _CountingHandler)
+        # ``ThreadingHTTPServer`` (rather than the single-threaded
+        # ``HTTPServer``) so 4 multiprocessing-pool workers can flush in
+        # parallel without serializing through one socket. The previous
+        # single-threaded version caused TCP backlog overflow + ECONNREFUSED
+        # under load, which surfaced as flaky drain failures on slower CI
+        # runners (Python 3.11/3.12).
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), _CountingHandler)
         self.server.received_records = 0  # type: ignore[attr-defined]
+        self.server.records_lock = threading.Lock()  # type: ignore[attr-defined]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def __enter__(self):
@@ -135,7 +146,10 @@ def _pool_init(api_url: str) -> None:
         api_key="test",
         flush_interval=0.05,
         batch_size=20,
-        atexit_drain_timeout=5.0,
+        # Bump drain timeout so close() doesn't truncate when 4 workers all
+        # hammer the same loopback server. The flush() call below already
+        # guarantees delivery; this is belt-and-suspenders.
+        atexit_drain_timeout=30.0,
     )
 
 
@@ -143,7 +157,12 @@ def _pool_worker(n: int) -> int:
     c = _pool_client_holder["c"]
     for i in range(n):
         c.enqueue_action(action_name=f"w{i}")
-    # Force a drain before the worker process tears down.
+    # Synchronously wait for the queue to fully drain before letting the
+    # worker process exit. close()'s implicit drain is bounded by
+    # atexit_drain_timeout and silently truncates on hit — flush() returns
+    # a clear bool we can assert on, so a real loss surfaces immediately.
+    drained = c.flush(timeout=30.0)
+    assert drained, "worker flush did not complete in time"
     c.close()
     return n
 
