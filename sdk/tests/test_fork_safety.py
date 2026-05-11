@@ -14,7 +14,7 @@ import os
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 
@@ -45,7 +45,11 @@ class _CountingHandler(BaseHTTPRequestHandler):
         except Exception:
             payload = {}
         records = payload.get("records") or []
-        self.server.received_records += len(records)  # type: ignore[attr-defined]
+        # Lock-protected — under ThreadingHTTPServer multiple handler
+        # threads can call do_POST concurrently, so a plain ``+=`` would
+        # race and lose increments.
+        with self.server.counter_lock:  # type: ignore[attr-defined]
+            self.server.received_records += len(records)  # type: ignore[attr-defined]
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -54,8 +58,16 @@ class _CountingHandler(BaseHTTPRequestHandler):
 
 class _CountingServer:
     def __init__(self):
-        self.server = HTTPServer(("127.0.0.1", 0), _CountingHandler)
+        # ThreadingHTTPServer instead of HTTPServer: the multiprocessing
+        # test fires 4 worker processes at the mock server concurrently. A
+        # single-threaded HTTPServer can only accept one connection at a
+        # time — the rest sit in the kernel listen backlog or, when that
+        # fills up, get ECONNREFUSED on Linux. The Vera SDK then burns its
+        # 5s drain window retrying with 0.5s/1s/2s backoff and silently
+        # drops batches. Threading makes the server actually concurrent.
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), _CountingHandler)
         self.server.received_records = 0  # type: ignore[attr-defined]
+        self.server.counter_lock = threading.Lock()  # type: ignore[attr-defined]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def __enter__(self):
@@ -135,7 +147,10 @@ def _pool_init(api_url: str) -> None:
         api_key="test",
         flush_interval=0.05,
         batch_size=20,
-        atexit_drain_timeout=5.0,
+        # Generous drain window: 4 workers contend for the same mock
+        # server, and on Linux CI runners under load a tight 5s window
+        # was insufficient for all batches to make the round-trip.
+        atexit_drain_timeout=30.0,
     )
 
 
@@ -143,7 +158,12 @@ def _pool_worker(n: int) -> int:
     c = _pool_client_holder["c"]
     for i in range(n):
         c.enqueue_action(action_name=f"w{i}")
-    # Force a drain before the worker process tears down.
+    # Explicit flush BEFORE close: blocks until the queue is empty so we
+    # don't race close()'s atexit_drain_timeout window. Without this,
+    # close()'s deadline can fire while batches are still in-flight (or
+    # mid-retry on a slow CI runner) and records get dropped.
+    c.flush(timeout=30.0)
+    # Force final teardown.
     c.close()
     return n
 
@@ -250,10 +270,12 @@ def test_multiprocessing_pool():
             results = pool.map(_pool_worker, [100, 100, 100, 100])
         assert sum(results) == 400
 
-        # Workers each called close(), so by the time pool.map returns the
-        # records have either been delivered or the worker process exited
-        # without delivery. Give a small drain window.
-        deadline = time.perf_counter() + 5.0
+        # Workers each called flush() then close(), so by the time
+        # pool.map returns the records have been delivered (or the worker
+        # process exited without delivery — but flush() with a 30s
+        # timeout makes that extremely unlikely). Give a generous drain
+        # window for in-kernel TCP teardown on CI runners.
+        deadline = time.perf_counter() + 15.0
         while server.received < 400 and time.perf_counter() < deadline:
             time.sleep(0.05)
         assert server.received >= 400, f"only {server.received} records"

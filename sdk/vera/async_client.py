@@ -462,6 +462,32 @@ class AsyncVeraClient:
         while self._queue:
             await self._flush()
 
+    async def flush(self, timeout: float = 30.0) -> None:
+        """Block until the queue is empty, or ``timeout`` seconds elapse.
+
+        Async parity with :meth:`vera.client.VeraClient.flush`. Useful in
+        test / script / serverless contexts where you must ensure records
+        reach Vera before the caller proceeds. The background flush task
+        is left running — call :meth:`close` for full teardown.
+
+        Times out silently with a WARN if records remain.
+        """
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + max(0.0, timeout)
+        while loop.time() < deadline:
+            if not self._queue:
+                return
+            await self._flush()
+            if not self._queue:
+                return
+            await asyncio.sleep(0.05)
+        if self._queue:
+            logger.warning(
+                "vera.async_client: flush() timed out after %.1fs with %d records still queued.",
+                timeout,
+                len(self._queue),
+            )
+
     async def record_action_batch(self, records: list[dict]) -> list[dict]:
         if self._redactor is not None:
             records = [self._redact_payload_fields(r) for r in records]

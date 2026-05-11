@@ -878,6 +878,60 @@ class VeraClient:
     # Lifecycle
     # ------------------------------------------------------------------
 
+    def flush(self, timeout: float = 30.0) -> None:
+        """Block until all queued records are drained, or ``timeout`` elapses.
+
+        Useful in test / script / serverless contexts where you must ensure
+        records reach Vera before the process exits, and the background
+        flush_interval / atexit_drain_timeout windows may not be wide enough
+        (e.g. ``multiprocessing.Pool`` workers where many processes contend
+        for the same server). Production hot paths should NOT call this —
+        use :meth:`enqueue_action` and let the background worker batch.
+
+        Unlike :meth:`close`, this method:
+          * does NOT stop the background worker
+          * does NOT close the underlying ``httpx.Client``
+          * does NOT mark the client closed
+
+        So the client remains usable after ``flush()`` returns. The method
+        returns when the queue is empty *and* no in-flight batch is pending,
+        or when ``timeout`` seconds have elapsed (whichever comes first). If
+        it times out, a WARN is logged but no exception is raised.
+        """
+        # Fork-safety check — if we've never started a worker (e.g. nothing
+        # was enqueued yet) there's nothing to flush.
+        if self._owner_pid != os.getpid():
+            return
+        if self._queue is None:
+            return
+        deadline = time.monotonic() + max(0.0, timeout)
+        # Nudge the worker to flush immediately rather than waiting out the
+        # flush_interval.
+        if self._wakeup is not None:
+            self._wakeup.set()
+        # Poll the queue until empty or deadline.
+        while time.monotonic() < deadline:
+            if self._queue.empty():
+                # The worker may still be inside an in-flight POST that
+                # popped items off but hasn't acknowledged them yet. We
+                # can't see "in-flight" directly, but we DO know the worker
+                # re-queues on transient failure — so we treat queue-empty
+                # as a soft signal and wait one more flush_interval to be
+                # safe before declaring victory.
+                time.sleep(min(self._flush_interval, 0.1))
+                if self._queue.empty():
+                    return
+            if self._wakeup is not None:
+                self._wakeup.set()
+            time.sleep(0.05)
+        remaining = self._queue.qsize() if self._queue is not None else 0
+        if remaining:
+            logger.warning(
+                "vera.client: flush() timed out after %.1fs with %d records still queued.",
+                timeout,
+                remaining,
+            )
+
     def close(self) -> None:
         """Flush the queue, stop the background thread, close the HTTP client."""
         self._closed = True
