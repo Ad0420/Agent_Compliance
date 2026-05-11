@@ -135,8 +135,11 @@ def test_fork_after_init():
 
 
 # Module-level so the Pool can pickle it. This client is constructed in the
-# parent and the Pool's fork-mode workers inherit a copy. Each child must
-# notice the pid mismatch on first enqueue and reinit its own queue+thread.
+# parent and the Pool's fork-mode workers inherit a copy. Each child uses
+# the blocking ``record_action`` API which exercises the SAME ``httpx.Client``
+# fork-safety needs to handle correctly — without the async daemon-thread
+# drain race that made the previous (enqueue_action + flush + close) version
+# flaky on slower CI runners (Python 3.10 in particular).
 _pool_client_holder: dict[str, VeraClient] = {}
 
 
@@ -144,26 +147,21 @@ def _pool_init(api_url: str) -> None:
     _pool_client_holder["c"] = VeraClient(
         api_url=api_url,
         api_key="test",
-        flush_interval=0.05,
-        batch_size=20,
-        # Bump drain timeout so close() doesn't truncate when 4 workers all
-        # hammer the same loopback server. The flush() call below already
-        # guarantees delivery; this is belt-and-suspenders.
-        atexit_drain_timeout=30.0,
     )
 
 
 def _pool_worker(n: int) -> int:
+    """Each worker performs ``n`` synchronous POSTs.
+
+    ``record_action`` blocks until the server acks (or retries are
+    exhausted), so by the time this function returns the mock server has
+    deterministically counted every record. No async drain, no daemon
+    thread, no flush-timeout race — the only thing under test here is
+    that the post-fork ``httpx.Client`` works correctly.
+    """
     c = _pool_client_holder["c"]
     for i in range(n):
-        c.enqueue_action(action_name=f"w{i}")
-    # Synchronously wait for the queue to fully drain before letting the
-    # worker process exit. close()'s implicit drain is bounded by
-    # atexit_drain_timeout and silently truncates on hit — flush() returns
-    # a clear bool we can assert on, so a real loss surfaces immediately.
-    drained = c.flush(timeout=30.0)
-    assert drained, "worker flush did not complete in time"
-    c.close()
+        c.record_action(action_name=f"w{i}")
     return n
 
 
@@ -253,7 +251,12 @@ def test_child_only_enqueue_after_parent_warmed_connection():
 
 
 def test_multiprocessing_pool():
-    """4 workers × 100 enqueues each; expect 400 records server-side."""
+    """4 workers × 100 sync POSTs each; expect 400 records server-side.
+
+    Exercises post-fork ``httpx.Client`` rebuild in worker processes via
+    the blocking ``record_action`` path. By the time ``pool.map`` returns,
+    every record has been ack'd by the mock server — no drain race.
+    """
     if mp.get_start_method(allow_none=True) != "fork":
         # On macOS Python 3.8+, default is "spawn" — explicitly request fork.
         ctx = mp.get_context("fork")
@@ -269,10 +272,8 @@ def test_multiprocessing_pool():
             results = pool.map(_pool_worker, [100, 100, 100, 100])
         assert sum(results) == 400
 
-        # Workers each called close(), so by the time pool.map returns the
-        # records have either been delivered or the worker process exited
-        # without delivery. Give a small drain window.
-        deadline = time.perf_counter() + 5.0
-        while server.received < 400 and time.perf_counter() < deadline:
-            time.sleep(0.05)
-        assert server.received >= 400, f"only {server.received} records"
+        # record_action is synchronous — each call blocks until the mock
+        # server has incremented its counter. The assertion is therefore
+        # deterministic: every record is accounted for by the time the
+        # pool exits.
+        assert server.received == 400, f"only {server.received} records"
