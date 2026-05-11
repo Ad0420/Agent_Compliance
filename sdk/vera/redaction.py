@@ -57,6 +57,44 @@ from enum import Enum
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
+# Library logging hygiene: ensure a NullHandler is attached so the SDK does
+# not emit "No handlers could be found" warnings when the customer's
+# application has not configured logging. Idempotent — guards against
+# duplicate handlers on re-import in test suites.
+if not any(isinstance(h, logging.NullHandler) for h in logger.handlers):
+    logger.addHandler(logging.NullHandler())
+
+
+# ---------------------------------------------------------------------------
+# BAA reminder (B3): one-shot INFO log on first Redactor.medtech() use.
+# ---------------------------------------------------------------------------
+
+_BAA_REMINDER_LOGGED = False
+
+
+def _emit_baa_reminder() -> None:
+    """Emit a single INFO log reminding customers to sign a BAA.
+
+    Called by :meth:`Redactor.medtech`. Idempotent — subsequent calls do
+    nothing. Tests can reset the flag via
+    :func:`_reset_baa_reminder_for_tests`.
+    """
+    global _BAA_REMINDER_LOGGED
+    if _BAA_REMINDER_LOGGED:
+        return
+    _BAA_REMINDER_LOGGED = True
+    logger.info(
+        "vera.redaction: medtech mode active. Ensure a Business Associate "
+        "Agreement (BAA) is signed with Vera before sending Protected Health "
+        "Information through this SDK. See https://usevera.xyz/baa for details."
+    )
+
+
+def _reset_baa_reminder_for_tests() -> None:
+    """Test-only: clears the once-per-process flag so tests can re-trigger
+    the log. Not intended for production use."""
+    global _BAA_REMINDER_LOGGED
+    _BAA_REMINDER_LOGGED = False
 
 
 @functools.lru_cache(maxsize=1)
@@ -201,6 +239,31 @@ def _default_block_keys() -> set[str]:
         "private_key",
         "authorization",
     }
+
+
+# HIPAA Safe Harbor extra block_keys for medtech mode. Used by
+# :meth:`Redactor.medtech` as defense-in-depth on top of the schema —
+# even if a customer's schema marks one of these PASSTHROUGH (mistakenly),
+# block_keys still wins per the Phase 2 precedence rule. All names are
+# lower-cased; the redactor's block_keys lookup is case-insensitive.
+_MEDTECH_BLOCK_KEYS: set[str] = {
+    "patient_name", "patient", "first_name", "last_name", "full_name",
+    "patient_id", "mrn", "medical_record_number",
+    "ssn", "social_security",
+    "dob", "date_of_birth", "birthdate",
+    "address", "street", "street_address",
+    "city", "state", "zip", "zipcode", "zip_code", "postal_code",
+    "phone", "phone_number", "mobile", "cell",
+    "email", "email_address",
+    "diagnosis", "icd10", "icd_10", "icd10_code",
+    "medication", "prescription", "rx",
+    "insurance_id", "policy_number", "member_id", "subscriber_id",
+    "url",  # URLs can encode PHI in path or query
+    "ip", "ip_address", "device_id", "serial",
+    "photo", "image_url", "face_photo",
+    "audio", "voice_recording",
+    "biometric", "fingerprint",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -774,6 +837,83 @@ class Redactor:
                 ),
             },
             unmapped_policy=FieldPolicy.REDACT,
+        )
+
+    @classmethod
+    def medtech(
+        cls,
+        *,
+        schema: "Schema | None" = None,
+        extra_block_keys: set[str] | None = None,
+        extra_patterns: list[tuple[str, "re.Pattern"]] | None = None,
+        max_length: int = 10_000,
+        replacement: str = "[REDACTED]",
+        custom_serializer: Callable[[Any], str] | None = None,
+    ) -> "Redactor":
+        """One-call factory for medtech HIPAA-aware redaction.
+
+        Returns a Redactor preconfigured with:
+
+        - The medtech starter schema (deny-by-default for unmapped fields)
+        - Standard regex patterns for SSN, credit cards, emails, phones, AWS
+          keys, JWTs, hex secrets, bearer tokens
+        - Medtech-specific patterns added: MRN, DOB (multiple formats),
+          IPv4/IPv6
+        - Default block_keys augmented with HIPAA-specific identifiers
+          (:data:`_MEDTECH_BLOCK_KEYS`)
+
+        Args:
+            schema: Override the default medtech starter schema. If None,
+                uses :meth:`medtech_starter_schema`.
+            extra_block_keys: Additional case-insensitive field names to
+                always redact. Merged with defaults.
+            extra_patterns: Additional named regex patterns. Merged with
+                defaults.
+            max_length, replacement, custom_serializer: Passed through to
+                the Redactor constructor.
+
+        HIPAA compliance note:
+            Using :meth:`Redactor.medtech` does NOT make your deployment
+            HIPAA-compliant on its own. You MUST have a signed Business
+            Associate Agreement (BAA) with Vera before sending PHI through
+            this SDK. This factory emits a single INFO log on first use as
+            a reminder.
+
+        Free-text PHI warning:
+            Free-text fields (notes, transcripts, descriptions) cannot be
+            reliably scrubbed via patterns. The starter schema redacts
+            common free-text field names. If your data contains PHI in
+            fields not on the starter list, declare them explicitly via
+            the ``schema`` parameter.
+        """
+        # Default to the canonical medtech starter schema unless overridden.
+        if schema is None:
+            schema = cls.medtech_starter_schema()
+
+        # Effective block_keys = default ∪ HIPAA-extra ∪ caller-supplied.
+        # All lowered for the case-insensitive lookup the Redactor performs.
+        merged_block_keys: set[str] = {k.lower() for k in _default_block_keys()}
+        merged_block_keys |= {k.lower() for k in _MEDTECH_BLOCK_KEYS}
+        if extra_block_keys:
+            merged_block_keys |= {k.lower() for k in extra_block_keys}
+
+        # Effective patterns = default + caller-supplied (order preserved).
+        merged_patterns: list[tuple[str, re.Pattern]] = list(_default_patterns())
+        if extra_patterns:
+            merged_patterns.extend(extra_patterns)
+
+        # Emit the BAA reminder once per process before returning. The
+        # reminder lives on the module logger; customer logging config
+        # decides where it lands.
+        _emit_baa_reminder()
+
+        return cls(
+            patterns=merged_patterns,
+            block_keys=merged_block_keys,
+            max_length=max_length,
+            replacement=replacement,
+            custom_serializer=custom_serializer,
+            schema=schema,
         )
 
     # ------------------------------------------------------------------

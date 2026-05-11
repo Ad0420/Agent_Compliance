@@ -46,6 +46,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   worker can't race close() into double-popping the same records.
 
 ### Added
+- `Redactor.medtech()` one-call factory for HIPAA-aware redaction. Preloads the
+  medtech starter schema, augments default `block_keys` with HIPAA Safe Harbor
+  identifiers, and includes MRN/DOB/IP regex patterns by default. Emits a
+  single INFO log on first use reminding customers to sign a BAA before
+  sending PHI.
 - Schema-driven redaction mode. `Redactor(schema=...)` with `Schema`,
   `FieldRule`, `FieldPolicy` types from `vera.redaction`. Deny-by-default
   for unmapped fields; PHI fields explicitly tagged. `Redactor.medtech_starter_schema()`
