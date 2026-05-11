@@ -41,7 +41,7 @@ export function V4DarkCTA() {
               letterSpacing: 1.4,
             }}
           >
-            GET PROTECTED
+            START YOUR EVIDENCE TRAIL
           </span>
         </div>
         <div className="v4-row-stack">
@@ -103,7 +103,7 @@ export function V4DarkCTA() {
                 color: "var(--night-text-3)",
               }}
             >
-              One line. 30 seconds. Works alongside the AI you already run.
+              Thirty seconds. Works alongside the AI you already run.
             </span>
           </div>
         </div>

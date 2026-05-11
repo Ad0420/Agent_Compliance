@@ -22,7 +22,7 @@ export function V4Problem() {
             </span>
           </>
         }
-        sub="Today, when an AI agent makes a decision your customer disputes, your team scrambles through three log systems to assemble an answer that is unverifiable."
+        sub="Today, when an AI agent makes a decision your customer disputes, your team scrambles to reconstruct what happened — and the reconstruction is unverifiable."
       />
       <div className="v4-grid-2" style={{ alignItems: "center" }}>
         <ol style={{ listStyle: "none", padding: 0, margin: 0 }}>

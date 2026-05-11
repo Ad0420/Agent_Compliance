@@ -1,14 +1,14 @@
 import { V4SectionHeader } from "./v4-section-header";
 
 const MILESTONES: { d: string; n: string; live?: boolean; big?: string }[] = [
-  { d: "Jan 1, 2026", n: "CA AB 316 + Verisk", live: true },
+  { d: "Jan 1, 2026", n: "California AB 316", live: true },
   { d: "Jun 30, 2026", n: "Colorado AI Act" },
   {
     d: "Aug 2, 2026",
     n: "EU AI Act · high-risk systems",
     big: "€15M / 3% turnover",
   },
-  { d: "Q4 2026", n: "SEC 17a-4 + FINRA" },
+  { d: "Q4 2026", n: "SEC + FINRA AI Audit Rules" },
 ];
 
 export function V4Deadline() {
@@ -19,10 +19,10 @@ export function V4Deadline() {
         accent="amber"
         title={
           <>
-            Compliance dates are real.
+            The dates are real.
             <br />
             <span style={{ color: "var(--amber-ink)" }}>
-              Penalties are larger.
+              So are the fines.
             </span>
           </>
         }

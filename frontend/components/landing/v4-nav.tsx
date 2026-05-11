@@ -62,9 +62,6 @@ export function V4Nav() {
             {label}
           </Link>
         ))}
-        <Link href="#contact" style={linkStyle(false)}>
-          Talk to us
-        </Link>
         <span style={{ width: 6 }} />
         <Link
           href="/login"
@@ -137,13 +134,6 @@ export function V4Nav() {
               {label}
             </Link>
           ))}
-          <Link
-            href="#contact"
-            style={{ ...linkStyle(false), fontSize: 16, padding: "8px 0" }}
-            onClick={() => setOpen(false)}
-          >
-            Talk to us
-          </Link>
           <Link
             href="/login"
             style={{
