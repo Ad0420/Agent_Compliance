@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from ..database import get_db
-from ..models import APIKey
+from ..models import APIKey, OrgMembership
 
 logger = logging.getLogger(__name__)
 
@@ -311,3 +311,24 @@ def require_permission(permission: str):
             )
         return org_id, api_key
     return _check
+
+
+async def get_membership_for_clerk_user(
+    session: AsyncSession,
+    *,
+    clerk_user_id: str,
+    clerk_org_id: str,
+) -> OrgMembership | None:
+    """Look up the OrgMembership row for a (Clerk user, Clerk org) pair.
+
+    Helper used by Clerk-authenticated dashboard routes that need to resolve
+    the active session's user to a backend org + role. Returns ``None`` if
+    the user has no membership in the given Clerk org.
+    """
+    result = await session.execute(
+        select(OrgMembership).where(
+            OrgMembership.clerk_user_id == clerk_user_id,
+            OrgMembership.clerk_org_id == clerk_org_id,
+        )
+    )
+    return result.scalar_one_or_none()

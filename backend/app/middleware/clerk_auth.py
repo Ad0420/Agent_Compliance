@@ -26,11 +26,15 @@ to use API keys; only ``/v1/dashboard/*`` routes use Clerk JWTs.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Iterable
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..database import get_db
+from ..models import OrgMembership
 from ..services.auth import verify_clerk_jwt
 
 logger = logging.getLogger(__name__)
@@ -65,4 +69,79 @@ async def require_clerk_auth(
     return claims
 
 
-__all__ = ["require_clerk_auth"]
+def require_clerk_role(allowed_roles: Iterable[str]):
+    """Dependency factory enforcing RBAC against the active Clerk org context.
+
+    Use::
+
+        @router.post(
+            "/v1/dashboard/api-keys",
+            dependencies=[Depends(require_clerk_role(["admin"]))],
+        )
+
+    or, to receive the membership::
+
+        async def route(ctx = Depends(require_clerk_role(["admin"]))): ...
+
+    On success the dependency returns a dict::
+
+        {
+            "claims": <decoded JWT claims>,
+            "membership": <OrgMembership ORM row>,
+            "org_id": <backend Organization.id>,
+        }
+
+    The membership and org_id are looked up by the JWT's ``org_id`` claim
+    (Clerk includes this when the user has an active org context selected).
+    Without that claim we 400 — the user is signed in but not "in" an org,
+    so RBAC cannot apply.
+    """
+    allowed = tuple(allowed_roles)
+
+    async def _dep(
+        request: Request,
+        claims: dict[str, Any] = Depends(require_clerk_auth),
+        session: AsyncSession = Depends(get_db),
+    ) -> dict[str, Any]:
+        clerk_user_id = claims.get("sub")
+        clerk_org_id = claims.get("org_id")
+
+        if not clerk_user_id:
+            # JWT verified but missing `sub` — shouldn't happen but defensive.
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        if not clerk_org_id:
+            raise HTTPException(
+                status_code=400,
+                detail="No active organization in Clerk session",
+            )
+
+        result = await session.execute(
+            select(OrgMembership).where(
+                OrgMembership.clerk_user_id == clerk_user_id,
+                OrgMembership.clerk_org_id == clerk_org_id,
+            )
+        )
+        membership = result.scalar_one_or_none()
+        if membership is None:
+            raise HTTPException(
+                status_code=403,
+                detail="Not a member of this organization",
+            )
+        if membership.role not in allowed:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Requires one of roles: {list(allowed)}",
+            )
+
+        # Stash for downstream introspection (e.g. logging middleware).
+        request.state.clerk_membership = membership
+        return {
+            "claims": claims,
+            "membership": membership,
+            "org_id": membership.org_id,
+        }
+
+    return _dep
+
+
+__all__ = ["require_clerk_auth", "require_clerk_role"]

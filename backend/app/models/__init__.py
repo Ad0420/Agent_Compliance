@@ -10,6 +10,8 @@ from .policy_violation import PolicyViolation
 from .approval import Approval
 from .idempotency_record import IdempotencyRecord
 from .webhook_subscription import WebhookSubscription
+from .org_membership import OrgMembership, BACKEND_ROLES
+from .processed_webhook_event import ProcessedWebhookEvent
 
 __all__ = [
     "Base",
@@ -24,4 +26,7 @@ __all__ = [
     "Approval",
     "IdempotencyRecord",
     "WebhookSubscription",
+    "OrgMembership",
+    "BACKEND_ROLES",
+    "ProcessedWebhookEvent",
 ]

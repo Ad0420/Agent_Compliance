@@ -22,6 +22,8 @@ from .routes import (
     webhooks_router,
 )
 from .routes.dashboard_demo import router as dashboard_demo_router
+from .routes.dashboard_api_keys import router as dashboard_api_keys_router
+from .routes.clerk_webhooks import router as clerk_webhooks_router
 from .middleware import RateLimitMiddleware, RequestIDMiddleware
 from .services.immutability import install_sqlite_triggers
 
@@ -91,3 +93,7 @@ app.include_router(webhooks_router, prefix="/v1")
 # its own /v1/dashboard prefix, so no extra prefix here. Existing /v1/* routes
 # above continue to use API-key auth (machines).
 app.include_router(dashboard_demo_router)
+app.include_router(dashboard_api_keys_router)
+# Clerk webhooks — signature-verified via Svix, no bearer auth. Mounted at
+# /v1 so the public path is /v1/clerk/webhooks (matches the env.example doc).
+app.include_router(clerk_webhooks_router, prefix="/v1")
