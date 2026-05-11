@@ -12,7 +12,9 @@ shared with the synchronous :class:`vera.client.VeraClient` — see
 import asyncio
 import atexit
 import logging
+import os
 import random
+import threading
 import time
 import uuid
 from collections import deque
@@ -25,6 +27,7 @@ from .errors import (
     VeraAuthError,
     VeraValidationError,
 )
+from .spool import Spool, SpoolDiskFullError, SpoolError
 
 if TYPE_CHECKING:
     from .redaction import Redactor
@@ -57,6 +60,8 @@ class AsyncVeraClient:
         redactor: "Redactor | None" = None,
         circuit_breaker_threshold: int = 5,
         requeue_max_attempts: int = 10,
+        persistent_buffer_path: str | None = None,
+        persistent_buffer_max_bytes: int = 100_000_000,
     ):
         self.api_url = api_url.rstrip("/")
         self.agent_name = agent_name
@@ -99,6 +104,52 @@ class AsyncVeraClient:
         # Once-per-process WARN flag for the sync-context-no-loop branch in
         # ``enqueue_action``.
         self._sync_no_loop_warned = False
+
+        # Workstream A5 — durable on-disk spool.
+        self._persistent_buffer_path = persistent_buffer_path
+        self._persistent_buffer_max_bytes = persistent_buffer_max_bytes
+        self._spool: Spool | None = None
+        self._spool_row_map: dict[int, int] = {}
+        self._spool_map_lock = threading.Lock()
+        self._spool_full_warned = False
+        if persistent_buffer_path is not None:
+            passphrase = os.environ.get("VERA_SPOOL_KEY", "")
+            if not passphrase:
+                raise ValueError(
+                    "VERA_SPOOL_KEY env var required when "
+                    "persistent_buffer_path is set"
+                )
+            self._spool = Spool(
+                persistent_buffer_path,
+                passphrase=passphrase,
+                max_bytes=persistent_buffer_max_bytes,
+            )
+            # Rehydrate persisted records from the previous process run
+            # into the in-memory deque. Oldest-first, capped at queue size.
+            self._rehydrate_from_spool()
+
+    def _rehydrate_from_spool(self) -> None:
+        """Load persisted records back into the in-memory deque."""
+        if self._spool is None:
+            return
+        try:
+            batch = self._spool.dequeue_batch(max_count=self._max_queue_size)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.error("vera.async_client: spool rehydrate failed: %s", exc)
+            return
+        with self._spool_map_lock:
+            self._spool_row_map.clear()
+            for row_id, record in batch:
+                if len(self._queue) >= self._max_queue_size:
+                    break
+                self._queue.append(record)
+                self._spool_row_map[id(record)] = row_id
+        if batch:
+            logger.info(
+                "vera.async_client: rehydrated %d records from spool %s",
+                len(batch),
+                self._persistent_buffer_path,
+            )
 
     def _redact_payload_fields(self, payload: dict) -> dict:
         """Apply ``self._redactor`` (if set) to user-supplied JSON-blob fields.
@@ -236,10 +287,27 @@ class AsyncVeraClient:
         # Idempotency: stable per-record key, reused across re-queues so the
         # server can dedupe a record that survived a network blip.
         payload.setdefault("_idempotency_key", uuid.uuid4().hex)
-        # Drop oldest if queue is at capacity
+        # Overflow handling. If a durable spool is configured, spill the
+        # NEW record there rather than dropping the oldest in-memory item.
+        # The audit chain stays intact; the worker drains the in-memory
+        # queue normally and pulls spool records back in subsequent flush
+        # ticks.
         if len(self._queue) >= self._max_queue_size:
+            if self._spool is not None:
+                try:
+                    self._spool.enqueue(payload)
+                    return
+                except SpoolDiskFullError:
+                    self._warn_spool_full_once()
+                except SpoolError as exc:  # pragma: no cover — defensive
+                    logger.error(
+                        "vera.async_client: spool enqueue failed: %s", exc
+                    )
             dropped = self._queue.popleft()
             self._record_overflow_drop(dropped)
+            if dropped is not None:
+                with self._spool_map_lock:
+                    self._spool_row_map.pop(id(dropped), None)
 
         self._queue.append(payload)
 
@@ -268,6 +336,41 @@ class AsyncVeraClient:
                     )
             else:
                 loop.create_task(self._flush())
+
+    def _warn_spool_full_once(self) -> None:
+        """Emit one WARN per client when SpoolDiskFullError forces drop-oldest fallback."""
+        if self._spool_full_warned:
+            return
+        self._spool_full_warned = True
+        logger.warning(
+            "vera.async_client: durable spool is full (max_bytes=%d) — "
+            "falling back to in-memory drop-oldest. Audit chain will have "
+            "gaps until disk pressure clears.",
+            self._persistent_buffer_max_bytes,
+        )
+
+    def _pull_from_spool_into_queue(self) -> None:
+        """Top up the in-memory deque from the spool when there's free space."""
+        if self._spool is None:
+            return
+        free = self._max_queue_size - len(self._queue)
+        if free <= 0:
+            return
+        with self._spool_map_lock:
+            held = set(self._spool_row_map.values())
+        try:
+            batch = self._spool.dequeue_batch(max_count=min(free, _API_MAX_BATCH))
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.error("vera.async_client: spool pull failed: %s", exc)
+            return
+        with self._spool_map_lock:
+            for row_id, record in batch:
+                if row_id in held:
+                    continue
+                if len(self._queue) >= self._max_queue_size:
+                    break
+                self._queue.append(record)
+                self._spool_row_map[id(record)] = row_id
 
     def _record_overflow_drop(self, dropped: dict | None) -> None:
         """Throttled WARN log on queue overflow."""
@@ -328,6 +431,10 @@ class AsyncVeraClient:
             self._flush_lock = asyncio.Lock()
 
         async with self._flush_lock:
+            # Top up the in-memory deque from the spool before checking
+            # empty — a spool-only state (deque empty, spool populated)
+            # still needs to make forward progress.
+            self._pull_from_spool_into_queue()
             if not self._queue:
                 return
 
@@ -347,6 +454,16 @@ class AsyncVeraClient:
             # Falls back to a fresh uuid for legacy items that lack the
             # private key (e.g. tests that hand-build queue items).
             headers = {"Idempotency-Key": self._batch_idempotency_key(batch)}
+            # Snapshot which records came from the spool so a successful
+            # flush can ack the corresponding rows. We pop them out of
+            # the map here; on failure we restore them in the except.
+            spool_row_ids: list[int] = []
+            if self._spool is not None:
+                with self._spool_map_lock:
+                    for r in batch:
+                        row_id = self._spool_row_map.pop(id(r), None)
+                        if row_id is not None:
+                            spool_row_ids.append(row_id)
             try:
                 await self._request_with_retry(
                     "post",
@@ -356,8 +473,21 @@ class AsyncVeraClient:
                 )
                 self._consecutive_failures = 0
                 self._breaker_open_until = 0.0
+                if spool_row_ids and self._spool is not None:
+                    try:
+                        self._spool.ack(spool_row_ids)
+                    except Exception as exc:  # pragma: no cover — defensive
+                        logger.error(
+                            "vera.async_client: spool ack failed for %d rows: %s",
+                            len(spool_row_ids),
+                            exc,
+                        )
                 logger.debug("Flushed %d queued actions", len(batch))
             except Exception as exc:  # noqa: BLE001 — classified below
+                if spool_row_ids and self._spool is not None:
+                    with self._spool_map_lock:
+                        for r, rid in zip(batch, spool_row_ids):
+                            self._spool_row_map[id(r)] = rid
                 self._handle_flush_failure(batch, exc)
 
     @staticmethod
@@ -581,6 +711,11 @@ class AsyncVeraClient:
         """
         await self.stop_background_flush()
         await self._client.aclose()
+        if self._spool is not None:
+            try:
+                self._spool.close()
+            except Exception:  # pragma: no cover — defensive
+                pass
 
     async def __aenter__(self):
         return self

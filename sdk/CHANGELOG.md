@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Durable on-disk spool (`vera/spool.py`). When in-memory queue overflows, records
+  spill to an encrypted SQLite spool instead of being dropped. Survives process
+  restarts via `persistent_buffer_path` constructor param. Requires
+  `VERA_SPOOL_KEY` env var for AES-256-GCM encryption at rest. WAL mode for
+  multi-process safety. File mode 0600.
+- New extra `pip install vera-sdk[spool]` adds the `cryptography` dependency.
+
+### Changed
+- When `persistent_buffer_path` is configured, enqueue overflow spills to spool
+  rather than triggering drop-oldest. Drop-oldest remains the fallback when the
+  spool is full or unconfigured.
+
 ### Security / Reliability
 - **Fork-safety:** `_after_in_child` now closes the inherited `httpx.Client`
   and creates a fresh one. Customers using `gunicorn --preload`, Celery

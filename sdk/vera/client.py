@@ -68,6 +68,7 @@ from .errors import (
     VeraTimeoutError,
     VeraValidationError,
 )
+from .spool import Spool, SpoolDiskFullError, SpoolError
 
 if TYPE_CHECKING:
     from .redaction import Redactor
@@ -253,6 +254,15 @@ class VeraClient:
             worker pauses flushing. Default 5.
         requeue_max_attempts: Maximum number of times a record may be
             re-queued before being dropped with a WARN. Default 10.
+        persistent_buffer_path: Optional filesystem path to a SQLite-backed
+            durable spool (workstream A5). When set, queue overflow spills
+            to the spool instead of dropping oldest, and queued records
+            survive process restarts. Requires the ``VERA_SPOOL_KEY`` env
+            var (used as the passphrase for AES-256-GCM encryption at rest).
+        persistent_buffer_max_bytes: Optional cap on the spool size. Defaults
+            to 100 MB. When exceeded, new spool writes raise
+            ``SpoolDiskFullError`` and the client falls back to in-memory
+            drop-oldest with a WARN.
     """
 
     def __init__(
@@ -271,6 +281,8 @@ class VeraClient:
         atexit_drain_timeout: float = 10.0,
         circuit_breaker_threshold: int = 5,
         requeue_max_attempts: int = 10,
+        persistent_buffer_path: str | None = None,
+        persistent_buffer_max_bytes: int = 100_000_000,
     ):
         self.api_url = api_url.rstrip("/")
         self.agent_name = agent_name
@@ -350,6 +362,39 @@ class VeraClient:
         # permanent-failure breaker so a stuck-bad-key process doesn't spam
         # ERRORs on every enqueue.
         self._enqueue_blocked_warned = False
+
+        # Workstream A5 — durable on-disk spool. ``persistent_buffer_path``
+        # is opt-in. When set, queue overflow spills to the spool instead of
+        # dropping oldest. ``VERA_SPOOL_KEY`` is required (fail-closed) so
+        # we never persist plaintext PHI to disk.
+        self._persistent_buffer_path = persistent_buffer_path
+        self._persistent_buffer_max_bytes = persistent_buffer_max_bytes
+        self._spool: Spool | None = None
+        # Maps in-memory queue items back to the spool row_id they were
+        # rehydrated from. ``id(payload)`` is the dict identity — stable for
+        # the lifetime of the object, unique while it's in our queue.
+        self._spool_row_map: dict[int, int] = {}
+        self._spool_map_lock = threading.Lock()
+        # One-shot WARN when SpoolDiskFullError forces drop-oldest fallback.
+        self._spool_full_warned = False
+        if persistent_buffer_path is not None:
+            passphrase = os.environ.get("VERA_SPOOL_KEY", "")
+            if not passphrase:
+                raise ValueError(
+                    "VERA_SPOOL_KEY env var required when "
+                    "persistent_buffer_path is set"
+                )
+            self._spool = Spool(
+                persistent_buffer_path,
+                passphrase=passphrase,
+                max_bytes=persistent_buffer_max_bytes,
+            )
+            # Eagerly initialise the queue + worker so any records persisted
+            # from a previous process run get rehydrated immediately rather
+            # than waiting for the first enqueue_action call. Customers
+            # configuring a spool care about recovery-on-startup semantics.
+            if self._spool.size() > 0:
+                self._init_runtime_state()
 
     # ------------------------------------------------------------------
     # Redaction
@@ -550,6 +595,23 @@ class VeraClient:
         try:
             self._queue.put_nowait(payload)
         except queue.Full:
+            # Overflow path. If a durable spool is configured, spill there
+            # rather than dropping — that's the whole point of A5. The
+            # in-memory queue stays full; the worker drains it normally,
+            # and subsequent rehydrate / dequeue cycles will pull rows
+            # back from disk.
+            if self._spool is not None:
+                try:
+                    self._spool.enqueue(payload)
+                    return
+                except SpoolDiskFullError:
+                    # Spool is full or disk is exhausted. Fall through to
+                    # drop-oldest so the customer's process doesn't stall.
+                    # Once-per-process WARN so we don't spam the log on
+                    # every subsequent enqueue.
+                    self._warn_spool_full_once()
+                except SpoolError as exc:  # pragma: no cover — defensive
+                    logger.error("vera.client: spool enqueue failed: %s", exc)
             # Drop oldest then retry once. The get/put pair is racy under
             # threaded enqueue without a lock — two producers can both pop
             # an item and put their own, double-dropping a third. Hold the
@@ -560,6 +622,13 @@ class VeraClient:
                 except queue.Empty:  # pragma: no cover — race
                     dropped = None
                 self._record_overflow_drop(dropped)
+                # If the dropped item was rehydrated from spool, drop the
+                # mapping so we never ack a row that wasn't actually
+                # delivered. The on-disk row stays; next rehydrate will
+                # see it again.
+                if dropped is not None:
+                    with self._spool_map_lock:
+                        self._spool_row_map.pop(id(dropped), None)
                 try:
                     self._queue.put_nowait(payload)
                 except queue.Full:  # pragma: no cover — pathological
@@ -597,6 +666,18 @@ class VeraClient:
             return
         self._enqueue_blocked_warned = True
         _warn_breaker_permanent_once()
+
+    def _warn_spool_full_once(self) -> None:
+        """Emit one WARN per client when SpoolDiskFullError forces drop-oldest fallback."""
+        if self._spool_full_warned:
+            return
+        self._spool_full_warned = True
+        logger.warning(
+            "vera.client: durable spool is full (max_bytes=%d) — falling "
+            "back to in-memory drop-oldest. Audit chain will have gaps "
+            "until disk pressure clears.",
+            self._persistent_buffer_max_bytes,
+        )
 
     # ------------------------------------------------------------------
     # Background-thread internals
@@ -650,6 +731,12 @@ class VeraClient:
             self._breaker_cause = None
             self._owner_pid = current_pid
             self._closed = False
+            # Rehydrate from durable spool before starting the worker so any
+            # records persisted by a previous process run get re-delivered.
+            # We fill up to ``max_queue_size`` from the spool; remaining rows
+            # stay on disk and are pulled in by subsequent flush cycles via
+            # the same dequeue_batch path.
+            self._rehydrate_from_spool()
             t = threading.Thread(
                 target=self._worker_loop,
                 name="vera-flush",
@@ -657,6 +744,38 @@ class VeraClient:
             )
             self._worker = t
             t.start()
+
+    def _rehydrate_from_spool(self) -> None:
+        """Load persisted records from the spool back into the memory queue.
+
+        Called once at queue init. Records are loaded oldest-first to
+        preserve insertion order. We deliberately do NOT delete rows from
+        the spool here — they stay until the worker flushes them and acks.
+        That keeps the durability invariant: a crash between rehydrate and
+        flush still leaves the records on disk.
+        """
+        if self._spool is None or self._queue is None:
+            return
+        capacity = self._max_queue_size
+        try:
+            batch = self._spool.dequeue_batch(max_count=capacity)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.error("vera.client: spool rehydrate failed: %s", exc)
+            return
+        with self._spool_map_lock:
+            self._spool_row_map.clear()
+            for row_id, record in batch:
+                try:
+                    self._queue.put_nowait(record)
+                    self._spool_row_map[id(record)] = row_id
+                except queue.Full:  # pragma: no cover — capacity sized for batch
+                    break
+        if batch:
+            logger.info(
+                "vera.client: rehydrated %d records from spool %s",
+                len(batch),
+                self._persistent_buffer_path,
+            )
 
     def _after_in_child(self) -> None:
         """Run inside the child after :func:`os.fork`.
@@ -695,6 +814,20 @@ class VeraClient:
         # register its own (with its own _closed gate) once it actually
         # enqueues something.
         self._atexit_registered = False
+        # Spool — the SQLite connection is not fork-safe. Drop the inherited
+        # handle and open a fresh one. The on-disk WAL state is shared
+        # safely across processes, so existing rows are still visible.
+        if self._spool is not None:
+            try:
+                self._spool.reopen_after_fork()
+            except Exception:  # pragma: no cover — defensive
+                pass
+        # The spool->queue mapping uses ``id(payload)`` of dicts in the
+        # parent process. None of those dicts exist in the child, so the
+        # mapping is meaningless and must be cleared.
+        self._spool_row_map = {}
+        self._spool_map_lock = threading.Lock()
+        self._spool_full_warned = False
 
     def _reset_httpx_client_for_fork(self) -> None:
         """Close the inherited parent httpx.Client and create a fresh one.
@@ -736,6 +869,13 @@ class VeraClient:
     def _drain_once(self) -> None:
         """Pull one batch off the queue and attempt to flush it."""
         assert self._queue is not None
+        # Pull additional records from the spool to top up the in-memory
+        # queue. This is the "trickle-drain" path: when the spool has more
+        # records than fit in the queue at rehydrate-time, subsequent flush
+        # ticks pull them in batch-sized chunks. We do this BEFORE the
+        # empty-check so a spool-only state (memory queue empty, spool
+        # non-empty) still makes forward progress.
+        self._pull_from_spool_into_queue()
         if self._queue.empty():
             return
 
@@ -753,6 +893,18 @@ class VeraClient:
 
         records = [self._strip_internal_fields(r) for r in batch]
         headers = {"Idempotency-Key": self._batch_idempotency_key(batch)}
+        # Snapshot which records in this batch were rehydrated from the
+        # spool. We must do this BEFORE the network call so a successful
+        # flush can ack the rows. If the flush fails we re-queue the
+        # records (still mapped to the same row_ids); the mapping is
+        # restored as part of re-queue.
+        spool_row_ids: list[int] = []
+        if self._spool is not None:
+            with self._spool_map_lock:
+                for r in batch:
+                    row_id = self._spool_row_map.pop(id(r), None)
+                    if row_id is not None:
+                        spool_row_ids.append(row_id)
         try:
             self._request_with_retry(
                 "post",
@@ -763,9 +915,60 @@ class VeraClient:
             self._consecutive_failures = 0
             self._breaker_open_until = 0.0
             self._breaker_cause = None
+            # Ack the spool rows now that the batch is durably accepted.
+            if spool_row_ids and self._spool is not None:
+                try:
+                    self._spool.ack(spool_row_ids)
+                except Exception as exc:  # pragma: no cover — defensive
+                    logger.error(
+                        "vera.client: spool ack failed for %d rows: %s",
+                        len(spool_row_ids),
+                        exc,
+                    )
             logger.debug("Flushed %d queued actions", len(batch))
         except Exception as exc:  # noqa: BLE001 — we classify below
+            # On failure, re-establish the spool row mapping so a later
+            # successful flush can still ack.
+            if spool_row_ids and self._spool is not None:
+                with self._spool_map_lock:
+                    for r, rid in zip(batch, spool_row_ids):
+                        self._spool_row_map[id(r)] = rid
             self._handle_flush_failure(batch, exc)
+
+    def _pull_from_spool_into_queue(self) -> None:
+        """Top up the in-memory queue from the spool when both are non-empty.
+
+        Only meaningful when a spool is configured AND there's free capacity
+        in the queue. Cheap fast-path checks avoid the SQLite hit on every
+        flush tick when there's nothing to do.
+        """
+        if self._spool is None or self._queue is None:
+            return
+        free = self._max_queue_size - self._queue.qsize()
+        if free <= 0:
+            return
+        # Don't re-pull rows we already have in memory. Anything in
+        # ``_spool_row_map`` is currently queued (or in-flight) so we
+        # exclude those row_ids from the next pull. We pull a bit more
+        # than the free slot count so the next-flush batch is sized well.
+        with self._spool_map_lock:
+            held = set(self._spool_row_map.values())
+        try:
+            batch = self._spool.dequeue_batch(max_count=min(free, _API_MAX_BATCH))
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.error("vera.client: spool pull failed: %s", exc)
+            return
+        if not batch:
+            return
+        with self._spool_map_lock:
+            for row_id, record in batch:
+                if row_id in held:
+                    continue
+                try:
+                    self._queue.put_nowait(record)
+                    self._spool_row_map[id(record)] = row_id
+                except queue.Full:
+                    break
 
     @staticmethod
     def _strip_internal_fields(payload: dict) -> dict:
@@ -886,6 +1089,14 @@ class VeraClient:
             self._client.close()
         except Exception:  # pragma: no cover — defensive
             pass
+        # The spool stays on disk — closing the handle does NOT delete
+        # records. Any rows still present here will be rehydrated on the
+        # next process startup with the same persistent_buffer_path.
+        if self._spool is not None:
+            try:
+                self._spool.close()
+            except Exception:  # pragma: no cover — defensive
+                pass
 
     def _atexit_drain(self) -> None:
         """Process-exit hook — best-effort drain bounded by configured timeout."""
