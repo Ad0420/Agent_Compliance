@@ -28,20 +28,9 @@ export function V4Customers() {
             letterSpacing: 1.6,
           }}
         >
-          BUILT TO INTEGRATE WITH
+          WORKS WITH THE AI YOUR TEAMS ALREADY USE
         </span>
         <span className="v4-customers-headline-line" />
-        <span
-          style={{
-            fontFamily: "var(--mono)",
-            fontSize: 10.5,
-            color: "var(--ink-3)",
-            letterSpacing: 1.4,
-            fontWeight: 600,
-          }}
-        >
-          04 SURFACES · SDK · v1.4
-        </span>
       </div>
       <div className="v4-customers-row">
         {INTEGRATIONS.map((it, i) => (
@@ -101,23 +90,6 @@ export function V4Customers() {
             />
           </div>
         ))}
-      </div>
-      <div
-        style={{
-          marginTop: 18,
-          display: "flex",
-          justifyContent: "space-between",
-          flexWrap: "wrap",
-          gap: 8,
-          fontFamily: "var(--mono)",
-          fontSize: 10.5,
-          color: "var(--ink-3)",
-          letterSpacing: 1.2,
-          fontWeight: 600,
-        }}
-      >
-        <span>HOOK → INTERCEPT → SIGN → STORE</span>
-        <span>~ 8 ms median overhead</span>
       </div>
     </section>
   );

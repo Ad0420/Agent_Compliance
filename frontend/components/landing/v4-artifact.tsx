@@ -3,10 +3,16 @@ import { V4SectionHeader } from "./v4-section-header";
 import { SignedPdfArtifact } from "./v4-signed-pdf-artifact";
 
 const ITEMS: [string, string][] = [
-  ["Tamper-evident seal", "verified without our help"],
+  [
+    "Tamper-evident seal",
+    "verified by you, your auditor, or your regulator — with no Vera account needed",
+  ],
   ["Step-by-step record of every decision", "every signer, every timestamp"],
   ["Real cryptographic signature", "anchored to a hardware-secured key"],
-  ["Forwardable proof", "your regulator, auditor, or counsel can verify it themselves"],
+  [
+    "Forwardable proof",
+    "your regulator, auditor, or counsel can verify it themselves",
+  ],
 ];
 
 export function V4Artifact() {
@@ -100,7 +106,7 @@ export function V4Artifact() {
                 display: "flex",
                 alignItems: "center",
                 gap: 10,
-                marginBottom: 10,
+                marginBottom: 12,
                 fontFamily: "var(--mono)",
                 fontSize: 10.5,
                 fontWeight: 700,
@@ -116,39 +122,79 @@ export function V4Artifact() {
                   background: "var(--amber-ink)",
                 }}
               />
-              <span>VERIFY OFFLINE · ~30 SECONDS</span>
+              <span>VERIFIED INDEPENDENTLY · NO ACCOUNT NEEDED</span>
             </div>
-            <pre
+            <ul
               style={{
                 margin: 0,
-                fontFamily: "var(--mono)",
-                fontSize: 12.5,
-                lineHeight: 1.7,
+                padding: 0,
+                listStyle: "none",
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+                fontFamily: "var(--sans)",
+                fontSize: 14,
+                lineHeight: 1.5,
                 color: "var(--ink)",
-                whiteSpace: "pre-wrap",
               }}
             >
-              <span style={{ color: "var(--ink-3)" }}>$ </span>
-              <span>vera verify report.pdf</span>
-              {"\n"}
-              <span
-                style={{ color: "var(--emerald-ink)", fontWeight: 600 }}
+              <li
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  gap: 10,
+                }}
               >
-                ✓ chain intact · 13/13
-              </span>
-              {"\n"}
-              <span
-                style={{ color: "var(--emerald-ink)", fontWeight: 600 }}
+                <span
+                  style={{ color: "var(--emerald-ink)", fontWeight: 700 }}
+                  aria-hidden
+                >
+                  ✓
+                </span>
+                <span>
+                  <strong style={{ fontWeight: 600 }}>Chain intact</strong>
+                  {" — 13 of 13 decisions verified"}
+                </span>
+              </li>
+              <li
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  gap: 10,
+                }}
               >
-                ✓ root: 7a5e9f06…79ae
-              </span>
-              {"\n"}
-              <span
-                style={{ color: "var(--emerald-ink)", fontWeight: 600 }}
+                <span
+                  style={{ color: "var(--emerald-ink)", fontWeight: 700 }}
+                  aria-hidden
+                >
+                  ✓
+                </span>
+                <span>
+                  <strong style={{ fontWeight: 600 }}>Sealed</strong>
+                  {" Jan 14, 2026 · 10:21 AM PST"}
+                </span>
+              </li>
+              <li
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  gap: 10,
+                }}
               >
-                ✓ kms sig: kms/audit-prod-01
-              </span>
-            </pre>
+                <span
+                  style={{ color: "var(--emerald-ink)", fontWeight: 700 }}
+                  aria-hidden
+                >
+                  ✓
+                </span>
+                <span>
+                  <strong style={{ fontWeight: 600 }}>
+                    Independent signer
+                  </strong>
+                  {" — AWS KMS (Virginia)"}
+                </span>
+              </li>
+            </ul>
           </div>
         </div>
         <SignedPdfArtifact />
