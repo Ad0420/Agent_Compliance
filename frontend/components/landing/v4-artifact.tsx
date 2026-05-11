@@ -5,7 +5,7 @@ import { SignedPdfArtifact } from "./v4-signed-pdf-artifact";
 const ITEMS: [string, string][] = [
   [
     "Tamper-evident seal",
-    "verified by you, your auditor, or your regulator — with no Vera account needed",
+    "verified by you, your auditor, or your regulator. No Vera account needed.",
   ],
   ["Step-by-step record of every decision", "every signer, every timestamp"],
   ["Real cryptographic signature", "anchored to a hardware-secured key"],
@@ -153,7 +153,7 @@ export function V4Artifact() {
                 </span>
                 <span>
                   <strong style={{ fontWeight: 600 }}>Chain intact</strong>
-                  {" — 13 of 13 decisions verified"}
+                  {", 13 of 13 decisions verified"}
                 </span>
               </li>
               <li
@@ -189,9 +189,9 @@ export function V4Artifact() {
                 </span>
                 <span>
                   <strong style={{ fontWeight: 600 }}>
-                    Independent signer
+                    Independent signer:
                   </strong>
-                  {" — AWS KMS (Virginia)"}
+                  {" AWS KMS (Virginia)"}
                 </span>
               </li>
             </ul>

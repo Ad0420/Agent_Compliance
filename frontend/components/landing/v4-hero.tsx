@@ -55,7 +55,7 @@ export function V4Hero() {
         >
           When a regulator asks or a customer disputes a decision, the answer
           is one attachment away. Vera seals every AI decision the moment it&rsquo;s
-          made &mdash; and the seal can&rsquo;t be edited after the fact.
+          made, and the seal can&rsquo;t be edited after the fact.
         </p>
         <div
           style={{
