@@ -1,0 +1,135 @@
+name: Post-Deploy Smoke Test
+
+# Why this exists:
+# Vercel doesn't run our Next.js middleware at build time, so a broken
+# middleware ships green from `vercel build` and only blows up on the first
+# real request. On 2026-05-11 a merge to main produced
+# `500 INTERNAL_SERVER_ERROR / MIDDLEWARE_INVOCATION_FAILED` on usevera.xyz,
+# undetected by CI — the founder noticed manually. This workflow probes the
+# live site after every merge (and on a 15-min canary cron) and fails loudly
+# in the GitHub UI if the production URL 5xx's.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/post-deploy-smoke.yml"
+  schedule:
+    # Every 15 minutes — catches drift from external causes (Clerk outages,
+    # DNS changes, runtime regressions that the build didn't catch).
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  # If multiple merges happen close together, only the latest smoke runs.
+  group: smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Probe production
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Wait for Vercel deploy to settle (push only)
+        if: github.event_name == 'push'
+        run: sleep 60
+
+      - name: Probe production URLs
+        id: probe
+        shell: bash
+        run: |
+          set -uo pipefail
+          URLS=("https://usevera.xyz/" "https://usevera.xyz/regulations")
+          OVERALL=0
+          FAIL_URL=""
+          FAIL_STATUS=""
+          for URL in "${URLS[@]}"; do
+            echo "Probing $URL..."
+            STATUS=""
+            for attempt in $(seq 1 10); do
+              STATUS=$(curl -sS -o /tmp/body.html -w "%{http_code}" --max-time 30 "$URL" || echo "000")
+              echo "  attempt $attempt: HTTP $STATUS"
+              if [[ "$STATUS" =~ ^[23] ]]; then
+                echo "PASS $URL -> $STATUS"
+                break
+              fi
+              if [[ "$STATUS" =~ ^5 ]]; then
+                # 5xx = real server error, fail fast rather than masking it
+                # behind 10 retries. Connection errors (000) and 4xx still
+                # retry because those are usually transient (cold deploy,
+                # propagation, edge cache miss).
+                echo "FAIL $URL -> $STATUS (5xx, not retrying)"
+                break
+              fi
+              sleep 30
+            done
+            if ! [[ "$STATUS" =~ ^[23] ]]; then
+              OVERALL=1
+              FAIL_URL="$URL"
+              FAIL_STATUS="$STATUS"
+              echo "FAIL_URL=$URL" >> "$GITHUB_OUTPUT"
+              echo "FAIL_STATUS=$STATUS" >> "$GITHUB_OUTPUT"
+              BODY_SNIPPET=$(head -c 500 /tmp/body.html 2>/dev/null | tr -d '\n' | tr -d '\r' || echo "")
+              {
+                echo "## Smoke test FAILED"
+                echo ""
+                echo "- **URL:** \`$URL\`"
+                echo "- **Status:** \`$STATUS\`"
+                echo "- **Body (first 500 chars):**"
+                echo ""
+                echo '```'
+                echo "$BODY_SNIPPET"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+              break
+            fi
+          done
+          if [[ "$OVERALL" -eq 0 ]]; then
+            {
+              echo "## Smoke test passed"
+              echo ""
+              for URL in "${URLS[@]}"; do
+                echo "- \`$URL\` OK"
+              done
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit $OVERALL
+
+      - name: Comment on latest merged PR if smoke failed
+        if: failure() && github.event_name == 'push'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const url = '${{ steps.probe.outputs.FAIL_URL }}';
+            const status = '${{ steps.probe.outputs.FAIL_STATUS }}';
+            const sha = context.sha;
+            const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: sha,
+            });
+            if (prs.length === 0) {
+              core.warning(`No PR associated with ${sha} — no comment posted.`);
+              return;
+            }
+            const pr = prs[0];
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const vercelUrl = 'https://vercel.com/ad0420s-projects/agent-compliance';
+            const body = [
+              `🚨 **Post-deploy smoke test FAILED** at \`${url}\` (HTTP \`${status}\`).`,
+              ``,
+              `This PR's merge appears to have broken production.`,
+              ``,
+              `- Workflow logs: ${runUrl}`,
+              `- Vercel deploy: ${vercelUrl}`,
+            ].join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body,
+            });
