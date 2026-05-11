@@ -14,6 +14,12 @@ class Organization(Base):
     )
     name: Mapped[str] = mapped_column(String, nullable=False)
     alert_email: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Bridge column to Clerk organizations. Nullable so legacy / API-only orgs
+    # created before the Clerk bridge continue to work; unique-when-set so
+    # one Clerk org maps to at most one backend org row.
+    clerk_org_id: Mapped[Optional[str]] = mapped_column(
+        String, unique=True, nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
@@ -38,4 +44,9 @@ class Organization(Base):
     )
     approvals: Mapped[list["Approval"]] = relationship(
         "Approval", back_populates="organization"
+    )
+    memberships: Mapped[list["OrgMembership"]] = relationship(
+        "OrgMembership",
+        back_populates="organization",
+        cascade="all, delete-orphan",
     )
