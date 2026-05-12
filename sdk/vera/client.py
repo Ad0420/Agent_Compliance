@@ -82,6 +82,22 @@ RETRY_BACKOFF_BASE = 0.5
 _API_MAX_BATCH = 100
 
 
+# Sentinel signalling "explicitly disable the durable spool — do NOT fall back
+# to VERA_SPOOL_PATH". Used by DevClient.__init__ to plug a HIPAA leak path:
+# if VERA_SPOOL_PATH was set by a prior production run and a dev re-runs the
+# same command with VERA_DEV=1, the parent VeraClient.__init__ would otherwise
+# build the encrypted spool AND rehydrate queued PHI rows from disk, printing
+# them to stderr via the DevClient sink. The sentinel collapses to "None" (no
+# spool) INSIDE the constructor but bypasses the env-var fallback.
+_NO_SPOOL_SENTINEL = object()
+
+
+# One-time INFO log of the resolved config at first VeraClient construction
+# in a process. Lets ops see where audit traffic is going without spamming the
+# log on every client built (decorator default, tests, integrations).
+_FIRST_INIT_LOGGED = False
+
+
 class ApprovalTimeoutError(Exception):
     """Raised when wait_for_approval times out before a human decides."""
 
@@ -281,24 +297,51 @@ class VeraClient:
         atexit_drain_timeout: float = 10.0,
         circuit_breaker_threshold: int = 5,
         requeue_max_attempts: int = 10,
-        persistent_buffer_path: str | None = None,
+        persistent_buffer_path: "str | None | object" = None,
         persistent_buffer_max_bytes: int = 100_000_000,
     ):
-        # Env-var fallbacks. Explicit kwargs always win; if the caller passed
-        # ``None`` (or omitted the kwarg) we consult the matching env var,
-        # then fall back to the documented default. Empty-string env vars
-        # are treated as "unset" so ``VERA_API_URL=""`` doesn't trap us.
-        api_url = api_url or os.environ.get("VERA_API_URL") or "https://api.usevera.xyz"
-        api_key = api_key if api_key is not None else os.environ.get("VERA_API_KEY", "")
-        agent_name = agent_name or os.environ.get("VERA_AGENT_NAME") or "default-agent"
-        agent_version = agent_version or os.environ.get("VERA_AGENT_VERSION") or None
-        model_id = model_id or os.environ.get("VERA_MODEL_ID") or None
-        framework = framework or os.environ.get("VERA_FRAMEWORK") or None
-        persistent_buffer_path = (
-            persistent_buffer_path
-            or os.environ.get("VERA_SPOOL_PATH")
-            or None
+        # Env-var fallbacks. Semantic: ``None`` means "unset, fall through to
+        # env var, then to the documented default". Any explicit non-None
+        # value — including empty string — is the caller's choice and is
+        # honoured as-is. This is consistent across every constructor arg so
+        # callers don't have to remember per-arg quirks.
+        api_url = (
+            api_url
+            if api_url is not None
+            else (os.environ.get("VERA_API_URL") or "https://api.usevera.xyz")
         )
+        api_key = (
+            api_key if api_key is not None else os.environ.get("VERA_API_KEY", "")
+        )
+        agent_name = (
+            agent_name
+            if agent_name is not None
+            else (os.environ.get("VERA_AGENT_NAME") or "default-agent")
+        )
+        agent_version = (
+            agent_version
+            if agent_version is not None
+            else (os.environ.get("VERA_AGENT_VERSION") or None)
+        )
+        model_id = (
+            model_id
+            if model_id is not None
+            else (os.environ.get("VERA_MODEL_ID") or None)
+        )
+        framework = (
+            framework
+            if framework is not None
+            else (os.environ.get("VERA_FRAMEWORK") or None)
+        )
+        # ``persistent_buffer_path`` uses a sentinel to distinguish "caller did
+        # not pass anything → fall through to VERA_SPOOL_PATH" from "caller
+        # explicitly disabled spool → DO NOT consult env". DevClient relies
+        # on the latter to plug a HIPAA leak path.
+        if persistent_buffer_path is _NO_SPOOL_SENTINEL:
+            persistent_buffer_path = None  # explicit disable, no env fallback
+        elif persistent_buffer_path is None:
+            persistent_buffer_path = os.environ.get("VERA_SPOOL_PATH") or None
+        # else: explicit string from the caller — honour as-is.
 
         if not api_key:
             logger.warning(
@@ -423,6 +466,22 @@ class VeraClient:
             # configuring a spool care about recovery-on-startup semantics.
             if self._spool.size() > 0:
                 self._init_runtime_state()
+
+        # One-time INFO log per process: surfaces the resolved api_url so ops
+        # can see where audit traffic is going. The default URL changed
+        # silently from earlier SDK versions; this prevents "wait, why isn't
+        # my self-hosted endpoint receiving anything?" debugging sessions.
+        # Suppressed for DevClient (which logs its own loud banner) and for
+        # subsequent client constructions in the same process.
+        global _FIRST_INIT_LOGGED
+        if not _FIRST_INIT_LOGGED and type(self).__name__ != "DevClient":
+            _FIRST_INIT_LOGGED = True
+            logger.info(
+                "vera.client: initialized — api_url=%s agent_name=%s spool=%s",
+                self.api_url,
+                self.agent_name,
+                "on" if self._spool is not None else "off",
+            )
 
     # ------------------------------------------------------------------
     # Dev-mode factory

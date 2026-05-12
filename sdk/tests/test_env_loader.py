@@ -90,10 +90,33 @@ def test_explicit_arg_overrides_env(monkeypatch):
 
 
 def test_empty_string_env_var_uses_default(monkeypatch):
-    """``VERA_API_URL=""`` must fall through to the documented default."""
+    """``VERA_API_URL=""`` must fall through to the documented default.
+
+    Empty-string env vars still fall through to the default — only
+    explicit non-None kwargs are treated as the caller's intentional
+    choice (see :func:`test_explicit_empty_string_kwarg_sticks`).
+    """
     monkeypatch.setenv("VERA_API_URL", "")
     c = VeraClient(api_key="k")
     assert c.api_url == "https://api.usevera.xyz"
+
+
+def test_explicit_empty_string_kwarg_sticks(monkeypatch):
+    """Explicit ``api_key=""`` kwarg sticks; the env var is NOT consulted.
+
+    This is the consistent ``None means unset, anything else means
+    explicit`` semantic introduced on PR #170. Previously ``api_url`` and
+    ``api_key`` disagreed on this point.
+    """
+    monkeypatch.setenv("VERA_API_KEY", "env-key-value")
+    # Explicit empty-string overrides env — the caller chose "" deliberately.
+    c = VeraClient(api_url="http://x", api_key="")
+    assert c._httpx_client_kwargs["headers"]["Authorization"] == "Bearer "
+
+    monkeypatch.setenv("VERA_AGENT_NAME", "env-named-agent")
+    # Same for agent_name: explicit "" wins over env.
+    c2 = VeraClient(api_url="http://x", api_key="k", agent_name="")
+    assert c2.agent_name == ""
 
 
 def test_default_api_url_is_saas(monkeypatch):

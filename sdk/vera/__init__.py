@@ -13,8 +13,10 @@ Env-var fallbacks honored by :func:`init` and the client constructors:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import threading
 from typing import Any
 
 from .client import (
@@ -53,6 +55,31 @@ AsyncActionLedgerClient = AsyncVeraClient
 _initialized_client: VeraClient | None = None
 _initialized_async_client: AsyncVeraClient | None = None
 
+# Module-level locks guarding the read-modify-write of the handles above.
+# Concurrent ``init()`` callers (e.g. multiple worker threads in a web app
+# starting up in parallel) could otherwise both see the same ``previous``,
+# close it twice, and race on ``set_default_client``. The lock is taken
+# AROUND the swap — client construction itself happens outside the lock so
+# slow init paths (httpx connection setup, spool open) don't serialise.
+_init_lock = threading.Lock()
+# ``asyncio.Lock`` for the async-aware init path. Lazily constructed: at
+# module import time there may be no running loop yet, and binding to a
+# specific loop here would break callers who set up their own loop later.
+_init_async_lock: asyncio.Lock | None = None
+_init_async_lock_setup = threading.Lock()
+
+
+def _get_async_init_lock() -> asyncio.Lock:
+    """Return the module-level asyncio.Lock, constructing it on first use."""
+    global _init_async_lock
+    # Double-checked locking: the threading.Lock prevents two threads from
+    # both winning the "first await" race and creating two asyncio.Locks.
+    if _init_async_lock is None:
+        with _init_async_lock_setup:
+            if _init_async_lock is None:
+                _init_async_lock = asyncio.Lock()
+    return _init_async_lock
+
 
 def _env_bool(name: str, default: bool = False) -> bool:
     """Parse a boolean-shaped env var.
@@ -64,6 +91,32 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if not val:
         return default
     return val in {"1", "true", "yes", "on"}
+
+
+class _UninitializedClient:
+    """Sentinel returned by :func:`get_client` when :func:`init` hasn't run.
+
+    Accessing any attribute raises :class:`VeraError` with a helpful message.
+    Returning this instead of ``None`` means the failure mode for "forgot to
+    call init()" is a loud, descriptive exception instead of a generic
+    ``AttributeError: 'NoneType' object has no attribute ...``.
+    """
+
+    def __getattr__(self, name: str) -> Any:
+        raise VeraError(
+            f"vera.init() not called. Call vera.init(api_key=..., "
+            f"agent_name=...) before accessing vera.get_client().{name}. "
+            f"See https://docs.usevera.xyz/quickstart"
+        )
+
+    def __bool__(self) -> bool:  # so ``if vera.get_client():`` still works
+        return False
+
+    def __repr__(self) -> str:
+        return "<vera.UninitializedClient — call vera.init() first>"
+
+
+_UNINITIALIZED = _UninitializedClient()
 
 
 def init(
@@ -109,9 +162,15 @@ def init(
         when dev mode is active).
 
     Calling :func:`init` twice replaces the previous default client. The
-    old client's :meth:`VeraClient.close` is invoked first to drain its
-    queue. Errors from ``close()`` are swallowed so a stuck previous client
-    can't block re-initialisation.
+    old client's :meth:`VeraClient.close` is invoked AFTER the swap so
+    concurrent callers always see a valid default. Errors from ``close()``
+    are logged at WARN but not re-raised so a stuck previous client can't
+    block re-initialisation.
+
+    Thread-safety: concurrent ``init()`` calls are serialised on the
+    handle-swap section via a module-level :class:`threading.Lock`. Client
+    construction itself runs outside the lock so a slow init path doesn't
+    queue up other callers.
 
     Example::
 
@@ -122,19 +181,20 @@ def init(
         def approve(applicant_id, amount):
             ...
     """
-    global _initialized_client
-
     dev_active = dev if dev is not None else _env_bool("VERA_DEV", default=False)
 
+    # Build the new client OUTSIDE the lock. Construction is expensive
+    # (httpx setup, optional spool open) and any failures here should not
+    # affect the previously-registered default.
     if dev_active:
         from .dev import build_dev_client
 
-        client: VeraClient = build_dev_client(
+        new_client: VeraClient = build_dev_client(
             agent_name=agent_name,
             **client_kwargs,
         )
     else:
-        client = VeraClient(
+        new_client = VeraClient(
             api_key=api_key,
             api_url=api_url,
             agent_name=agent_name,
@@ -145,14 +205,23 @@ def init(
             **client_kwargs,
         )
 
-    if _initialized_client is not None and _initialized_client is not client:
+    global _initialized_client
+    with _init_lock:
+        previous = _initialized_client
+        _initialized_client = new_client
+        set_default_client(new_client)
+
+    # Close the previous client AFTER the swap so concurrent callers
+    # always observe a valid default. ``close()`` is best-effort: a hung
+    # close shouldn't deny re-init, and there's nothing the caller can do
+    # if it raises.
+    if previous is not None and previous is not new_client:
         try:
-            _initialized_client.close()
-        except Exception:  # noqa: BLE001 — defensive: close() must never block re-init
-            logger.debug("vera.init: previous client close() raised", exc_info=True)
-    _initialized_client = client
-    set_default_client(client)
-    return client
+            previous.close()
+        except Exception as e:  # noqa: BLE001 — close must never block re-init
+            logger.warning("Failed to close previous Vera client: %s", e)
+
+    return new_client
 
 
 def init_async(
@@ -166,7 +235,7 @@ def init_async(
     persistent_buffer_path: str | None = None,
     **client_kwargs: Any,
 ) -> AsyncVeraClient:
-    """Initialize Vera for async codepaths.
+    """Initialize Vera for async codepaths (synchronous entry point).
 
     Mirrors :func:`init` but constructs an :class:`AsyncVeraClient` and
     registers it via :func:`set_default_async_client`. Returns the client
@@ -174,13 +243,18 @@ def init_async(
     async client's drain MUST be awaited explicitly (atexit cannot drive
     async cleanup reliably).
 
+    .. warning::
+        This is a synchronous function and CANNOT ``await`` the previous
+        client's ``close()`` when re-initialising. Any records still queued
+        on the previous client are **abandoned** (no flush, no drain). If
+        you re-init in a long-running async service and care about not
+        losing in-flight records, use :func:`init_async_awaitable` instead.
+
     Dev mode is intentionally not supported here — the sync :class:`DevClient`
     captures records synchronously and works fine inside async test
     fixtures. Use :func:`init(dev=True)` for that.
     """
-    global _initialized_async_client
-
-    client = AsyncVeraClient(
+    new_client = AsyncVeraClient(
         api_key=api_key,
         api_url=api_url,
         agent_name=agent_name,
@@ -190,17 +264,89 @@ def init_async(
         persistent_buffer_path=persistent_buffer_path,
         **client_kwargs,
     )
-    # Re-init: we can't await the previous client's close() from this sync
-    # function, so we just drop the reference. Callers re-initialising
-    # in-process should explicitly ``await old.close()`` themselves.
-    _initialized_async_client = client
-    set_default_async_client(client)
-    return client
+
+    global _initialized_async_client
+    with _init_lock:
+        previous = _initialized_async_client
+        _initialized_async_client = new_client
+        set_default_async_client(new_client)
+
+    # We can't await close() from a sync function. Warn loudly so callers
+    # know in-flight records on the previous client are about to be
+    # abandoned, and point them at the awaitable variant.
+    if previous is not None and previous is not new_client:
+        logger.warning(
+            "vera.init_async: replacing the previous AsyncVeraClient WITHOUT "
+            "awaiting its close(). Any records still queued on it will be "
+            "dropped. Use vera.init_async_awaitable() if you need clean "
+            "drain semantics on re-init."
+        )
+
+    return new_client
 
 
-def get_client() -> VeraClient | None:
-    """Return the client registered via :func:`init`, or ``None``."""
-    return _initialized_client
+async def init_async_awaitable(
+    *,
+    api_key: str | None = None,
+    api_url: str | None = None,
+    agent_name: str | None = None,
+    agent_version: str | None = None,
+    model_id: str | None = None,
+    framework: str | None = None,
+    persistent_buffer_path: str | None = None,
+    **client_kwargs: Any,
+) -> AsyncVeraClient:
+    """Async-aware variant of :func:`init_async` with clean re-init semantics.
+
+    Identical to :func:`init_async` except that, when replacing a previous
+    client, this function ``await``\\ s ``previous.close()`` so the old
+    queue gets drained instead of dropped. Prefer this in long-running
+    async services that may re-init mid-process.
+
+    Use :func:`init_async` (sync) only for one-shot initialisation at
+    application startup, where re-init is either a no-op or you've already
+    accepted the data-loss risk.
+    """
+    new_client = AsyncVeraClient(
+        api_key=api_key,
+        api_url=api_url,
+        agent_name=agent_name,
+        agent_version=agent_version,
+        model_id=model_id,
+        framework=framework,
+        persistent_buffer_path=persistent_buffer_path,
+        **client_kwargs,
+    )
+
+    global _initialized_async_client
+    lock = _get_async_init_lock()
+    async with lock:
+        previous = _initialized_async_client
+        _initialized_async_client = new_client
+        set_default_async_client(new_client)
+
+    if previous is not None and previous is not new_client:
+        try:
+            await previous.close()
+        except Exception as e:  # noqa: BLE001 — close must never block re-init
+            logger.warning(
+                "Failed to close previous AsyncVeraClient: %s", e
+            )
+
+    return new_client
+
+
+def get_client() -> VeraClient:
+    """Return the client registered via :func:`init`.
+
+    If :func:`init` has not been called, returns a sentinel that raises
+    :class:`VeraError` on any attribute access. This turns the
+    "forgot to call init()" bug from a confusing
+    ``AttributeError: 'NoneType' object has no attribute ...`` into an
+    explicit message pointing at the docs. The sentinel is falsy, so
+    existing ``if vera.get_client():`` checks still work.
+    """
+    return _initialized_client if _initialized_client is not None else _UNINITIALIZED  # type: ignore[return-value]
 
 
 def get_async_client() -> AsyncVeraClient | None:
@@ -212,6 +358,7 @@ __all__ = [
     # Sentry-style entry points
     "init",
     "init_async",
+    "init_async_awaitable",
     "get_client",
     "get_async_client",
     # Clients

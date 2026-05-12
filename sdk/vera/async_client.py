@@ -60,24 +60,49 @@ class AsyncVeraClient:
         redactor: "Redactor | None" = None,
         circuit_breaker_threshold: int = 5,
         requeue_max_attempts: int = 10,
-        persistent_buffer_path: str | None = None,
+        persistent_buffer_path: "str | None | object" = None,
         persistent_buffer_max_bytes: int = 100_000_000,
     ):
         # Env-var fallbacks (mirrors :class:`vera.client.VeraClient`).
-        # Explicit kwargs always win; ``None`` (or omitted) falls through
-        # to the matching env var, then to the documented default. Empty
-        # string env vars are treated as "unset".
-        api_url = api_url or os.environ.get("VERA_API_URL") or "https://api.usevera.xyz"
-        api_key = api_key if api_key is not None else os.environ.get("VERA_API_KEY", "")
-        agent_name = agent_name or os.environ.get("VERA_AGENT_NAME") or "default-agent"
-        agent_version = agent_version or os.environ.get("VERA_AGENT_VERSION") or None
-        model_id = model_id or os.environ.get("VERA_MODEL_ID") or None
-        framework = framework or os.environ.get("VERA_FRAMEWORK") or None
-        persistent_buffer_path = (
-            persistent_buffer_path
-            or os.environ.get("VERA_SPOOL_PATH")
-            or None
+        # Semantic: ``None`` means "fall through to env, then to default".
+        # Any explicit non-None value — including empty string — is the
+        # caller's choice and is honoured as-is.
+        from .client import _NO_SPOOL_SENTINEL
+
+        api_url = (
+            api_url
+            if api_url is not None
+            else (os.environ.get("VERA_API_URL") or "https://api.usevera.xyz")
         )
+        api_key = (
+            api_key if api_key is not None else os.environ.get("VERA_API_KEY", "")
+        )
+        agent_name = (
+            agent_name
+            if agent_name is not None
+            else (os.environ.get("VERA_AGENT_NAME") or "default-agent")
+        )
+        agent_version = (
+            agent_version
+            if agent_version is not None
+            else (os.environ.get("VERA_AGENT_VERSION") or None)
+        )
+        model_id = (
+            model_id
+            if model_id is not None
+            else (os.environ.get("VERA_MODEL_ID") or None)
+        )
+        framework = (
+            framework
+            if framework is not None
+            else (os.environ.get("VERA_FRAMEWORK") or None)
+        )
+        # See VeraClient.__init__ for sentinel rationale (HIPAA leak path).
+        if persistent_buffer_path is _NO_SPOOL_SENTINEL:
+            persistent_buffer_path = None
+        elif persistent_buffer_path is None:
+            persistent_buffer_path = os.environ.get("VERA_SPOOL_PATH") or None
+        # else: explicit string — honour as-is.
 
         if not api_key:
             logger.warning(

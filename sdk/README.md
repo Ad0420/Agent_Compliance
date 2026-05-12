@@ -69,15 +69,19 @@ client = vera.VeraClient.dev(agent_name="my-agent")
 
 ### Testing
 
-Vera ships a pytest fixture (`vera_recording`) that auto-loads when the
+Vera ships a pytest fixture (`vera_sdk_recording`) that auto-loads when the
 SDK is installed:
 
 ```python
-def test_loan_decision(vera_recording):
+def test_loan_decision(vera_sdk_recording):
     approve_loan(applicant_id="x", amount=10000)
-    assert len(vera_recording.records) == 1
-    assert vera_recording.records[0]["action_name"] == "approve_loan"
+    assert len(vera_sdk_recording.records) == 1
+    assert vera_sdk_recording.records[0]["action_name"] == "approve_loan"
 ```
+
+> **Note:** This fixture was renamed from `vera_recording` to
+> `vera_sdk_recording` in v0.3.x to reduce collision risk with customer
+> fixtures named `recording`. Update any existing references.
 
 No mocks, no HTTP server, no API key required.
 

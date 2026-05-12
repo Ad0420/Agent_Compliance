@@ -170,7 +170,10 @@ def test_init_async():
 
 
 def test_get_client_returns_initialized():
-    assert vera.get_client() is None
+    # Before init(), get_client() returns a falsy sentinel (not literal None
+    # any more — the sentinel is the INFO-finding fix). ``bool(sentinel)``
+    # is False so existing ``if client:`` checks still work.
+    assert not vera.get_client()
     client = vera.init(api_key="k", agent_name="a", api_url="http://x")
     assert vera.get_client() is client
 
@@ -192,3 +195,142 @@ def test_init_passes_through_client_kwargs():
     )
     assert client._batch_size == 7
     assert client._client.timeout.connect == 12.5
+
+
+def test_init_thread_safe():
+    """Concurrent ``init()`` calls must not race on the handle swap.
+
+    Spawn N threads, each calls ``vera.init(...)`` simultaneously. Assert
+    that exactly one client survives, ``get_client()`` returns it, and no
+    race-induced state corruption (e.g. AttributeError, partially-closed
+    client) is observable.
+    """
+    import threading
+
+    barrier = threading.Barrier(8)
+    errors: list[Exception] = []
+    clients: list = []
+
+    def _do_init(i: int) -> None:
+        try:
+            barrier.wait()
+            c = vera.init(api_key=f"k{i}", agent_name=f"a{i}", api_url="http://x")
+            clients.append(c)
+        except Exception as exc:  # noqa: BLE001 — collect for assertion
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_do_init, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    assert errors == [], f"thread-init raised: {errors}"
+    assert len(clients) == 8
+    # The surviving default must be exactly one of the constructed clients —
+    # whichever happened to win the swap.
+    surviving = vera.get_client()
+    assert surviving in clients
+    # And get_client() must return a usable client (no NoneType.attribute errors).
+    assert surviving.agent_name.startswith("a")
+
+
+def test_init_async_replacement_warns(caplog):
+    """Sync ``init_async`` must WARN when replacing a previous client.
+
+    The sync entry point can't await the previous client's close(), so
+    in-flight records on the previous queue are dropped. That's a real
+    data-loss event and the caller must see a high-visibility signal.
+    """
+    first = vera.init_async(api_key="k1", agent_name="async-1")
+    assert first is not None
+
+    with caplog.at_level("WARNING", logger="vera.init"):
+        second = vera.init_async(api_key="k2", agent_name="async-2")
+
+    assert second is not first
+    assert any(
+        "replacing the previous AsyncVeraClient" in r.message
+        for r in caplog.records
+    )
+
+    # Cleanup
+    vera._initialized_async_client = None
+
+
+def test_get_client_before_init_returns_helpful_sentinel():
+    """``get_client()`` before ``init()`` returns a sentinel that raises with help."""
+    client = vera.get_client()
+    assert not client  # falsy
+    with pytest.raises(vera.VeraError) as excinfo:
+        client.record_action(action_name="x")
+    msg = str(excinfo.value)
+    assert "vera.init()" in msg
+    assert "record_action" in msg or "quickstart" in msg
+
+
+def test_vera_sdk_recording_fixture_preserves_in_test_init():
+    """The fixture must NOT clobber a test's in-test ``vera.init`` call.
+
+    If a test body installs its own default client (e.g. via vera.init),
+    the fixture teardown must respect that choice rather than restoring
+    the pre-fixture default.
+
+    Drives the fixture's generator manually so we can observe what the
+    teardown does — pytester is not configured in this project.
+    """
+    from vera import decorator as _decorator_mod
+    from vera.pytest_plugin import vera_sdk_recording
+
+    # Pre-state: no default client.
+    _decorator_mod._default_client = None
+    pre_default = _decorator_mod._default_client
+
+    gen = vera_sdk_recording.__wrapped__()  # the underlying generator
+    sink = next(gen)
+    fixture_dev_client = _decorator_mod._default_client
+    assert fixture_dev_client is not None
+    assert fixture_dev_client is not pre_default
+
+    # Simulate the test body replacing the default via vera.init(...).
+    new_client = vera.init(api_key="k", agent_name="in-test-init", api_url="http://x")
+    assert _decorator_mod._default_client is new_client
+    assert new_client is not fixture_dev_client
+
+    # Drive teardown. The fixture must NOT restore pre_default — the test
+    # body's explicit choice should win.
+    try:
+        next(gen)
+    except StopIteration:
+        pass
+
+    assert _decorator_mod._default_client is new_client, (
+        "Fixture teardown clobbered the in-test vera.init() result"
+    )
+
+
+def test_init_first_construction_logs_resolved_config(caplog):
+    """First VeraClient construction in the process must INFO-log api_url.
+
+    Subsequent constructions in the same process don't re-log (one-time
+    flag). The flag is process-global so this test runs the assertion via
+    a subprocess to get a clean process state.
+    """
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import logging, vera; "
+            "logging.basicConfig(level=logging.INFO); "
+            "vera.init(api_key='k', agent_name='log-test', api_url='http://logged.example')",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    combined = result.stderr + result.stdout
+    assert "http://logged.example" in combined, combined
+    assert "log-test" in combined, combined
