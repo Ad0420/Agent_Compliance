@@ -5,11 +5,17 @@
 import { NextResponse } from "next/server";
 
 import { revokeDashboardApiKey, VeraApiError } from "@/lib/api-server";
+import { csrfGuard } from "@/lib/csrf";
 
 export async function DELETE(
-  _req: Request,
+  req: Request,
   { params }: { params: Promise<{ keyId: string }> },
 ) {
+  // CSRF: same-origin allow-list on the mutating handler. See route.ts
+  // sibling for the rationale.
+  const forbidden = csrfGuard(req);
+  if (forbidden) return forbidden;
+
   const { keyId } = await params;
   try {
     const body = await revokeDashboardApiKey(keyId);

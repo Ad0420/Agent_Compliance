@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, String, func
+from sqlalchemy import Boolean, DateTime, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -32,4 +32,12 @@ class ProcessedWebhookEvent(Base):
     event_type: Mapped[str] = mapped_column(String(128), nullable=False)
     processed_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
+    )
+    # ``True`` once the handler ran without raising. ``False`` rows are
+    # retained for operator visibility but are NOT treated as deduped —
+    # Svix retries are allowed to retry the handler. Deterministically-broken
+    # handlers therefore eventually exhaust the Svix retry budget instead of
+    # infinite-retrying (the row stays as a tombstone for investigation).
+    success: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="0", default=False
     )

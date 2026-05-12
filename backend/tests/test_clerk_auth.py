@@ -8,6 +8,7 @@ the private half.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import time
 from typing import Any
@@ -15,6 +16,7 @@ from typing import Any
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
+from sqlalchemy import select
 
 from app.config import settings
 from app.services import auth as auth_service
@@ -447,3 +449,280 @@ async def test_azp_unset_means_no_check(keypair, patched_jwks, monkeypatch):
     )
     claims = await auth_service.verify_clerk_jwt(token)
     assert claims["sub"] == "user_test_123"
+
+
+# ── Membership freshness re-check (CRITICAL #5 + #6 fix) ─────────────────────
+
+
+@pytest.mark.asyncio
+async def test_stale_membership_refetched_from_clerk(
+    async_client, db_session, keypair, patched_jwks, monkeypatch
+):
+    """Stale local membership (older than the freshness window) MUST trigger
+    a Clerk REST lookup. If Clerk says the user has been demoted, the local
+    role is updated AND the RBAC check denies the request.
+    """
+    from app.models import ChainState, Organization, OrgMembership
+    from app.middleware import clerk_auth
+
+    # Seed an org + membership marked as 'admin' but stale (10 min old).
+    org = Organization(name="stale-org", clerk_org_id="org_stale")
+    db_session.add(org)
+    await db_session.flush()
+    db_session.add(ChainState(org_id=org.id))
+    stale_at = dt.datetime.utcnow() - dt.timedelta(minutes=10)
+    membership = OrgMembership(
+        org_id=org.id,
+        clerk_user_id="user_stale",
+        clerk_org_id="org_stale",
+        role="admin",
+        updated_at=stale_at,
+    )
+    db_session.add(membership)
+    await db_session.commit()
+
+    # Configure freshness check + a fake Clerk REST that reports the user
+    # has been demoted to a developer.
+    monkeypatch.setattr(settings, "clerk_secret_key", "sk_test_fake")
+    monkeypatch.setattr(settings, "membership_freshness_seconds", 60)
+
+    fetch_calls = {"n": 0}
+
+    async def _fake_fetch(*, clerk_user_id, clerk_org_id):
+        fetch_calls["n"] += 1
+        return "developer"
+
+    monkeypatch.setattr(
+        clerk_auth, "_fetch_clerk_membership_role", _fake_fetch
+    )
+
+    token = _sign(
+        keypair["primary_priv"],
+        extra_claims={"sub": "user_stale", "org_id": "org_stale"},
+    )
+    # Override the fixture `sub` claim — _sign sets it to user_test_123
+    # by default. Recompose:
+    import jwt as _jwt
+
+    iat = int(time.time())
+    token = _jwt.encode(
+        {
+            "sub": "user_stale",
+            "iss": _TEST_ISSUER,
+            "iat": iat,
+            "exp": iat + 300,
+            "org_id": "org_stale",
+        },
+        keypair["primary_priv"],
+        algorithm="RS256",
+        headers={"kid": _TEST_KID},
+    )
+
+    # The route requires admin → user got demoted to developer → 403.
+    resp = await async_client.post(
+        "/v1/dashboard/api-keys",
+        json={"name": "x", "permissions": ["read"]},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
+    assert fetch_calls["n"] == 1
+
+    # Backend row got updated to reflect Clerk reality.
+    db_session.expire_all()
+    refreshed = await db_session.execute(
+        select(OrgMembership).where(
+            OrgMembership.clerk_user_id == "user_stale"
+        )
+    )
+    row = refreshed.scalar_one()
+    assert row.role == "developer"
+    # updated_at was bumped forward.
+    assert row.updated_at > stale_at
+
+
+@pytest.mark.asyncio
+async def test_fresh_membership_skips_clerk_fetch(
+    async_client, db_session, keypair, patched_jwks, monkeypatch
+):
+    """Cached membership within the freshness window must NOT consult Clerk."""
+    from app.models import ChainState, Organization, OrgMembership
+    from app.middleware import clerk_auth
+
+    org = Organization(name="fresh-org", clerk_org_id="org_fresh")
+    db_session.add(org)
+    await db_session.flush()
+    db_session.add(ChainState(org_id=org.id))
+    db_session.add(
+        OrgMembership(
+            org_id=org.id,
+            clerk_user_id="user_fresh",
+            clerk_org_id="org_fresh",
+            role="admin",
+            updated_at=dt.datetime.utcnow(),  # brand new
+        )
+    )
+    await db_session.commit()
+
+    monkeypatch.setattr(settings, "clerk_secret_key", "sk_test_fake")
+    monkeypatch.setattr(settings, "membership_freshness_seconds", 300)
+
+    async def _explode(**_kwargs):
+        raise AssertionError("Clerk fetch should not have been called")
+
+    monkeypatch.setattr(
+        clerk_auth, "_fetch_clerk_membership_role", _explode
+    )
+
+    import jwt as _jwt
+
+    iat = int(time.time())
+    token = _jwt.encode(
+        {
+            "sub": "user_fresh",
+            "iss": _TEST_ISSUER,
+            "iat": iat,
+            "exp": iat + 300,
+            "org_id": "org_fresh",
+        },
+        keypair["primary_priv"],
+        algorithm="RS256",
+        headers={"kid": _TEST_KID},
+    )
+    resp = await async_client.get(
+        "/v1/dashboard/api-keys",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_clerk_unreachable_uses_cached_role_with_warn(
+    async_client, db_session, keypair, patched_jwks, monkeypatch, caplog
+):
+    """If the Clerk REST call fails, we log WARN and fall back to cached
+    role — availability beats consistency for a defense-in-depth check.
+    """
+    import logging
+
+    import httpx
+
+    from app.models import ChainState, Organization, OrgMembership
+    from app.middleware import clerk_auth
+
+    org = Organization(name="warn-org", clerk_org_id="org_warn")
+    db_session.add(org)
+    await db_session.flush()
+    db_session.add(ChainState(org_id=org.id))
+    db_session.add(
+        OrgMembership(
+            org_id=org.id,
+            clerk_user_id="user_warn",
+            clerk_org_id="org_warn",
+            role="admin",
+            updated_at=dt.datetime.utcnow() - dt.timedelta(minutes=10),
+        )
+    )
+    await db_session.commit()
+
+    monkeypatch.setattr(settings, "clerk_secret_key", "sk_test_fake")
+    monkeypatch.setattr(settings, "membership_freshness_seconds", 60)
+
+    async def _boom(**_kwargs):
+        raise httpx.ConnectError("synthetic outage")
+
+    monkeypatch.setattr(
+        clerk_auth, "_fetch_clerk_membership_role", _boom
+    )
+
+    import jwt as _jwt
+
+    iat = int(time.time())
+    token = _jwt.encode(
+        {
+            "sub": "user_warn",
+            "iss": _TEST_ISSUER,
+            "iat": iat,
+            "exp": iat + 300,
+            "org_id": "org_warn",
+        },
+        keypair["primary_priv"],
+        algorithm="RS256",
+        headers={"kid": _TEST_KID},
+    )
+    with caplog.at_level(logging.WARNING, logger="app.middleware.clerk_auth"):
+        resp = await async_client.get(
+            "/v1/dashboard/api-keys",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert any(
+        "freshness check failed" in rec.message for rec in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_user_kicked_from_org_revokes_access_within_freshness_window(
+    async_client, db_session, keypair, patched_jwks, monkeypatch
+):
+    """CRITICAL #6 closure: a JWT may still be valid for ~60s after the
+    user was removed from the Clerk org. The freshness re-check must
+    return ``None`` from Clerk (user no longer a member) → 403 + cached
+    row deleted.
+    """
+    from app.models import ChainState, Organization, OrgMembership
+    from app.middleware import clerk_auth
+
+    org = Organization(name="kicked-org", clerk_org_id="org_kicked")
+    db_session.add(org)
+    await db_session.flush()
+    db_session.add(ChainState(org_id=org.id))
+    db_session.add(
+        OrgMembership(
+            org_id=org.id,
+            clerk_user_id="user_kicked",
+            clerk_org_id="org_kicked",
+            role="admin",
+            updated_at=dt.datetime.utcnow() - dt.timedelta(minutes=10),
+        )
+    )
+    await db_session.commit()
+
+    monkeypatch.setattr(settings, "clerk_secret_key", "sk_test_fake")
+    monkeypatch.setattr(settings, "membership_freshness_seconds", 60)
+
+    async def _no_longer_member(**_kwargs):
+        return None  # signal: not in org
+
+    monkeypatch.setattr(
+        clerk_auth, "_fetch_clerk_membership_role", _no_longer_member
+    )
+
+    import jwt as _jwt
+
+    iat = int(time.time())
+    token = _jwt.encode(
+        {
+            "sub": "user_kicked",
+            "iss": _TEST_ISSUER,
+            "iat": iat,
+            "exp": iat + 300,
+            "org_id": "org_kicked",
+        },
+        keypair["primary_priv"],
+        algorithm="RS256",
+        headers={"kid": _TEST_KID},
+    )
+    resp = await async_client.get(
+        "/v1/dashboard/api-keys",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 403
+
+    # Local membership was deleted.
+    db_session.expire_all()
+    gone = await db_session.execute(
+        select(OrgMembership).where(
+            OrgMembership.clerk_user_id == "user_kicked"
+        )
+    )
+    assert gone.scalar_one_or_none() is None

@@ -16,6 +16,9 @@ from svix.webhooks import Webhook
 
 from app.config import settings
 from app.models import (
+    APIKey,
+    ActionRecord,
+    ChainState,
     Organization,
     OrgMembership,
     ProcessedWebhookEvent,
@@ -407,11 +410,15 @@ async def test_membership_deleted_removes_membership(async_client, db_session):
     assert result.scalar_one_or_none() is None
 
 
-# ── organization.deleted ─────────────────────────────────────────────────────
+# ── organization.deleted (soft-delete; CRITICAL #1 fix) ──────────────────────
 
 
 @pytest.mark.asyncio
-async def test_organization_deleted_removes_org(async_client, db_session):
+async def test_organization_deleted_soft_deletes_org(async_client, db_session):
+    """A delete webhook must soft-delete: deleted_at set, clerk_org_id
+    NULLed, scrubbed_clerk_org_id holds the original. The Organization row
+    itself MUST survive (audit-trail product — action_records FK is RESTRICT).
+    """
     await _post_webhook(
         async_client,
         {
@@ -432,15 +439,185 @@ async def test_organization_deleted_removes_org(async_client, db_session):
         },
         msg_id="msg_d_1",
     )
-    # Expire the session cache so we see the delete that the request session
-    # committed; without this we'd get the stale ORM-cached row.
     db_session.expire_all()
-    result = await db_session.execute(
+
+    # By clerk_org_id (live filter) — should be gone (NULLed out).
+    live_lookup = await db_session.execute(
         select(Organization).where(
             Organization.clerk_org_id == "org_to_delete"
         )
     )
-    assert result.scalar_one_or_none() is None
+    assert live_lookup.scalar_one_or_none() is None
+
+    # By scrubbed_clerk_org_id — should be the tombstoned row.
+    scrubbed = await db_session.execute(
+        select(Organization).where(
+            Organization.scrubbed_clerk_org_id == "org_to_delete"
+        )
+    )
+    tombstone = scrubbed.scalar_one()
+    assert tombstone.deleted_at is not None
+    assert tombstone.clerk_org_id is None
+    assert tombstone.scrubbed_clerk_org_id == "org_to_delete"
+
+
+@pytest.mark.asyncio
+async def test_organization_deleted_with_action_records_does_not_crash(
+    async_client, db_session
+):
+    """Pre-populate an action_record (FK=RESTRICT). The delete webhook must
+    NOT raise a FK violation; soft-delete leaves the audit row intact.
+    """
+    # Provision via webhook so the org has chain_state.
+    await _post_webhook(
+        async_client,
+        {
+            "type": "organization.created",
+            "data": {
+                "id": "org_with_audit",
+                "name": "Auditing",
+                "created_by": "user_a",
+            },
+        },
+        msg_id="msg_audit_0",
+    )
+    db_session.expire_all()
+    org_id_row = await db_session.execute(
+        select(Organization.id).where(
+            Organization.clerk_org_id == "org_with_audit"
+        )
+    )
+    org_id = org_id_row.scalar_one()
+
+    # Insert via ORM with ``metadata_`` (the mapped attribute name; the
+    # underlying column is ``metadata``, which is a reserved word at the
+    # core Insert level). Using ORM here is fine — the lazy-load issue
+    # only bit us when re-querying ``Organization`` via the ORM after the
+    # async commit.
+    action = ActionRecord(
+        org_id=org_id,
+        sequence_number=1,
+        previous_hash="genesis",
+        record_hash="r1",
+        authorized_by="test",
+        agent_name="a",
+        action_type="function_call",
+        action_name="x",
+        action_timestamp=dt.datetime.utcnow(),
+        result="success",
+    )
+    db_session.add(action)
+    await db_session.commit()
+
+    # Now fire the delete — must not 500, must not violate FK.
+    resp = await _post_webhook(
+        async_client,
+        {"type": "organization.deleted", "data": {"id": "org_with_audit"}},
+        msg_id="msg_audit_1",
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Audit record still present (the whole point of soft-delete).
+    db_session.expire_all()
+    survivors = await db_session.execute(
+        select(ActionRecord.id).where(ActionRecord.org_id == org_id)
+    )
+    assert survivors.scalar_one() is not None
+
+
+@pytest.mark.asyncio
+async def test_organization_deleted_revokes_api_keys(async_client, db_session):
+    """Soft-delete must revoke live API keys for the org so SDK requests
+    bearing those keys start failing (the org row stays so authenticated
+    lookups would otherwise still succeed)."""
+    await _post_webhook(
+        async_client,
+        {
+            "type": "organization.created",
+            "data": {
+                "id": "org_keys_revoked",
+                "name": "Keyed",
+                "created_by": "user_k",
+            },
+        },
+        msg_id="msg_kr_0",
+    )
+    db_session.expire_all()
+    org_id_row = await db_session.execute(
+        select(Organization.id).where(
+            Organization.clerk_org_id == "org_keys_revoked"
+        )
+    )
+    org_id = org_id_row.scalar_one()
+    # Mint a live key directly to bypass auth/routes.
+    key = APIKey(
+        org_id=org_id,
+        name="live",
+        key_hash="hash-1",
+        key_prefix="al_live_x",
+        permissions=["read"],
+    )
+    db_session.add(key)
+    await db_session.commit()
+
+    await _post_webhook(
+        async_client,
+        {"type": "organization.deleted", "data": {"id": "org_keys_revoked"}},
+        msg_id="msg_kr_1",
+    )
+
+    db_session.expire_all()
+    keys = await db_session.execute(
+        select(APIKey.revoked_at).where(APIKey.org_id == org_id)
+    )
+    assert keys.scalar_one() is not None
+
+
+@pytest.mark.asyncio
+async def test_lookup_excludes_soft_deleted_orgs(async_client, db_session):
+    """After soft-delete, a second organization.created webhook for the same
+    Clerk org ID should be allowed to provision a fresh org row (the old
+    row's clerk_org_id was scrubbed).
+    """
+    await _post_webhook(
+        async_client,
+        {
+            "type": "organization.created",
+            "data": {
+                "id": "org_recycle",
+                "name": "First",
+                "created_by": "user_r",
+            },
+        },
+        msg_id="msg_rec_0",
+    )
+    await _post_webhook(
+        async_client,
+        {"type": "organization.deleted", "data": {"id": "org_recycle"}},
+        msg_id="msg_rec_1",
+    )
+    resp = await _post_webhook(
+        async_client,
+        {
+            "type": "organization.created",
+            "data": {
+                "id": "org_recycle",
+                "name": "Resurrected",
+                "created_by": "user_r2",
+            },
+        },
+        msg_id="msg_rec_2",
+    )
+    assert resp.status_code == 200
+
+    db_session.expire_all()
+    live = await db_session.execute(
+        select(Organization).where(
+            Organization.clerk_org_id == "org_recycle",
+            Organization.deleted_at.is_(None),
+        )
+    )
+    assert live.scalar_one().name == "Resurrected"
 
 
 # ── unknown event types ──────────────────────────────────────────────────────
@@ -454,3 +631,197 @@ async def test_unknown_event_type_returns_200(async_client):
         msg_id="msg_unk_1",
     )
     assert resp.status_code == 200
+
+
+# ── Concurrent / failure dedupe (CRITICAL #2/#3 fix) ─────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_concurrent_identical_delivery_processes_once(
+    async_client, db_session
+):
+    """Identical svix-id deliveries must collapse to a single set of side
+    effects. The second delivery short-circuits to {"replay": "true"}.
+
+    We run the two deliveries sequentially because aiosqlite + StaticPool
+    serializes onto a single connection (so true parallel requests against
+    the same in-memory DB deadlock). Sequential is the moral equivalent:
+    the second request sees the first's committed dedupe row, which is
+    exactly the post-commit state a concurrent loser would also see.
+    """
+    body = {
+        "type": "organization.created",
+        "data": {
+            "id": "org_race",
+            "name": "Race",
+            "created_by": "user_race",
+        },
+    }
+
+    resp1 = await _post_webhook(async_client, body, msg_id="msg_race")
+    resp2 = await _post_webhook(async_client, body, msg_id="msg_race")
+    assert resp1.status_code == 200
+    assert resp2.status_code == 200
+
+    # Exactly one of the two responses should be flagged a replay.
+    replays = [r for r in (resp1, resp2) if r.json().get("replay") == "true"]
+    assert len(replays) == 1, (resp1.json(), resp2.json())
+
+    # Exactly one org row, one membership row — no doubling.
+    db_session.expire_all()
+    orgs = await db_session.execute(
+        select(Organization).where(Organization.clerk_org_id == "org_race")
+    )
+    assert len(orgs.scalars().all()) == 1
+    members = await db_session.execute(
+        select(OrgMembership).where(OrgMembership.clerk_org_id == "org_race")
+    )
+    assert len(members.scalars().all()) == 1
+
+
+@pytest.mark.asyncio
+async def test_handler_failure_keeps_dedupe_row_with_success_false(
+    async_client, db_session, monkeypatch
+):
+    """If a handler raises, the dedupe row must persist as a tombstone with
+    ``success=False``. Operators can investigate; Svix can retry (next
+    attempt will see success=False and re-run the handler).
+
+    Note on test plumbing: httpx ASGITransport defaults to
+    ``raise_app_exceptions=True``, so a 500 in the handler propagates as
+    a Python exception rather than a 500 response. We assert via
+    ``pytest.raises`` instead of checking response.status_code; the
+    dedupe-row invariant is what actually matters here.
+    """
+    from app.routes import clerk_webhooks as wh
+
+    async def _boom(_session, _data):
+        raise RuntimeError("synthetic")
+
+    monkeypatch.setattr(wh, "_handle_org_created", _boom)
+
+    with pytest.raises(RuntimeError, match="synthetic"):
+        await _post_webhook(
+            async_client,
+            {
+                "type": "organization.created",
+                "data": {
+                    "id": "org_will_fail",
+                    "name": "Boom",
+                    "created_by": "user_b",
+                },
+            },
+            msg_id="msg_boom",
+        )
+
+    db_session.expire_all()
+    row = await db_session.execute(
+        select(ProcessedWebhookEvent).where(
+            ProcessedWebhookEvent.svix_id == "msg_boom"
+        )
+    )
+    tombstone = row.scalar_one()
+    assert tombstone.success is False
+
+
+@pytest.mark.asyncio
+async def test_membership_before_org_returns_503_for_retry(
+    async_client, db_session
+):
+    """If a membership webhook arrives before its parent org webhook (Svix
+    out-of-order delivery), respond 503 so Svix retries — don't silently
+    drop the event.
+    """
+    resp = await _post_webhook(
+        async_client,
+        {
+            "type": "organizationMembership.created",
+            "data": {
+                "organization": {"id": "org_orphan"},
+                "public_user_data": {"user_id": "user_orphan"},
+                "role": "org:member",
+            },
+        },
+        msg_id="msg_orphan",
+    )
+    assert resp.status_code == 503
+
+    # Dedupe row exists with success=False — so the Svix retry on the same
+    # svix-id finds it, sees success=False, and re-runs the handler.
+    db_session.expire_all()
+    row = await db_session.execute(
+        select(ProcessedWebhookEvent).where(
+            ProcessedWebhookEvent.svix_id == "msg_orphan"
+        )
+    )
+    tombstone = row.scalar_one()
+    assert tombstone.success is False
+
+
+@pytest.mark.asyncio
+async def test_membership_before_org_retry_succeeds_after_org_created(
+    async_client, db_session
+):
+    """Retry of the same svix-id AFTER the parent org has been provisioned
+    must run the handler again and succeed (not short-circuit as a replay).
+    """
+    # First attempt: parent org missing, 503.
+    resp503 = await _post_webhook(
+        async_client,
+        {
+            "type": "organizationMembership.created",
+            "data": {
+                "organization": {"id": "org_lazy"},
+                "public_user_data": {"user_id": "user_lazy"},
+                "role": "org:admin",
+            },
+        },
+        msg_id="msg_lazy",
+    )
+    assert resp503.status_code == 503
+
+    # Provision the parent org.
+    await _post_webhook(
+        async_client,
+        {
+            "type": "organization.created",
+            "data": {
+                "id": "org_lazy",
+                "name": "Lazy",
+                "created_by": "user_lazy_creator",
+            },
+        },
+        msg_id="msg_lazy_org",
+    )
+
+    # Svix retries with the same svix-id. The handler must run (because the
+    # earlier dedupe row has success=False) and now succeed.
+    resp_retry = await _post_webhook(
+        async_client,
+        {
+            "type": "organizationMembership.created",
+            "data": {
+                "organization": {"id": "org_lazy"},
+                "public_user_data": {"user_id": "user_lazy"},
+                "role": "org:admin",
+            },
+        },
+        msg_id="msg_lazy",
+    )
+    assert resp_retry.status_code == 200, resp_retry.text
+
+    db_session.expire_all()
+    members = await db_session.execute(
+        select(OrgMembership).where(
+            OrgMembership.clerk_user_id == "user_lazy"
+        )
+    )
+    assert members.scalar_one().role == "admin"
+
+    # Dedupe row is now success=True.
+    row = await db_session.execute(
+        select(ProcessedWebhookEvent).where(
+            ProcessedWebhookEvent.svix_id == "msg_lazy"
+        )
+    )
+    assert row.scalar_one().success is True
