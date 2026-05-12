@@ -12,6 +12,7 @@ from .idempotency_record import IdempotencyRecord
 from .webhook_subscription import WebhookSubscription
 from .org_membership import OrgMembership, BACKEND_ROLES
 from .processed_webhook_event import ProcessedWebhookEvent
+from .compliance_review_record import ComplianceReviewRecord
 
 __all__ = [
     "Base",
@@ -29,4 +30,5 @@ __all__ = [
     "OrgMembership",
     "BACKEND_ROLES",
     "ProcessedWebhookEvent",
+    "ComplianceReviewRecord",
 ]

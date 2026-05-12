@@ -23,6 +23,14 @@ from app.models import (  # noqa: E402, F401 – side-effect: registers tables
     ChainState,
     ActionRecord,
     Checkpoint,
+    Policy,
+    PolicyViolation,
+    Approval,
+    IdempotencyRecord,
+    WebhookSubscription,
+    OrgMembership,
+    ProcessedWebhookEvent,
+    ComplianceReviewRecord,
 )
 
 config = context.config

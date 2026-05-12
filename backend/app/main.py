@@ -23,6 +23,10 @@ from .routes import (
 )
 from .routes.dashboard_demo import router as dashboard_demo_router
 from .routes.dashboard_api_keys import router as dashboard_api_keys_router
+from .routes.dashboard_compliance import (
+    router as dashboard_compliance_router,
+    compliance_router as dashboard_compliance_namespace_router,
+)
 from .routes.clerk_webhooks import router as clerk_webhooks_router
 from .middleware import RateLimitMiddleware, RequestIDMiddleware
 from .services.immutability import install_sqlite_triggers
@@ -94,6 +98,12 @@ app.include_router(webhooks_router, prefix="/v1")
 # above continue to use API-key auth (machines).
 app.include_router(dashboard_demo_router)
 app.include_router(dashboard_api_keys_router)
+# /v1/dashboard/{actions,approvals,violations,export,verify,data-subjects}
+# — Clerk-authenticated read mirrors for compliance reviewers, plus the
+# /v1/dashboard/compliance/{summary,recent,exports,review-trail} namespace
+# for the Phase 4b compliance landing page.
+app.include_router(dashboard_compliance_router)
+app.include_router(dashboard_compliance_namespace_router)
 # Clerk webhooks — signature-verified via Svix, no bearer auth. Mounted at
 # /v1 so the public path is /v1/clerk/webhooks (matches the env.example doc).
 app.include_router(clerk_webhooks_router, prefix="/v1")

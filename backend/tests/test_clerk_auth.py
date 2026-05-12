@@ -229,7 +229,27 @@ async def test_missing_authorization_header_returns_401(async_client):
 
 
 @pytest.mark.asyncio
-async def test_dashboard_me_returns_user_claims(async_client, keypair, patched_jwks):
+async def test_dashboard_me_returns_user_claims(
+    async_client, keypair, patched_jwks, db_session
+):
+    """Post-Phase-4a F1: ``/v1/dashboard/me`` is RBAC-gated, so we need a
+    backing membership row before it returns 200."""
+    from app.models import ChainState, Organization, OrgMembership
+
+    org = Organization(name="me-test-org", clerk_org_id="org_test")
+    db_session.add(org)
+    await db_session.flush()
+    db_session.add(ChainState(org_id=org.id))
+    db_session.add(
+        OrgMembership(
+            org_id=org.id,
+            clerk_user_id="user_test_123",
+            clerk_org_id="org_test",
+            role="developer",
+        )
+    )
+    await db_session.commit()
+
     token = _sign(
         keypair["primary_priv"],
         extra_claims={"org_id": "org_test", "first_name": "Alice"},
@@ -244,6 +264,7 @@ async def test_dashboard_me_returns_user_claims(async_client, keypair, patched_j
     assert body["clerk_user"]["email"] == "alice@example.com"
     assert body["clerk_user"]["org_id"] == "org_test"
     assert body["clerk_user"]["first_name"] == "Alice"
+    assert body["membership"]["role"] == "developer"
 
 
 @pytest.mark.asyncio

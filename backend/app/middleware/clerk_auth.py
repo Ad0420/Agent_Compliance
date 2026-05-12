@@ -49,14 +49,14 @@ from datetime import datetime
 from typing import Any, Iterable
 
 import httpx
-from fastapi import Depends, HTTPException, Request
+from fastapi import BackgroundTasks, Depends, HTTPException, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..config import settings
 from ..database import get_db
-from ..models import OrgMembership
+from ..models import ComplianceReviewRecord, OrgMembership
 from ..services.auth import verify_clerk_jwt
 
 logger = logging.getLogger(__name__)
@@ -346,4 +346,161 @@ def require_clerk_role(allowed_roles: Iterable[str]):
     return _dep
 
 
-__all__ = ["require_clerk_auth", "require_clerk_role"]
+# ── Compliance reviewer audit-of-audit (Workstream F3) ───────────────────────
+
+
+async def _write_compliance_audit_row(
+    *,
+    org_id: str,
+    membership_id: str,
+    clerk_user_id: str,
+    http_path: str,
+    http_method: str,
+    query_params: dict[str, str] | None,
+    target_id: str | None,
+    status_code: int,
+    request_id: str | None,
+    ip_address: str | None,
+    user_agent: str | None,
+) -> None:
+    """Persist a ComplianceReviewRecord in a fresh session.
+
+    We deliberately don't share the route's session — a route-level
+    rollback (e.g. a handler that raises before commit) would otherwise
+    discard the audit write too. Failures here are caught at the caller
+    so the originating request still completes."""
+    from ..database import AsyncSessionLocal
+
+    record = ComplianceReviewRecord(
+        org_id=org_id,
+        membership_id=membership_id,
+        clerk_user_id=clerk_user_id,
+        action=http_path,
+        target_type=None,
+        target_id=target_id,
+        query_params=query_params or None,
+        response_metadata={"status_code": status_code},
+        http_method=http_method,
+        http_path=http_path,
+        request_id=request_id,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        occurred_at=datetime.utcnow(),
+    )
+    async with AsyncSessionLocal() as audit_session:
+        audit_session.add(record)
+        await audit_session.commit()
+
+
+def compliance_review_audit(allowed_roles: Iterable[str] | None = None):
+    """Dependency factory that gates a route on RBAC AND queues a
+    ``ComplianceReviewRecord`` write to run after the response is sent —
+    but only when the active membership has role ``compliance_reviewer``.
+
+    Usage::
+
+        @router.get(
+            "/v1/dashboard/actions",
+            dependencies=[Depends(compliance_review_audit())],
+        )
+
+    By default the gate allows ``admin``, ``developer``, and
+    ``compliance_reviewer`` (the broadest read tier from the F1 matrix).
+    Callers can override by passing an explicit list — e.g.
+    ``compliance_review_audit(["admin", "compliance_reviewer"])`` for the
+    review-trail endpoint where developers should be 403'd.
+
+    Implementation:
+        We hand the audit write to FastAPI's ``BackgroundTasks``. FastAPI
+        attaches it to the OUTGOING response (which it builds AFTER the
+        route runs), and Starlette executes background tasks after the
+        body has been sent. By that point the response status_code is
+        final.
+
+        The dep-injected ``Response`` parameter is the request-scoped
+        sentinel handlers use to mutate status/headers; reading
+        ``response.status_code`` at task-run time gives the route's set
+        status when the handler returned a value (FastAPI copies it onto
+        the actual JSONResponse it builds). When the handler returned a
+        Response instance directly, the sentinel's status stays at None,
+        and we fall back to 200 — the only way to get here is the
+        request hitting the handler successfully (failures short-circuit
+        before this dep finishes).
+
+        Audit failures are logged at WARN and swallowed. F3 is defense-
+        in-depth — losing one audit row must not break the originating
+        request.
+    """
+    allowed = tuple(allowed_roles) if allowed_roles else (
+        "admin",
+        "developer",
+        "compliance_reviewer",
+    )
+    gate = require_clerk_role(allowed)
+
+    async def _dep(
+        request: Request,
+        response: Response,
+        background_tasks: BackgroundTasks,
+        ctx: dict[str, Any] = Depends(gate),
+    ) -> dict[str, Any]:
+        membership = ctx.get("membership")
+        if membership is None or membership.role != "compliance_reviewer":
+            return ctx
+
+        # Snapshot now, while membership is still session-attached. The
+        # background task only sees primitives.
+        path_params = request.path_params or {}
+        org_id = membership.org_id
+        membership_id = membership.id
+        clerk_user_id = membership.clerk_user_id
+        http_path = request.url.path
+        http_method = request.method
+        query_params = dict(request.query_params)
+        target_id = (
+            path_params.get("id")
+            or path_params.get("record_id")
+            or path_params.get("approval_id")
+            or path_params.get("data_subject_id")
+        )
+        request_id = getattr(request.state, "request_id", None)
+        ip_address = request.client.host if request.client else None
+        user_agent = request.headers.get("user-agent")
+
+        async def _emit_audit() -> None:
+            status_code = response.status_code or 200
+            try:
+                await _write_compliance_audit_row(
+                    org_id=org_id,
+                    membership_id=membership_id,
+                    clerk_user_id=clerk_user_id,
+                    http_path=http_path,
+                    http_method=http_method,
+                    query_params=query_params,
+                    target_id=target_id,
+                    status_code=status_code,
+                    request_id=request_id,
+                    ip_address=ip_address,
+                    user_agent=user_agent,
+                )
+            except Exception as exc:  # noqa: BLE001 — by design, see docstring
+                logger.warning(
+                    "Failed to record compliance review action: %s",
+                    exc,
+                    extra={
+                        "clerk_user_id": clerk_user_id,
+                        "path": http_path,
+                    },
+                )
+
+        background_tasks.add_task(_emit_audit)
+        return ctx
+
+    return _dep
+
+
+__all__ = [
+    "require_clerk_auth",
+    "require_clerk_role",
+    "compliance_review_audit",
+]
