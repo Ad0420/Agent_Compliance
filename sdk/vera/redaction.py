@@ -57,6 +57,45 @@ from enum import Enum
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
+# Library logging hygiene: ensure a NullHandler is attached so the SDK does
+# not emit "No handlers could be found" warnings when the customer's
+# application has not configured logging. Idempotent — guards against
+# duplicate handlers on re-import in test suites.
+if not any(isinstance(h, logging.NullHandler) for h in logger.handlers):
+    logger.addHandler(logging.NullHandler())
+
+
+# ---------------------------------------------------------------------------
+# BAA reminder (B3): one-shot INFO log on first Redactor.medtech() use.
+# ---------------------------------------------------------------------------
+
+_BAA_REMINDER_LOGGED = False
+
+
+def _emit_baa_reminder() -> None:
+    """Emit a single INFO log reminding customers to sign a BAA.
+
+    Called by :meth:`Redactor.medtech`. Idempotent — subsequent calls do
+    nothing. Tests can reset the flag via
+    :func:`_reset_baa_reminder_for_tests`.
+    """
+    global _BAA_REMINDER_LOGGED
+    if _BAA_REMINDER_LOGGED:
+        return
+    _BAA_REMINDER_LOGGED = True
+    logger.info(
+        "[vera-baa-001] vera.redaction: medtech mode active. Ensure a "
+        "Business Associate Agreement (BAA) is signed with Vera before "
+        "sending Protected Health Information through this SDK. "
+        "See https://usevera.xyz/baa for details."
+    )
+
+
+def _reset_baa_reminder_for_tests() -> None:
+    """Test-only: clears the once-per-process flag so tests can re-trigger
+    the log. Not intended for production use."""
+    global _BAA_REMINDER_LOGGED
+    _BAA_REMINDER_LOGGED = False
 
 
 @functools.lru_cache(maxsize=1)
@@ -84,6 +123,17 @@ def _warn_positional_args_with_schema_once() -> None:
 # Default patterns
 # ---------------------------------------------------------------------------
 
+@functools.lru_cache(maxsize=1)
+def _default_patterns_cached() -> tuple[tuple[str, re.Pattern], ...]:
+    """Compile the default pattern list once per process.
+
+    Returns an immutable tuple so callers that copy via
+    :func:`_default_patterns` can safely mutate their copy without
+    poisoning the cache. Internal: prefer :func:`_default_patterns`.
+    """
+    return tuple(_default_patterns_uncached())
+
+
 def _default_patterns() -> list[tuple[str, re.Pattern]]:
     """Return a fresh list of (name, compiled_pattern) pairs.
 
@@ -95,6 +145,19 @@ def _default_patterns() -> list[tuple[str, re.Pattern]]:
     pattern (``[A-Z]\\d{2}(?:\\.\\d{1,4})?``) collides with normal
     English text — customers opt in via a schema with
     ``pattern_name="icd10"``.
+
+    Pattern compilation is cached for the lifetime of the process via
+    :func:`_default_patterns_cached`. Each call constructs a fresh list
+    around the cached, immutable pattern objects — safe to mutate the
+    returned list without poisoning the cache. ``re.Pattern`` objects
+    are immutable so they're safe to share.
+    """
+    return list(_default_patterns_cached())
+
+
+def _default_patterns_uncached() -> list[tuple[str, re.Pattern]]:
+    """Uncached construction of the default pattern list. Called once by
+    :func:`_default_patterns_cached`.
     """
     base = [
         ("ssn", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
@@ -130,13 +193,35 @@ def _default_patterns() -> list[tuple[str, re.Pattern]]:
     return base
 
 
+@functools.lru_cache(maxsize=1)
+def _medtech_patterns_cached() -> tuple[tuple[str, re.Pattern], ...]:
+    """Compile the medtech extras once per process.
+
+    Returns an immutable tuple so callers using :func:`_medtech_patterns`
+    can safely mutate their fresh-list copy without poisoning the cache.
+    Internal: prefer :func:`_medtech_patterns`.
+    """
+    return tuple(_medtech_patterns_uncached())
+
+
 def _medtech_patterns() -> list[tuple[str, re.Pattern]]:
-    """Extra named patterns useful for medtech and network metadata.
+    """Return a fresh list of medtech extras (name, compiled_pattern).
+
+    Pattern compilation is cached for the lifetime of the process via
+    :func:`_medtech_patterns_cached`. Each call returns a fresh list
+    around the cached, immutable pattern objects.
 
     ``icd10`` is intentionally returned here for use via
     :class:`Schema` ``PATTERN`` rules but is NOT included in the
     default-pass list (see :func:`_default_patterns`) — the pattern
     matches too much normal English text to be a safe default.
+    """
+    return list(_medtech_patterns_cached())
+
+
+def _medtech_patterns_uncached() -> list[tuple[str, re.Pattern]]:
+    """Uncached construction of the medtech extras. Called once by
+    :func:`_medtech_patterns_cached`.
     """
     return [
         # MRN: matches ``MRN-12345678``, ``MRN_12345678``, ``MRN12345678``-style
@@ -181,6 +266,27 @@ def _medtech_patterns() -> list[tuple[str, re.Pattern]]:
         ),
         # ICD-10: "J45.909", "E11", "Z99.89" — opt-in via Schema PATTERN rule.
         ("icd10", re.compile(r"\b[A-Z]\d{2}(?:\.\d{1,4})?\b")),
+        # URL containing PHI substrings — replaces the entire URL when an
+        # MRN, SSN, DOB, ``patient_id=…`` or ``ssn=…`` is embedded in the
+        # path or query. URLs without PHI in path/query pass through
+        # unmolested (api endpoints, callback URLs, doc links). The
+        # surrounding patterns (``mrn``, ``ssn``, ``dob``) still apply on
+        # top — defense-in-depth.
+        (
+            "url_phi",
+            re.compile(
+                r"https?://[^\s\"'<>]*(?:"
+                r"\bMRN[-_]?\d{4,12}\b"
+                r"|\b\d{3}-\d{2}-\d{4}\b"          # SSN
+                r"|\b\d{1,2}/\d{1,2}/\d{2,4}\b"    # DOB MM/DD/YYYY
+                r"|\b\d{4}-\d{2}-\d{2}\b"          # DOB ISO
+                r"|patient_id=[^&\s\"'<>]+"
+                r"|ssn=[^&\s\"'<>]+"
+                r"|mrn=[^&\s\"'<>]+"
+                r")[^\s\"'<>]*",
+                re.IGNORECASE,
+            ),
+        ),
     ]
 
 
@@ -201,6 +307,45 @@ def _default_block_keys() -> set[str]:
         "private_key",
         "authorization",
     }
+
+
+# HIPAA Safe Harbor extra block_keys for medtech mode. Used by
+# :meth:`Redactor.medtech` as defense-in-depth on top of the schema —
+# even if a customer's schema marks one of these PASSTHROUGH (mistakenly),
+# block_keys still wins per the Phase 2 precedence rule. All names are
+# lower-cased; the redactor's block_keys lookup is case-insensitive.
+#
+# Intentional exclusions (CRITICAL fixes — see PR #165 review):
+# - Bare ``"patient"``: redacting a kwarg named ``patient`` (e.g.
+#   ``def process(patient: PatientRecord)``) replaces the whole value
+#   wholesale and skips recursion into the patient object. The schema's
+#   deny-by-default for unmapped fields already protects nested PHI.
+# - ``"patient_id"``: opaque, randomly-generated patient IDs ARE the
+#   HIPAA-safe pattern. The starter schema marks ``patient_id``
+#   PASSTHROUGH so audit records remain searchable. Customers whose
+#   ``patient_id`` is an MRN-shaped identifier should pass
+#   ``extra_block_keys={'patient_id'}`` to override.
+# - Bare ``"url"``: redacting every URL field destroys API endpoints,
+#   callback URLs, doc links, asset URLs. PHI embedded inside URL
+#   strings is caught by the regex pass via the ``url_phi`` pattern
+#   (see :func:`_medtech_patterns`).
+_MEDTECH_BLOCK_KEYS: set[str] = {
+    "patient_name", "first_name", "last_name", "full_name",
+    "mrn", "medical_record_number",
+    "ssn", "social_security",
+    "dob", "date_of_birth", "birthdate",
+    "address", "street", "street_address",
+    "city", "state", "zip", "zipcode", "zip_code", "postal_code",
+    "phone", "phone_number", "mobile", "cell",
+    "email", "email_address",
+    "diagnosis", "icd10", "icd_10", "icd10_code",
+    "medication", "prescription", "rx",
+    "insurance_id", "policy_number", "member_id", "subscriber_id",
+    "ip", "ip_address", "device_id", "serial",
+    "photo", "image_url", "face_photo",
+    "audio", "voice_recording",
+    "biometric", "fingerprint",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -620,6 +765,50 @@ class Redactor:
         """
         return Schema(
             fields={
+                # Container fields — declared PASSTHROUGH so the redactor
+                # descends into the value and applies per-key rules at the
+                # nested level. Without these, a kwarg named ``patient``
+                # (the dominant medtech API shape) would hit the unmapped
+                # policy and be replaced wholesale before recursion. The
+                # leaf rules below still scrub PHI inside the container.
+                "patient": FieldRule(
+                    FieldPolicy.PASSTHROUGH,
+                    description=(
+                        "Patient container — walks into the value so "
+                        "nested per-field rules apply. Customers who want "
+                        "the value replaced wholesale should pass "
+                        "extra_block_keys={'patient'} to Redactor.medtech()."
+                    ),
+                ),
+                "encounter": FieldRule(
+                    FieldPolicy.PASSTHROUGH,
+                    description=(
+                        "Encounter container — walks into the value so "
+                        "nested per-field rules apply."
+                    ),
+                ),
+                # FHIR-shaped containers — common Bundle/Resource keys.
+                "entry": FieldRule(
+                    FieldPolicy.PASSTHROUGH,
+                    description="FHIR Bundle.entry list — walks into items.",
+                ),
+                "resource": FieldRule(
+                    FieldPolicy.PASSTHROUGH,
+                    description="FHIR Bundle.entry.resource — walks into the resource.",
+                ),
+                "resourceType": FieldRule(
+                    FieldPolicy.PASSTHROUGH,
+                    description="FHIR resourceType discriminator — not PHI.",
+                ),
+                # History / events list — recurse into items so per-event
+                # rules apply.
+                "history": FieldRule(
+                    FieldPolicy.PASSTHROUGH,
+                    description=(
+                        "Patient history list — walks into items so per-event "
+                        "rules apply."
+                    ),
+                ),
                 # Opaque IDs (not PHI).
                 "patient_id": FieldRule(
                     FieldPolicy.PASSTHROUGH,
@@ -774,6 +963,115 @@ class Redactor:
                 ),
             },
             unmapped_policy=FieldPolicy.REDACT,
+        )
+
+    @classmethod
+    def medtech(
+        cls,
+        *,
+        schema: "Schema | None" = None,
+        extra_block_keys: set[str] | None = None,
+        extra_patterns: list[tuple[str, "re.Pattern"]] | None = None,
+        max_length: int = 10_000,
+        replacement: str = "[REDACTED]",
+        custom_serializer: Callable[[Any], str] | None = None,
+    ) -> "Redactor":
+        """One-call factory for medtech HIPAA-aware redaction.
+
+        Returns a Redactor preconfigured with:
+
+        - The medtech starter schema (deny-by-default for unmapped fields)
+        - Standard regex patterns for SSN, credit cards, emails, phones, AWS
+          keys, JWTs, hex secrets, bearer tokens
+        - Medtech-specific patterns added: MRN, DOB (multiple formats),
+          IPv4/IPv6, ``url_phi`` (URL fields containing PHI in path/query)
+        - Default block_keys augmented with HIPAA-specific identifiers
+          (:data:`_MEDTECH_BLOCK_KEYS`)
+
+        Args:
+            schema: Override the default medtech starter schema. If None,
+                uses :meth:`medtech_starter_schema`.
+            extra_block_keys: Additional case-insensitive field names to
+                always redact. Merged with defaults.
+            extra_patterns: Additional named regex patterns. Merged with
+                defaults.
+            max_length, replacement, custom_serializer: Passed through to
+                the Redactor constructor.
+
+        HIPAA compliance note:
+            Using :meth:`Redactor.medtech` does NOT make your deployment
+            HIPAA-compliant on its own. You MUST have a signed Business
+            Associate Agreement (BAA) with Vera before sending PHI through
+            this SDK. This factory emits a single INFO log on first use as
+            a reminder.
+
+        Opaque patient IDs are HIPAA-safe:
+            Use opaque, randomly-generated ``patient_id`` values. The
+            starter schema preserves ``patient_id`` (PASSTHROUGH) so audit
+            records remain searchable by ID. ``patient_id`` is intentionally
+            NOT in the default :data:`_MEDTECH_BLOCK_KEYS` for the same
+            reason. If your system uses MRN-shaped or otherwise PHI-bearing
+            ``patient_id`` values, pass
+            ``extra_block_keys={'patient_id'}`` to force redaction.
+
+        Patient objects recurse:
+            A kwarg named ``patient`` (e.g.
+            ``def process(patient: PatientRecord)``) is NOT redacted
+            wholesale. The redactor walks into the value so the schema's
+            per-field rules apply at every depth, and unmapped fields fall
+            through to deny-by-default. To redact the entire ``patient``
+            kwarg without inspection, pass
+            ``extra_block_keys={'patient'}``.
+
+        Free-text PHI warning:
+            Free-text fields (notes, transcripts, descriptions) cannot be
+            reliably scrubbed via patterns. The starter schema redacts
+            common free-text field names. If your data contains PHI in
+            fields not on the starter list, declare them explicitly via
+            the ``schema`` parameter.
+
+        URL handling:
+            URLs without embedded PHI (API endpoints, callback URLs, doc
+            links, asset URLs) pass through unchanged. URLs containing
+            MRN, SSN, DOB, ``patient_id=…``, ``ssn=…``, or ``mrn=…``
+            substrings in path/query are replaced wholesale via the
+            ``url_phi`` pattern.
+
+        Performance:
+            Safe to call once and reuse the returned Redactor across
+            requests. Each call constructs a fresh Redactor instance but
+            pattern compilation is cached for the lifetime of the process
+            via :func:`functools.lru_cache` on :func:`_default_patterns`
+            and :func:`_medtech_patterns`.
+        """
+        # Default to the canonical medtech starter schema unless overridden.
+        if schema is None:
+            schema = cls.medtech_starter_schema()
+
+        # Effective block_keys = default ∪ HIPAA-extra ∪ caller-supplied.
+        # All lowered for the case-insensitive lookup the Redactor performs.
+        merged_block_keys: set[str] = {k.lower() for k in _default_block_keys()}
+        merged_block_keys |= {k.lower() for k in _MEDTECH_BLOCK_KEYS}
+        if extra_block_keys:
+            merged_block_keys |= {k.lower() for k in extra_block_keys}
+
+        # Effective patterns = default + caller-supplied (order preserved).
+        merged_patterns: list[tuple[str, re.Pattern]] = list(_default_patterns())
+        if extra_patterns:
+            merged_patterns.extend(extra_patterns)
+
+        # Emit the BAA reminder once per process before returning. The
+        # reminder lives on the module logger; customer logging config
+        # decides where it lands.
+        _emit_baa_reminder()
+
+        return cls(
+            patterns=merged_patterns,
+            block_keys=merged_block_keys,
+            max_length=max_length,
+            replacement=replacement,
+            custom_serializer=custom_serializer,
+            schema=schema,
         )
 
     # ------------------------------------------------------------------
