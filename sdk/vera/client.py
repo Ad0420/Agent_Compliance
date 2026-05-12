@@ -68,7 +68,7 @@ from .errors import (
     VeraTimeoutError,
     VeraValidationError,
 )
-from .spool import Spool, SpoolDiskFullError, SpoolError
+from .spool import Spool, SpoolDecryptionError, SpoolDiskFullError, SpoolError
 
 if TYPE_CHECKING:
     from .redaction import Redactor
@@ -377,6 +377,11 @@ class VeraClient:
         self._spool_map_lock = threading.Lock()
         # One-shot WARN when SpoolDiskFullError forces drop-oldest fallback.
         self._spool_full_warned = False
+        # One-shot loud ERROR when a SpoolDecryptionError fires — see
+        # ``_warn_spool_decrypt_once``. After firing, ``_spool_drain_disabled``
+        # is set so subsequent flush ticks fall back to in-memory only.
+        self._spool_decrypt_warned = False
+        self._spool_drain_disabled = False
         if persistent_buffer_path is not None:
             passphrase = os.environ.get("VERA_SPOOL_KEY", "")
             if not passphrase:
@@ -600,7 +605,12 @@ class VeraClient:
             # in-memory queue stays full; the worker drains it normally,
             # and subsequent rehydrate / dequeue cycles will pull rows
             # back from disk.
-            if self._spool is not None:
+            #
+            # Skipped when ``_spool_drain_disabled`` is set — a previous
+            # SpoolDecryptionError put us in fallback mode and writing new
+            # records to a spool we can no longer read would just stack
+            # undecryptable rows.
+            if self._spool is not None and not self._spool_drain_disabled:
                 try:
                     self._spool.enqueue(payload)
                     return
@@ -753,12 +763,23 @@ class VeraClient:
         the spool here — they stay until the worker flushes them and acks.
         That keeps the durability invariant: a crash between rehydrate and
         flush still leaves the records on disk.
+
+        :class:`SpoolDecryptionError` (raised after rows have already been
+        moved to quarantine by :meth:`Spool.dequeue_batch`) triggers a
+        once-per-process loud ERROR and disables further spool drains for
+        this process. We don't continue draining because the next batch
+        would just quarantine more rows under the wrong key — better to
+        let the operator stop the process and run the recovery procedure.
         """
         if self._spool is None or self._queue is None:
             return
         capacity = self._max_queue_size
         try:
             batch = self._spool.dequeue_batch(max_count=capacity)
+        except SpoolDecryptionError as exc:
+            self._warn_spool_decrypt_once(exc)
+            self._spool_drain_disabled = True
+            return
         except Exception as exc:  # pragma: no cover — defensive
             logger.error("vera.client: spool rehydrate failed: %s", exc)
             return
@@ -776,6 +797,23 @@ class VeraClient:
                 len(batch),
                 self._persistent_buffer_path,
             )
+
+    def _warn_spool_decrypt_once(self, exc: SpoolDecryptionError) -> None:
+        """Emit one loud ERROR per process when a spool decrypt fails."""
+        if self._spool_decrypt_warned:
+            return
+        self._spool_decrypt_warned = True
+        logger.error(
+            "vera.client: SPOOL DECRYPTION FAILURE — %d row(s) moved to "
+            "quarantine (possible VERA_SPOOL_KEY rotation without "
+            "migration). Audit-chain rows are preserved on disk but require "
+            "operator intervention to recover. See docs/spool-key-rotation.md. "
+            "Spool drain disabled for this process; new records will be "
+            "buffered in memory only until restart with the correct key. "
+            "Underlying exception: %s",
+            len(exc.quarantined_ids),
+            exc,
+        )
 
     def _after_in_child(self) -> None:
         """Run inside the child after :func:`os.fork`.
@@ -941,8 +979,11 @@ class VeraClient:
         Only meaningful when a spool is configured AND there's free capacity
         in the queue. Cheap fast-path checks avoid the SQLite hit on every
         flush tick when there's nothing to do.
+
+        Skipped after a :class:`SpoolDecryptionError` has fired — see
+        ``_spool_drain_disabled``.
         """
-        if self._spool is None or self._queue is None:
+        if self._spool is None or self._queue is None or self._spool_drain_disabled:
             return
         free = self._max_queue_size - self._queue.qsize()
         if free <= 0:
@@ -955,6 +996,10 @@ class VeraClient:
             held = set(self._spool_row_map.values())
         try:
             batch = self._spool.dequeue_batch(max_count=min(free, _API_MAX_BATCH))
+        except SpoolDecryptionError as exc:
+            self._warn_spool_decrypt_once(exc)
+            self._spool_drain_disabled = True
+            return
         except Exception as exc:  # pragma: no cover — defensive
             logger.error("vera.client: spool pull failed: %s", exc)
             return
@@ -972,12 +1017,40 @@ class VeraClient:
 
     @staticmethod
     def _strip_internal_fields(payload: dict) -> dict:
-        """Return a copy of ``payload`` with internal bookkeeping removed."""
-        # Internal fields are prefixed with ``_`` — strip all of them so we
-        # don't leak ``_requeue_count`` or ``_idempotency_key`` to the wire.
-        if not any(k.startswith("_") for k in payload):
-            return payload
-        return {k: v for k, v in payload.items() if not k.startswith("_")}
+        """Return a copy of ``payload`` with internal bookkeeping removed.
+
+        The per-record ``_idempotency_key`` is PROMOTED into
+        ``metadata.record_idempotency_key`` before stripping so it survives
+        the wire. This lets the server (or any downstream auditor) dedupe
+        per record even when batch composition shifts across restarts.
+
+        Before this change the only idempotency signal on the wire was the
+        batch-level ``Idempotency-Key`` header, which uses the FIRST
+        record's key. If the process was SIGKILLed between server-200 and
+        spool-ack, the next start would re-POST the same records but the
+        batch composition could be different (e.g. mixed with fresh
+        records) — different "first" record, different header, so the
+        server's per-batch dedupe wouldn't fire and duplicates landed.
+
+        Storing the key in ``metadata`` keeps the change additive: the
+        backend's ``ActionRecordCreate`` schema already accepts arbitrary
+        keys inside ``metadata: dict``, so we don't need a backend release
+        for this fix to be useful (existing per-record idempotency is
+        documented; per-record dedupe lands when the backend gains a
+        unique-index pass on the metadata key).
+        """
+        out = {k: v for k, v in payload.items() if not k.startswith("_")}
+        idem = payload.get("_idempotency_key")
+        if isinstance(idem, str) and idem:
+            # Embed under metadata (a dict the server already accepts) so
+            # we don't widen the schema. ``setdefault`` for the dict and
+            # for the key — the caller may have set their own
+            # ``record_idempotency_key`` already, in which case we keep
+            # theirs (it's their data subject's idempotency, not ours).
+            metadata = dict(out.get("metadata") or {})
+            metadata.setdefault("record_idempotency_key", idem)
+            out["metadata"] = metadata
+        return out
 
     @staticmethod
     def _batch_idempotency_key(batch: list[dict]) -> str:

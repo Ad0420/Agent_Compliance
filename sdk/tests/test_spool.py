@@ -19,6 +19,7 @@ from vera.spool import (
     SpoolDecryptionError,
     SpoolDiskFullError,
     SpoolError,
+    SpoolPassphraseError,
 )
 
 
@@ -320,4 +321,209 @@ def test_ack_partial(spool_path):
     # Ack only the first 3.
     s.ack([row_id for row_id, _ in batch[:3]])
     assert s.size() == 2
+    s.close()
+
+
+# ---------------------------------------------------------------------------
+# 12. CRITICAL #2: decryption failure moves rows to quarantine, doesn't delete
+# ---------------------------------------------------------------------------
+
+
+def test_decryption_failure_moves_row_to_quarantine(spool_path):
+    """Corrupt one row's ciphertext; dequeue must quarantine, not delete."""
+    s = Spool(spool_path, passphrase=PASSPHRASE)
+    s.enqueue({"action_name": "ok"})
+    s.enqueue({"action_name": "corrupt_me"})
+    s.enqueue({"action_name": "ok2"})
+    # Bash one row's ciphertext directly so AES-GCM auth fails on decrypt.
+    s._conn.execute(
+        "UPDATE spool_records SET payload_ciphertext = ? WHERE id = 2",
+        (b"\x00" * 64,),
+    )
+    assert s.size() == 3
+    assert s.quarantine_size() == 0
+
+    # dequeue_batch must raise — but the row must be in quarantine, NOT
+    # deleted, before the raise (atomic move).
+    with pytest.raises(SpoolDecryptionError) as exc_info:
+        s.dequeue_batch(max_count=10)
+    assert 2 in exc_info.value.quarantined_ids
+
+    # The corrupted row is gone from spool_records.
+    remaining_ids = [
+        row[0]
+        for row in s._conn.execute("SELECT id FROM spool_records").fetchall()
+    ]
+    assert 2 not in remaining_ids
+    # But it landed in quarantine.
+    assert s.quarantine_size() == 1
+    quarantined = s.list_quarantined()
+    assert quarantined[0]["original_id"] == 2
+    assert quarantined[0]["failure_reason"] == "decrypt_failed"
+    s.close()
+
+
+def test_key_rotation_does_not_destroy_chain(spool_path):
+    """Write with key A; reopen with key B → all rows preserved in quarantine."""
+    s_a = Spool(spool_path, passphrase="key-A-original")
+    for i in range(5):
+        s_a.enqueue({"action_name": f"r{i}", "data": f"value_{i}"})
+    s_a.close()
+
+    # Now we'd open with the wrong passphrase. The sentinel check fires
+    # first at init, raising SpoolPassphraseError. (Without the sentinel
+    # we'd only discover this on dequeue, which is too late.)
+    with pytest.raises(SpoolPassphraseError):
+        Spool(spool_path, passphrase="key-B-rotated")
+
+    # Re-open with the right key and verify all 5 rows are still readable.
+    s_recover = Spool(spool_path, passphrase="key-A-original")
+    try:
+        batch = s_recover.dequeue_batch(max_count=10)
+        assert len(batch) == 5
+        assert [r["action_name"] for _, r in batch] == [
+            f"r{i}" for i in range(5)
+        ]
+    finally:
+        s_recover.close()
+
+
+def test_quarantine_persists_across_restart(spool_path):
+    """Quarantined rows survive close + reopen."""
+    s = Spool(spool_path, passphrase=PASSPHRASE)
+    s.enqueue({"action_name": "ok"})
+    s.enqueue({"action_name": "corrupt"})
+    s._conn.execute(
+        "UPDATE spool_records SET payload_ciphertext = ? WHERE id = 2",
+        (b"\xff" * 80,),
+    )
+    with pytest.raises(SpoolDecryptionError):
+        s.dequeue_batch(max_count=10)
+    assert s.quarantine_size() == 1
+    s.close()
+
+    # Reopen — quarantine row should still be there.
+    s2 = Spool(spool_path, passphrase=PASSPHRASE)
+    try:
+        assert s2.quarantine_size() == 1
+        rows = s2.list_quarantined()
+        assert rows[0]["failure_reason"] == "decrypt_failed"
+    finally:
+        s2.close()
+
+
+# ---------------------------------------------------------------------------
+# 13. CRITICAL #3: WAL/SHM file modes are 0600 after first INSERT
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes only")
+def test_all_db_files_are_0600_after_first_insert(spool_path):
+    """Force a WAL write by enqueueing; verify .db, .db-wal, .db-shm all 0600."""
+    s = Spool(spool_path, passphrase=PASSPHRASE)
+    # WAL sidecars don't appear until the first real write.
+    s.enqueue({"action_name": "trigger_wal"})
+    checked_one_sidecar = False
+    for suffix in ("", "-wal", "-shm"):
+        target = spool_path + suffix
+        if os.path.exists(target):
+            mode = stat.S_IMODE(os.stat(target).st_mode)
+            assert mode == 0o600, f"{target} expected 0o600, got {oct(mode)}"
+            if suffix != "":
+                checked_one_sidecar = True
+    # WAL mode should have produced at least one sidecar (usually both).
+    assert checked_one_sidecar, "WAL sidecar files were not created"
+    s.close()
+
+
+# ---------------------------------------------------------------------------
+# 14. CRITICAL #4: max_bytes cap under concurrent threads
+# ---------------------------------------------------------------------------
+
+
+def test_max_bytes_cap_concurrent_writers(spool_path):
+    """4 concurrent threads must not exceed cap by more than ±1 batch."""
+    import threading as _threading
+
+    cap = 32 * 1024  # 32 KB
+    s = Spool(spool_path, passphrase=PASSPHRASE, max_bytes=cap)
+    stop = _threading.Event()
+    refused = _threading.Event()
+
+    def writer():
+        while not stop.is_set():
+            try:
+                s.enqueue({"action_name": "x", "blob": "y" * 128})
+            except SpoolDiskFullError:
+                refused.set()
+                return
+
+    threads = [_threading.Thread(target=writer) for _ in range(4)]
+    for t in threads:
+        t.start()
+    # Wait until at least one writer hits the cap, then stop.
+    deadline = __import__("time").time() + 5.0
+    while not refused.is_set() and __import__("time").time() < deadline:
+        __import__("time").sleep(0.01)
+    stop.set()
+    for t in threads:
+        t.join(timeout=3.0)
+    s.close()
+    # The cap is "best-effort within ±1 batch" — verify the file didn't
+    # blow past 2x cap (a generous bound that catches the original bug
+    # where the check was effectively unsynchronised across threads).
+    main_bytes = os.path.getsize(spool_path)
+    try:
+        wal_bytes = os.path.getsize(spool_path + "-wal")
+    except OSError:
+        wal_bytes = 0
+    total = main_bytes + wal_bytes
+    # 2x is the assertion: the original bug would race the size check and
+    # blow past the cap by 4 threads' worth of writes. With BEGIN IMMEDIATE
+    # serializing the check+insert, total stays within ~1.5x in practice.
+    assert total < cap * 2, (
+        f"max_bytes={cap} but on-disk total={total} (main={main_bytes}, "
+        f"wal={wal_bytes}) — concurrent writers exceeded cap by more than "
+        "one batch"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 15. INFO: passphrase sentinel rejects wrong passphrase on EMPTY existing spool
+# ---------------------------------------------------------------------------
+
+
+def test_empty_spool_rejects_wrong_passphrase(spool_path):
+    """The sentinel must catch an operator typo even on a spool with zero rows."""
+    Spool(spool_path, passphrase="real-passphrase").close()
+    # File exists, no records, sentinel present. Wrong passphrase → fail.
+    with pytest.raises(SpoolPassphraseError):
+        Spool(spool_path, passphrase="typo-passphrase")
+    # Same passphrase still works.
+    s = Spool(spool_path, passphrase="real-passphrase")
+    try:
+        assert s.size() == 0
+    finally:
+        s.close()
+
+
+# ---------------------------------------------------------------------------
+# 16. CRITICAL #4 cont'd: _size_bytes includes WAL file
+# ---------------------------------------------------------------------------
+
+
+def test_size_bytes_includes_wal(spool_path):
+    """``_size_bytes`` must reflect WAL contents so the cap can't be bypassed."""
+    s = Spool(spool_path, passphrase=PASSPHRASE)
+    # Write several records to grow the WAL.
+    for i in range(20):
+        s.enqueue({"action_name": f"r{i}", "blob": "x" * 256})
+    page_size = s._conn.execute("PRAGMA page_size").fetchone()[0]
+    page_count = s._conn.execute("PRAGMA page_count").fetchone()[0]
+    main_only = int(page_size) * int(page_count)
+    measured = s._size_bytes()
+    # measured should be >= main_only; on most platforms the WAL is also
+    # non-empty here so measured > main_only. We assert at least equality
+    # because some OSes checkpoint synchronously.
+    assert measured >= main_only
     s.close()

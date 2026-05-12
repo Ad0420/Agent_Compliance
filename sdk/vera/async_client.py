@@ -27,7 +27,7 @@ from .errors import (
     VeraAuthError,
     VeraValidationError,
 )
-from .spool import Spool, SpoolDiskFullError, SpoolError
+from .spool import Spool, SpoolDecryptionError, SpoolDiskFullError, SpoolError
 
 if TYPE_CHECKING:
     from .redaction import Redactor
@@ -78,11 +78,23 @@ class AsyncVeraClient:
         # error_message through the redactor before sending. Default None
         # preserves the current pass-through behaviour for direct callers.
         self._redactor = redactor
-        self._client = httpx.AsyncClient(
-            base_url=self.api_url,
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=timeout,
-        )
+        # Stash the httpx.AsyncClient construction kwargs so the fork hook
+        # can rebuild a fresh client in the child without re-reading them.
+        # See ``_after_in_child`` for the rebuild path.
+        self._httpx_client_kwargs: dict = {
+            "base_url": self.api_url,
+            "headers": {"Authorization": f"Bearer {api_key}"},
+            "timeout": timeout,
+        }
+        self._client = httpx.AsyncClient(**self._httpx_client_kwargs)
+        # Track the pid that owns this client. Mirrors the sync client's
+        # fork-safety mechanism: if we detect a pid mismatch we reopen the
+        # spool and rebuild the httpx client so a forked child doesn't reuse
+        # the parent's SQLite connection (corrupts the spool) or TCP
+        # sockets (corrupts requests). ``os.register_at_fork`` fires
+        # proactively when available; the pid check covers older
+        # interpreters and raw ``os.fork()`` paths.
+        self._owner_pid: int = os.getpid()
         self._queue: deque[dict] = deque()
         self._flush_task: asyncio.Task | None = None
         # Drop-oldest WARN throttling — a runaway producer can otherwise spam
@@ -112,6 +124,14 @@ class AsyncVeraClient:
         self._spool_row_map: dict[int, int] = {}
         self._spool_map_lock = threading.Lock()
         self._spool_full_warned = False
+        # Once-per-process flag for the loud ERROR on SpoolDecryptionError
+        # (key-rotation / corruption signal). See ``_warn_spool_decrypt_once``.
+        self._spool_decrypt_warned = False
+        # Once-per-process flag set to ``True`` after a SpoolDecryptionError
+        # has propagated up: subsequent flush ticks fall back to in-memory
+        # only (do NOT continue to drain the spool that session). The
+        # operator should run the recovery procedure before re-enabling.
+        self._spool_drain_disabled = False
         if persistent_buffer_path is not None:
             passphrase = os.environ.get("VERA_SPOOL_KEY", "")
             if not passphrase:
@@ -128,12 +148,94 @@ class AsyncVeraClient:
             # into the in-memory deque. Oldest-first, capped at queue size.
             self._rehydrate_from_spool()
 
+        # Register the post-fork hook so a forked child resets process-local
+        # state (sqlite handle, httpx pool, event loop ownership). Without
+        # this, uvicorn workers / gunicorn+uvloop / anything using
+        # ``os.fork()`` would inherit the parent's spool connection and
+        # corrupt the SQLite file. ``os.register_at_fork`` only exists on
+        # Unix (no-op on Windows + ``forkserver``/``spawn`` start methods).
+        # Documenting the gap: forkserver/spawn start methods re-initialise
+        # the child from scratch via pickling, so they don't inherit our
+        # state in the first place — no hook needed there.
+        if hasattr(os, "register_at_fork"):
+            try:
+                os.register_at_fork(after_in_child=self._after_in_child)
+            except Exception:  # pragma: no cover — extremely defensive
+                pass
+
+    def _after_in_child(self) -> None:
+        """Run inside the child after :func:`os.fork`.
+
+        Mirrors :meth:`vera.client.VeraClient._after_in_child`. Resets every
+        process-local resource the child inherited from the parent:
+
+        * ``httpx.AsyncClient`` — TCP/TLS state is not safe to share across
+          fork. Same production-fatal failure mode as the sync client:
+          uvicorn workers using ``--preload``, gunicorn+uvloop, or any
+          ``multiprocessing.Pool`` would silently corrupt requests on the
+          child's first POST.
+        * ``Spool`` SQLite connection — not fork-safe. The child must call
+          :meth:`Spool.reopen_after_fork` to drop the inherited handle and
+          open a fresh one. Otherwise the child writes through a corrupt
+          file descriptor and the spool DB is destroyed.
+        * ``_spool_row_map`` — keyed by ``id(record_dict)`` in the parent;
+          those dicts don't exist in the child, so the map is meaningless.
+        * Flush task — bound to the parent's event loop; not transferable.
+          The child will start its own loop and re-create the task on
+          :meth:`start_background_flush`.
+
+        Note on forkserver/spawn: these methods don't fire ``register_at_fork``
+        hooks because the child is launched from a pristine interpreter, not
+        forked from the parent's address space. State isn't inherited so no
+        reset is needed.
+        """
+        # Rebuild httpx client. Best-effort close on the inherited handle —
+        # the underlying sockets may already be in an undefined state after
+        # fork() and ``aclose`` of an AsyncClient from a non-async context
+        # would be wrong anyway. Just discard the reference.
+        try:
+            self._client = httpx.AsyncClient(**self._httpx_client_kwargs)
+        except Exception:  # pragma: no cover — defensive
+            pass
+        # Reopen the spool connection. The on-disk WAL state is shared
+        # safely across processes; only the in-memory sqlite3.Connection
+        # is fork-unsafe.
+        if self._spool is not None:
+            try:
+                self._spool.reopen_after_fork()
+            except Exception:  # pragma: no cover — defensive
+                pass
+        # Clear the row map — dict identities don't survive fork.
+        self._spool_row_map = {}
+        self._spool_map_lock = threading.Lock()
+        self._spool_full_warned = False
+        # Reset event-loop-bound state. The child will get a fresh loop.
+        self._flush_task = None
+        self._flush_lock = None
+        self._sync_no_loop_warned = False
+        # Mark this process as the new owner so any future pid-mismatch
+        # logic (e.g. inside ``enqueue_action``) recognises the child.
+        self._owner_pid = os.getpid()
+        # Drop the spool-decryption-error once-flag so the child can warn
+        # operators independently if it hits its own decryption failures.
+        self._spool_decrypt_warned = False
+
     def _rehydrate_from_spool(self) -> None:
-        """Load persisted records back into the in-memory deque."""
+        """Load persisted records back into the in-memory deque.
+
+        On :class:`SpoolDecryptionError` we WARN-once, disable further spool
+        drains for this process, but still surface any rows that were
+        decryptable. The operator's recovery procedure should run before
+        the next process restart.
+        """
         if self._spool is None:
             return
         try:
             batch = self._spool.dequeue_batch(max_count=self._max_queue_size)
+        except SpoolDecryptionError as exc:
+            self._warn_spool_decrypt_once(exc)
+            self._spool_drain_disabled = True
+            return
         except Exception as exc:  # pragma: no cover — defensive
             logger.error("vera.async_client: spool rehydrate failed: %s", exc)
             return
@@ -150,6 +252,23 @@ class AsyncVeraClient:
                 len(batch),
                 self._persistent_buffer_path,
             )
+
+    def _warn_spool_decrypt_once(self, exc: SpoolDecryptionError) -> None:
+        """Emit one loud ERROR per process when a spool decrypt fails."""
+        if self._spool_decrypt_warned:
+            return
+        self._spool_decrypt_warned = True
+        logger.error(
+            "vera.async_client: SPOOL DECRYPTION FAILURE — %d row(s) moved "
+            "to quarantine (possible VERA_SPOOL_KEY rotation without "
+            "migration). Audit-chain rows are preserved on disk but require "
+            "operator intervention to recover. See docs/spool-key-rotation.md. "
+            "Spool drain disabled for this process; new records will be "
+            "buffered in memory only until restart with the correct key. "
+            "Underlying exception: %s",
+            len(exc.quarantined_ids),
+            exc,
+        )
 
     def _redact_payload_fields(self, payload: dict) -> dict:
         """Apply ``self._redactor`` (if set) to user-supplied JSON-blob fields.
@@ -293,7 +412,11 @@ class AsyncVeraClient:
         # queue normally and pulls spool records back in subsequent flush
         # ticks.
         if len(self._queue) >= self._max_queue_size:
-            if self._spool is not None:
+            # Skipped when ``_spool_drain_disabled`` is set — a previous
+            # SpoolDecryptionError put us in fallback mode and writing new
+            # records to a spool we can no longer read would just stack
+            # undecryptable rows.
+            if self._spool is not None and not self._spool_drain_disabled:
                 try:
                     self._spool.enqueue(payload)
                     return
@@ -350,8 +473,14 @@ class AsyncVeraClient:
         )
 
     def _pull_from_spool_into_queue(self) -> None:
-        """Top up the in-memory deque from the spool when there's free space."""
-        if self._spool is None:
+        """Top up the in-memory deque from the spool when there's free space.
+
+        Skipped entirely after a :class:`SpoolDecryptionError` has fired for
+        this process — see ``_spool_drain_disabled``. The operator should
+        restart with the correct key (or run the recovery procedure) before
+        this client tries to read the spool again.
+        """
+        if self._spool is None or self._spool_drain_disabled:
             return
         free = self._max_queue_size - len(self._queue)
         if free <= 0:
@@ -360,6 +489,10 @@ class AsyncVeraClient:
             held = set(self._spool_row_map.values())
         try:
             batch = self._spool.dequeue_batch(max_count=min(free, _API_MAX_BATCH))
+        except SpoolDecryptionError as exc:
+            self._warn_spool_decrypt_once(exc)
+            self._spool_drain_disabled = True
+            return
         except Exception as exc:  # pragma: no cover — defensive
             logger.error("vera.async_client: spool pull failed: %s", exc)
             return
@@ -396,12 +529,19 @@ class AsyncVeraClient:
     def _strip_internal_fields(payload: dict) -> dict:
         """Return a copy of ``payload`` with internal bookkeeping removed.
 
-        Strips every leading-underscore key so private fields (e.g.
-        ``_requeue_count``, ``_idempotency_key``) never reach the wire.
+        Promotes ``_idempotency_key`` into
+        ``metadata.record_idempotency_key`` so it survives the wire and
+        the server can dedupe per record across restart-induced batch
+        recomposition. See :meth:`vera.client.VeraClient._strip_internal_fields`
+        for the full rationale.
         """
-        if not any(k.startswith("_") for k in payload):
-            return payload
-        return {k: v for k, v in payload.items() if not k.startswith("_")}
+        out = {k: v for k, v in payload.items() if not k.startswith("_")}
+        idem = payload.get("_idempotency_key")
+        if isinstance(idem, str) and idem:
+            metadata = dict(out.get("metadata") or {})
+            metadata.setdefault("record_idempotency_key", idem)
+            out["metadata"] = metadata
+        return out
 
     @staticmethod
     def _is_permanent_failure(exc: BaseException) -> bool:

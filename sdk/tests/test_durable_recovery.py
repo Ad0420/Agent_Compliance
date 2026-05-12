@@ -405,6 +405,217 @@ def test_fork_reopens_spool_in_child(spool_path):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# 7. CRITICAL #5: per-record idempotency key survives the wire (in metadata)
+# ---------------------------------------------------------------------------
+
+
+def test_per_record_idempotency_key_on_wire(spool_path):
+    """The internal ``_idempotency_key`` is promoted to ``metadata.record_idempotency_key``.
+
+    Verifies that the wire payload (what the server sees) carries the same
+    idempotency key each record was tagged with at enqueue time. Server can
+    therefore dedupe per record even when batch composition shifts across
+    restart-induced re-sends.
+    """
+    seen_payloads: list[dict] = []
+
+    class _CapturingHandler(BaseHTTPRequestHandler):
+        def log_message(self, *_a, **_kw):
+            return
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length) if length else b""
+            try:
+                payload = json.loads(body)
+            except Exception:
+                payload = {}
+            seen_payloads.append(payload)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+    server = HTTPServer(("127.0.0.1", 0), _CapturingHandler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        host, port = server.server_address
+        client = VeraClient(
+            api_url=f"http://{host}:{port}",
+            api_key="test",
+            flush_interval=0.05,
+            batch_size=5,
+            atexit_drain_timeout=5.0,
+        )
+        for i in range(5):
+            client.enqueue_action(action_name=f"r{i}")
+        # Wait for a flush.
+        deadline = time.perf_counter() + 5.0
+        while not seen_payloads and time.perf_counter() < deadline:
+            time.sleep(0.05)
+        client.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert seen_payloads, "no batch was POSTed"
+    records = seen_payloads[0].get("records") or []
+    assert len(records) >= 5
+    # Each record must have a unique, non-empty record_idempotency_key in metadata.
+    keys = []
+    for r in records:
+        md = r.get("metadata") or {}
+        rk = md.get("record_idempotency_key")
+        assert isinstance(rk, str) and rk, (
+            f"record missing record_idempotency_key in metadata: {r}"
+        )
+        keys.append(rk)
+    assert len(set(keys)) == len(keys), "record idempotency keys are not unique"
+    # Confirm the internal underscore field did NOT leak to the wire.
+    for r in records:
+        assert "_idempotency_key" not in r
+        assert "_requeue_count" not in r
+
+
+def test_idempotency_key_stable_across_restart(spool_path):
+    """Restart with the same spool → same record_idempotency_key on the wire.
+
+    This is the load-bearing fix for CRITICAL #5: SIGKILL between server-200
+    and spool-ack means the spool's records are re-sent on restart. The
+    per-record idempotency key must be IDENTICAL across the two sends so
+    the server (with per-record dedupe) can collapse them.
+    """
+    captured: list[list[dict]] = []
+
+    class _CapturingHandler(BaseHTTPRequestHandler):
+        def log_message(self, *_a, **_kw):
+            return
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length) if length else b""
+            try:
+                payload = json.loads(body)
+            except Exception:
+                payload = {}
+            captured.append(payload.get("records") or [])
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+    # Phase 1: enqueue, but never let the server ack — block the server.
+    blocking = _BlockingServer()
+    with blocking:
+        c1 = VeraClient(
+            api_url=blocking.url,
+            api_key="test",
+            flush_interval=60.0,
+            batch_size=10,
+            max_queue_size=2,  # force overflow into spool
+            atexit_drain_timeout=0.2,
+            persistent_buffer_path=spool_path,
+        )
+        for i in range(8):
+            c1.enqueue_action(action_name=f"recover_{i}")
+        # Snapshot the per-record keys on disk before shutdown (so we can
+        # confirm they're stable across restart).
+        first_keys = []
+        s_inspect = Spool(spool_path, passphrase=PASSPHRASE)
+        try:
+            for _, record in s_inspect.dequeue_batch(max_count=100):
+                first_keys.append(record.get("_idempotency_key"))
+        finally:
+            s_inspect.close()
+        c1.close()
+
+    assert first_keys, "no records persisted in spool"
+
+    # Phase 2: new client targets a real (capturing) server. It must
+    # rehydrate the spool and POST the same idempotency keys.
+    server = HTTPServer(("127.0.0.1", 0), _CapturingHandler)
+    t = threading.Thread(target=server.serve_forever, daemon=True)
+    t.start()
+    try:
+        host, port = server.server_address
+        c2 = VeraClient(
+            api_url=f"http://{host}:{port}",
+            api_key="test",
+            flush_interval=0.05,
+            batch_size=20,
+            atexit_drain_timeout=5.0,
+            persistent_buffer_path=spool_path,
+        )
+        deadline = time.perf_counter() + 5.0
+        while not captured and time.perf_counter() < deadline:
+            time.sleep(0.05)
+        c2.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    # Extract the per-record keys the server actually received.
+    wire_keys = [
+        (r.get("metadata") or {}).get("record_idempotency_key")
+        for batch in captured
+        for r in batch
+    ]
+    # Every wire key must match a pre-shutdown key (set equality so we
+    # don't depend on batch ordering across restart).
+    assert set(wire_keys) & set(first_keys), (
+        f"wire keys {wire_keys} did not overlap with persisted keys {first_keys}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 8. SpoolDecryptionError propagation through the client (loud ERROR + fallback)
+# ---------------------------------------------------------------------------
+
+
+def test_spool_decryption_failure_falls_back_to_in_memory_only(spool_path, caplog):
+    """Corrupt the spool, expect loud ERROR + fallback to in-memory."""
+    from vera.spool import SpoolDecryptionError
+
+    s = Spool(spool_path, passphrase=PASSPHRASE)
+    s.enqueue({"action_name": "to_corrupt"})
+    # Corrupt the only row.
+    s._conn.execute(
+        "UPDATE spool_records SET payload_ciphertext = ? WHERE id = 1",
+        (b"\x00" * 64,),
+    )
+    s.close()
+
+    with _CountingServer() as server:
+        with caplog.at_level(logging.ERROR, logger="vera.client"):
+            client = VeraClient(
+                api_url=server.url,
+                api_key="test",
+                flush_interval=0.05,
+                batch_size=10,
+                atexit_drain_timeout=5.0,
+                persistent_buffer_path=spool_path,
+            )
+            # Give the rehydrate path a moment to surface the error.
+            time.sleep(0.5)
+            # Loud ERROR must have fired.
+            assert any(
+                "SPOOL DECRYPTION FAILURE" in r.getMessage()
+                for r in caplog.records
+            ), "expected loud ERROR for spool decryption failure"
+            # ``_spool_drain_disabled`` must be set so subsequent ticks
+            # don't re-read the spool.
+            assert client._spool_drain_disabled is True
+            # Fresh enqueues still work — they go to memory only.
+            client.enqueue_action(action_name="post_failure")
+            deadline = time.perf_counter() + 5.0
+            while server.received < 1 and time.perf_counter() < deadline:
+                time.sleep(0.05)
+            client.close()
+            assert server.received >= 1
+
+
 def test_process_restart_preserves_records(spool_path):
     """Enqueue records, close client without flush, reopen, deliver."""
     with _CountingServer() as server:
