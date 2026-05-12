@@ -7,6 +7,80 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `vera.init(api_key=..., agent_name=...)` Sentry-style one-call setup.
+  Constructs a `VeraClient` from explicit kwargs + env vars and registers it
+  as the default for `@audit` decorators. Calling `init()` twice replaces
+  (and drains) the previous default.
+- `vera.init_async(...)` for the async equivalent.
+- `vera.get_client()` / `vera.get_async_client()` to retrieve the
+  initialized client(s).
+- `VeraClient.dev()` factory and `VERA_DEV=1` env var for dev mode (prints
+  records to stderr instead of POSTing). Returns a `DevClient` subclass
+  whose `record_action` / `enqueue_action` route through an in-memory
+  `_StderrSink` after running the same `_build_payload` + redactor path as
+  the production client. No API key required.
+- pytest fixture `vera_sdk_recording` (auto-loaded via the `pytest11`
+  entry point). Yields the underlying sink so tests can assert on captured
+  audit records without HTTP mocks. Echo disabled by default so test
+  output stays clean. Renamed from `vera_recording` in this release to
+  reduce collision risk with customer fixtures named `recording`. The
+  fixture teardown also no longer clobbers an in-test `vera.init(...)`
+  call — if the test replaces the default client mid-test, the fixture
+  respects that choice instead of restoring the entry-default.
+- `vera.init_async_awaitable(...)` — async-aware variant of
+  `vera.init_async()` that properly `await`s `previous.close()` when
+  replacing an existing client. Prefer this in long-running async services
+  where re-init must not drop in-flight records. The sync `init_async()`
+  still exists for startup-only use and now WARNs loudly when it replaces
+  a previous client (since it can't await close()).
+- Dev mode safety rails: WARN log line `[vera-dev-001]` plus stderr banner
+  on construction so accidental `VERA_DEV=1` in prod is visible
+  immediately. `DevClient` refuses to construct when `api_key` looks like
+  a production key (`al_live_*` prefix) unless `VERA_DEV_CONFIRM=1` is
+  also set.
+- `vera.init` is now thread-safe: concurrent callers serialise on a
+  module-level lock during the handle-swap. Client construction itself
+  runs outside the lock so slow init paths don't block other callers.
+- `vera.get_client()` before `init()` now returns a sentinel that raises
+  a `VeraError` with a helpful message on attribute access (instead of
+  `None`). The sentinel is falsy, so `if vera.get_client():` still works.
+- One-time INFO log on first `VeraClient` construction in a process,
+  surfacing the resolved `api_url` / `agent_name` / spool state. Lets ops
+  see where audit traffic is going.
+- Env-var loaders in `VeraClient` and `AsyncVeraClient` constructors:
+  `VERA_API_KEY`, `VERA_API_URL`, `VERA_AGENT_NAME`, `VERA_AGENT_VERSION`,
+  `VERA_MODEL_ID`, `VERA_FRAMEWORK`, `VERA_SPOOL_PATH`. Explicit kwargs
+  always win — including explicit empty string. Empty-string env vars
+  still fall through to defaults. Semantic is now consistent across every
+  arg (`None` means unset, anything else is explicit).
+- README Quickstart that leads with `vera.init()` plus an env-var table
+  and dev-mode + pytest fixture cookbook.
+
+### Changed
+- Default `api_url` changed from `"http://localhost:8000"` (self-host
+  default) to `"https://api.usevera.xyz"` (SaaS default) when neither arg
+  nor env is provided. Self-host customers should set `api_url=` or
+  `VERA_API_URL` explicitly. All existing tests already pass explicit
+  `api_url` so this is a no-op for the test suite; production self-host
+  deployments need to update their config.
+- `VeraClient.__init__` (and `AsyncVeraClient.__init__`) now WARN once when
+  no API key is configured rather than silently shipping records with a
+  blank `Bearer` header. The warning points at `vera.init(dev=True)` /
+  `VERA_DEV=1` for development workflows.
+- `record_action` payload construction extracted into `_build_payload()`
+  so the dev-mode subclass can reuse the production identity-stamping
+  logic without duplicating the field shape.
+- `DevClient.record_action` now returns a dict matching the production
+  shape (`status="success"`, `record_id`, `sequence_number`, `recorded_at`)
+  plus a dev-only `mode="dev"` marker. Previously returned only
+  `{"status": "dev", "record_id": ...}`, which made customer code that
+  unpacked `sequence_number` KeyError only in dev.
+- Dev mode (`DevClient`) now force-disables the durable spool, ignoring
+  `VERA_SPOOL_PATH`. Inheriting the parent client's spool path was a
+  HIPAA leak path: PHI written by a prior production process could be
+  rehydrated from disk and echoed to stderr in a dev run. This is enforced
+  via a new `_NO_SPOOL_SENTINEL` value passed to the parent constructor.
+
 - Durable on-disk spool (`vera/spool.py`). When in-memory queue overflows, records
   spill to an encrypted SQLite spool instead of being dropped. Survives process
   restarts via `persistent_buffer_path` constructor param. Requires

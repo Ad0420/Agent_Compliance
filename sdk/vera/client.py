@@ -82,6 +82,22 @@ RETRY_BACKOFF_BASE = 0.5
 _API_MAX_BATCH = 100
 
 
+# Sentinel signalling "explicitly disable the durable spool — do NOT fall back
+# to VERA_SPOOL_PATH". Used by DevClient.__init__ to plug a HIPAA leak path:
+# if VERA_SPOOL_PATH was set by a prior production run and a dev re-runs the
+# same command with VERA_DEV=1, the parent VeraClient.__init__ would otherwise
+# build the encrypted spool AND rehydrate queued PHI rows from disk, printing
+# them to stderr via the DevClient sink. The sentinel collapses to "None" (no
+# spool) INSIDE the constructor but bypasses the env-var fallback.
+_NO_SPOOL_SENTINEL = object()
+
+
+# One-time INFO log of the resolved config at first VeraClient construction
+# in a process. Lets ops see where audit traffic is going without spamming the
+# log on every client built (decorator default, tests, integrations).
+_FIRST_INIT_LOGGED = False
+
+
 class ApprovalTimeoutError(Exception):
     """Raised when wait_for_approval times out before a human decides."""
 
@@ -267,9 +283,9 @@ class VeraClient:
 
     def __init__(
         self,
-        api_url: str = "http://localhost:8000",
-        api_key: str = "",
-        agent_name: str = "default-agent",
+        api_url: str | None = None,
+        api_key: str | None = None,
+        agent_name: str | None = None,
         agent_version: str | None = None,
         model_id: str | None = None,
         framework: str | None = None,
@@ -281,9 +297,59 @@ class VeraClient:
         atexit_drain_timeout: float = 10.0,
         circuit_breaker_threshold: int = 5,
         requeue_max_attempts: int = 10,
-        persistent_buffer_path: str | None = None,
+        persistent_buffer_path: "str | None | object" = None,
         persistent_buffer_max_bytes: int = 100_000_000,
     ):
+        # Env-var fallbacks. Semantic: ``None`` means "unset, fall through to
+        # env var, then to the documented default". Any explicit non-None
+        # value — including empty string — is the caller's choice and is
+        # honoured as-is. This is consistent across every constructor arg so
+        # callers don't have to remember per-arg quirks.
+        api_url = (
+            api_url
+            if api_url is not None
+            else (os.environ.get("VERA_API_URL") or "https://api.usevera.xyz")
+        )
+        api_key = (
+            api_key if api_key is not None else os.environ.get("VERA_API_KEY", "")
+        )
+        agent_name = (
+            agent_name
+            if agent_name is not None
+            else (os.environ.get("VERA_AGENT_NAME") or "default-agent")
+        )
+        agent_version = (
+            agent_version
+            if agent_version is not None
+            else (os.environ.get("VERA_AGENT_VERSION") or None)
+        )
+        model_id = (
+            model_id
+            if model_id is not None
+            else (os.environ.get("VERA_MODEL_ID") or None)
+        )
+        framework = (
+            framework
+            if framework is not None
+            else (os.environ.get("VERA_FRAMEWORK") or None)
+        )
+        # ``persistent_buffer_path`` uses a sentinel to distinguish "caller did
+        # not pass anything → fall through to VERA_SPOOL_PATH" from "caller
+        # explicitly disabled spool → DO NOT consult env". DevClient relies
+        # on the latter to plug a HIPAA leak path.
+        if persistent_buffer_path is _NO_SPOOL_SENTINEL:
+            persistent_buffer_path = None  # explicit disable, no env fallback
+        elif persistent_buffer_path is None:
+            persistent_buffer_path = os.environ.get("VERA_SPOOL_PATH") or None
+        # else: explicit string from the caller — honour as-is.
+
+        if not api_key:
+            logger.warning(
+                "vera.client: No API key configured (set api_key= or "
+                "VERA_API_KEY). Records will not be authenticated to Vera. "
+                "Use vera.init(dev=True) or VERA_DEV=1 for a development sink."
+            )
+
         self.api_url = api_url.rstrip("/")
         self.agent_name = agent_name
         self.agent_version = agent_version
@@ -401,6 +467,44 @@ class VeraClient:
             if self._spool.size() > 0:
                 self._init_runtime_state()
 
+        # One-time INFO log per process: surfaces the resolved api_url so ops
+        # can see where audit traffic is going. The default URL changed
+        # silently from earlier SDK versions; this prevents "wait, why isn't
+        # my self-hosted endpoint receiving anything?" debugging sessions.
+        # Suppressed for DevClient (which logs its own loud banner) and for
+        # subsequent client constructions in the same process.
+        global _FIRST_INIT_LOGGED
+        if not _FIRST_INIT_LOGGED and type(self).__name__ != "DevClient":
+            _FIRST_INIT_LOGGED = True
+            logger.info(
+                "vera.client: initialized — api_url=%s agent_name=%s spool=%s",
+                self.api_url,
+                self.agent_name,
+                "on" if self._spool is not None else "off",
+            )
+
+    # ------------------------------------------------------------------
+    # Dev-mode factory
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def dev(cls, **kwargs):
+        """Construct a dev-mode client that prints records to stderr.
+
+        Sentry/Datadog-style ergonomic shortcut equivalent to
+        ``vera.dev.build_dev_client(**kwargs)``. The returned object is a
+        :class:`vera.dev.DevClient` (a :class:`VeraClient` subclass) — usable
+        with :func:`vera.set_default_client` and the ``@audit`` decorator
+        exactly like a regular client.
+
+        Useful for local development without an API key, or for tests that
+        want to assert on audit record shape without spinning up a mock
+        HTTP server. See :func:`vera.init` with ``dev=True`` for the
+        Sentry-style entry point.
+        """
+        from .dev import build_dev_client
+        return build_dev_client(**kwargs)
+
     # ------------------------------------------------------------------
     # Redaction
     # ------------------------------------------------------------------
@@ -476,6 +580,42 @@ class VeraClient:
     # Public actions API
     # ------------------------------------------------------------------
 
+    def _build_payload(
+        self,
+        action_name: str,
+        action_type: str = "function_call",
+        result: str = "success",
+        input_data: dict | None = None,
+        outcome: dict | None = None,
+        reasoning: dict | None = None,
+        duration_ms: int | None = None,
+        error_message: str | None = None,
+        **kwargs,
+    ) -> dict:
+        """Construct the wire-shape payload for a single action.
+
+        Stamps the client-level identity (``agent_name`` / ``agent_version`` /
+        ``model_id`` / ``framework``) onto the caller-supplied fields and
+        normalises optional JSON blobs to empty dicts. Used by
+        :meth:`record_action` and the dev-mode :class:`vera.dev.DevClient`
+        subclass so the on-wire and on-sink shapes are identical.
+        """
+        return {
+            "action_name": action_name,
+            "action_type": action_type,
+            "agent_name": self.agent_name,
+            "agent_version": self.agent_version,
+            "model_id": self.model_id,
+            "framework": self.framework,
+            "result": result,
+            "input_data": input_data or {},
+            "outcome": outcome or {},
+            "reasoning": reasoning or {},
+            "duration_ms": duration_ms,
+            "error_message": error_message,
+            **kwargs,
+        }
+
     def record_action(
         self,
         action_name: str,
@@ -499,21 +639,17 @@ class VeraClient:
         For fire-and-forget recording from hot paths, use
         :meth:`enqueue_action` instead.
         """
-        payload = {
-            "action_name": action_name,
-            "action_type": action_type,
-            "agent_name": self.agent_name,
-            "agent_version": self.agent_version,
-            "model_id": self.model_id,
-            "framework": self.framework,
-            "result": result,
-            "input_data": input_data or {},
-            "outcome": outcome or {},
-            "reasoning": reasoning or {},
-            "duration_ms": duration_ms,
-            "error_message": error_message,
+        payload = self._build_payload(
+            action_name=action_name,
+            action_type=action_type,
+            result=result,
+            input_data=input_data,
+            outcome=outcome,
+            reasoning=reasoning,
+            duration_ms=duration_ms,
+            error_message=error_message,
             **kwargs,
-        }
+        )
         payload = self._redact_payload_fields(payload)
         # The retry loop in _request_with_retry passes the same kwargs on
         # every attempt, so the same Idempotency-Key is sent on retries —
