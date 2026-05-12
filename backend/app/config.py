@@ -61,6 +61,22 @@ class Settings(BaseSettings):
     # all incoming events (503) — never silently accept unsigned bodies.
     clerk_webhook_secret: str = ""
 
+    # Clerk Backend API secret key (``sk_live_…`` / ``sk_test_…``). Required
+    # only for the defense-in-depth membership freshness re-check in
+    # ``require_clerk_role``: when a local ``OrgMembership`` row is older than
+    # ``membership_freshness_seconds`` we call Clerk's REST API to confirm
+    # the user still has the role we cached. Empty disables the freshness
+    # check entirely (cached role is trusted indefinitely).
+    clerk_secret_key: str = ""
+
+    # Max age (in seconds) of a cached ``OrgMembership`` row before
+    # ``require_clerk_role`` consults Clerk's REST API to confirm the role.
+    # Trades a Clerk-API round-trip for closing the gap on missed/late
+    # demotion webhooks and 60-second-stale JWT ``org_id`` claims. 5 min is
+    # a reasonable middle ground — short enough that a missed demotion is
+    # contained, long enough that the typical hot-path stays cached.
+    membership_freshness_seconds: int = 300
+
     model_config = {"env_file": ".env"}
 
     @field_validator("clerk_authorized_parties", mode="before")

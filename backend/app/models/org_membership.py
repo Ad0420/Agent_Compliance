@@ -68,6 +68,17 @@ class OrgMembership(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
+    # Refreshed whenever a webhook (created/updated) writes through to this
+    # row, OR whenever the freshness re-check in ``require_clerk_role``
+    # successfully consults Clerk. Used to gate the freshness re-check: rows
+    # older than ``MEMBERSHIP_FRESHNESS_SECONDS`` trigger a live lookup from
+    # Clerk before RBAC decisions, defending against missed/late demotion
+    # webhooks and 60-second-stale JWT ``org_id`` claims.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        server_default=func.now(),
+        nullable=False,
+    )
 
     organization: Mapped["Organization"] = relationship(
         "Organization", back_populates="memberships"

@@ -16,6 +16,7 @@ import {
   VeraApiError,
   type DashboardApiKeyCreateInput,
 } from "@/lib/api-server";
+import { csrfGuard } from "@/lib/csrf";
 
 export async function GET() {
   try {
@@ -27,6 +28,12 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  // CSRF: same-origin allow-list on the mutating handler. Clerk's
+  // SameSite=Lax cookies already block top-level navigation CSRF, but a
+  // same-site XSS could still mint keys without this guard.
+  const forbidden = csrfGuard(req);
+  if (forbidden) return forbidden;
+
   let payload: DashboardApiKeyCreateInput;
   try {
     payload = (await req.json()) as DashboardApiKeyCreateInput;

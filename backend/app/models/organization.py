@@ -20,6 +20,27 @@ class Organization(Base):
     clerk_org_id: Mapped[Optional[str]] = mapped_column(
         String, unique=True, nullable=True, index=True
     )
+    # Soft-delete marker. Set when Clerk fires ``organization.deleted`` or
+    # when an operator marks the org as deleted via admin tooling. Routes
+    # that resolve org context MUST filter ``deleted_at IS NULL`` for
+    # operational paths; admin / historical paths can opt out.
+    #
+    # We soft-delete (rather than hard-delete) because ``action_records``
+    # uses ``ondelete=RESTRICT`` against this table — an audit-trail product
+    # must outlive the org that produced the records. Hard-delete previously
+    # raised ``ForeignKeyViolation`` on Postgres whenever an org with any
+    # action records was deleted.
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True, index=True
+    )
+    # When we soft-delete via the Clerk webhook we move the Clerk org ID into
+    # this column (and NULL out ``clerk_org_id``). This frees the unique
+    # constraint so the same Clerk org ID could be reused later, while keeping
+    # the forensic link from the surviving audit records back to the Clerk
+    # tombstone.
+    scrubbed_clerk_org_id: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
     )
