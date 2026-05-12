@@ -6,6 +6,39 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Redactor.medtech() review fixes (PR #165)
+- **Bare ``"patient"`` removed from ``_MEDTECH_BLOCK_KEYS``.** A kwarg
+  named ``patient`` (e.g. ``def process(patient: PatientRecord)``) is no
+  longer blocked wholesale — the redactor recurses so the schema's
+  per-field rules apply at every depth. The schema's deny-by-default for
+  unmapped fields still protects nested PHI. Customers who want the old
+  wholesale behaviour can opt in via
+  ``Redactor.medtech(extra_block_keys={'patient'})``.
+- **``"patient_id"`` removed from ``_MEDTECH_BLOCK_KEYS``** to resolve
+  the contradiction with ``medtech_starter_schema()`` (which marks it
+  ``PASSTHROUGH``). Opaque, randomly-generated patient IDs ARE the
+  HIPAA-safe pattern; preserving them keeps audit trails searchable.
+  ``patient_name``, ``mrn``, ``medical_record_number`` remain in
+  ``_MEDTECH_BLOCK_KEYS``. Customers whose ``patient_id`` is MRN-shaped
+  should pass ``Redactor.medtech(extra_block_keys={'patient_id'})``.
+- **Bare ``"url"`` removed from ``_MEDTECH_BLOCK_KEYS``.** API endpoints,
+  callback URLs, doc links, and asset URLs are no longer destroyed. PHI
+  embedded inside URL strings is now caught by a new ``url_phi`` regex
+  pattern that matches URLs containing MRN, SSN, DOB, ``patient_id=``,
+  ``ssn=``, or ``mrn=`` substrings in path/query.
+- **Stable error code on the BAA reminder.** Log message now prefixed
+  with ``[vera-baa-001]`` for SIEM filtering / mute rules.
+- **Pattern caching.** ``_default_patterns()`` and ``_medtech_patterns()``
+  now share an ``lru_cache``-backed compile step. Each call constructs
+  a fresh list around cached, immutable ``re.Pattern`` objects, so hot
+  code paths that instantiate per-request Redactors no longer pay the
+  re-compilation cost.
+- **``vera._test_hooks`` module** for the BAA-flag reset hook. Private
+  by convention; not part of the SDK stability contract.
+- **Headline round-trip test expanded** to cover nested dicts, lists of
+  dicts, dataclass-style objects (schema-mode object refusal), and a
+  FHIR-shaped Bundle. Substring-based PHI assertions run at every depth.
+
 ### Security / Reliability
 - **Fork-safety:** `_after_in_child` now closes the inherited `httpx.Client`
   and creates a fresh one. Customers using `gunicorn --preload`, Celery
