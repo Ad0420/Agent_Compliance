@@ -18,12 +18,25 @@ import json as _json
 import os
 import sys
 import time
+from collections import deque
 from typing import Any
 
 import click
 
 from .client import VeraClient
-from .errors import VeraAuthError, VeraError, VeraNetworkError, VeraTimeoutError
+from .errors import (
+    VeraAuthError,
+    VeraError,
+    VeraNetworkError,
+    VeraServerError,
+    VeraTimeoutError,
+    VeraValidationError,
+)
+
+# Cap on the in-memory ``seen_ids`` cache used by ``vera tail --follow`` so
+# long-running sessions don't grow unbounded.
+SEEN_BOUND = 10000
+
 
 try:  # ``vera-sdk`` ships without a runtime __version__ attribute today.
     from importlib.metadata import PackageNotFoundError, version as _pkg_version
@@ -47,6 +60,21 @@ def config() -> None:
     """Configuration introspection."""
 
 
+def _mask_api_key(api_key: str) -> str:
+    """Mask an API key for display.
+
+    Returns ``(unset)`` for an empty key, ``***`` for keys shorter than 12
+    characters (typos, fixture values — last 4 chars too revealing), and
+    ``...<last4>`` otherwise. Real Vera API keys are ``al_live_`` (8 chars)
+    plus 32 random chars = 40 chars total, well above the 12-char floor.
+    """
+    if not api_key:
+        return "(unset)"
+    if len(api_key) < 12:
+        return "***"
+    return "..." + api_key[-4:]
+
+
 @config.command("show")
 @click.option(
     "--reveal-secrets",
@@ -56,29 +84,34 @@ def config() -> None:
 def config_show(reveal_secrets: bool) -> None:
     """Print the effective Vera configuration (env vars + defaults).
 
-    Useful for verifying that VERA_* env vars are picked up correctly in
-    your deployment environment (Lambda, ECS, Railway, etc.)
+    Does not attempt to construct a :class:`VeraClient` — purely env-var
+    introspection. Use ``vera ping`` to verify the config actually works
+    (constructor + auth round-trip).
+
+    Useful for verifying that ``VERA_*`` env vars are picked up correctly
+    in your deployment environment (Lambda, ECS, Railway, etc.) even when
+    the constructor would reject the current values.
     """
-    client = VeraClient()  # constructor reads env vars via DX-E
     api_key = os.environ.get("VERA_API_KEY", "")
-    if not reveal_secrets and api_key:
-        # Mask all but last 4 chars
-        masked = "..." + api_key[-4:] if len(api_key) > 8 else "***"
-    else:
-        masked = api_key or "(unset)"
+    api_url = os.environ.get("VERA_API_URL", "") or "https://api.usevera.xyz"
+    agent_name = os.environ.get("VERA_AGENT_NAME", "") or "default-agent"
+    agent_version = os.environ.get("VERA_AGENT_VERSION", "")
+    model_id = os.environ.get("VERA_MODEL_ID", "")
+    framework = os.environ.get("VERA_FRAMEWORK", "")
+    spool_path = os.environ.get("VERA_SPOOL_PATH", "")
+    dev_mode = _env_truthy("VERA_DEV")
+
+    masked_key = api_key if reveal_secrets else _mask_api_key(api_key)
 
     rows = [
-        ("api_url", client.api_url),
-        ("api_key", masked),
-        ("agent_name", client.agent_name),
-        ("agent_version", client.agent_version or "(unset)"),
-        ("model_id", client.model_id or "(unset)"),
-        ("framework", client.framework or "(unset)"),
-        (
-            "persistent_buffer_path",
-            getattr(client, "_persistent_buffer_path", None) or "(off)",
-        ),
-        ("dev_mode", "on" if _env_truthy("VERA_DEV") else "off"),
+        ("api_url", api_url),
+        ("api_key", masked_key),
+        ("agent_name", agent_name),
+        ("agent_version", agent_version or "(unset)"),
+        ("model_id", model_id or "(unset)"),
+        ("framework", framework or "(unset)"),
+        ("persistent_buffer_path", spool_path or "(off)"),
+        ("dev_mode", "on" if dev_mode else "off"),
     ]
     width = max(len(k) for k, _ in rows)
     for k, v in rows:
@@ -91,11 +124,6 @@ def config_show(reveal_secrets: bool) -> None:
             err=True,
         )
 
-    try:
-        client.close()
-    except Exception:
-        pass
-
 
 @cli.command()
 @click.option(
@@ -107,6 +135,8 @@ def ping(timeout: float) -> None:
     Exits 0 on success (200 from /v1/verify), 1 on auth/timeout/network/Vera
     failures, 2 on unexpected exceptions.
     """
+    api_url = os.environ.get("VERA_API_URL", "") or "https://api.usevera.xyz"
+    click.echo(f"Connecting to {api_url}…", err=True)
     try:
         client = VeraClient(timeout=timeout)
         start = time.perf_counter()
@@ -132,6 +162,9 @@ def ping(timeout: float) -> None:
         sys.exit(1)
     except VeraNetworkError as e:
         click.echo(f"FAIL Network error: {e}", err=True)
+        sys.exit(1)
+    except VeraServerError as e:
+        click.echo(f"FAIL Server error: {e}", err=True)
         sys.exit(1)
     except VeraError as e:
         click.echo(f"FAIL Vera error: {e}", err=True)
@@ -187,7 +220,24 @@ def tail(
     client = VeraClient()
 
     last_seq = 0
-    seen_ids: set[str] = set()
+    # Bounded seen-id cache. Without a cap, a long-running ``--follow``
+    # session would leak ~50MB/day at moderate volume. The deque holds
+    # insertion order and lets us evict the oldest entry once the cap is
+    # hit; the set keeps O(1) membership lookups in sync.
+    seen_ids_set: set[str] = set()
+    seen_ids_order: deque[str] = deque(maxlen=SEEN_BOUND)
+
+    def _mark_seen(rid: str) -> None:
+        """Add ``rid`` to the bounded seen-set, evicting the oldest if full."""
+        if rid in seen_ids_set:
+            return
+        if len(seen_ids_order) == SEEN_BOUND:
+            # deque is at maxlen — its next append will silently drop the
+            # leftmost entry. Mirror that eviction in the companion set.
+            evicted = seen_ids_order[0]
+            seen_ids_set.discard(evicted)
+        seen_ids_order.append(rid)
+        seen_ids_set.add(rid)
 
     try:
         while True:
@@ -207,12 +257,12 @@ def tail(
 
                 # Filter dupes within a session.
                 fresh = [
-                    r for r in records if r.get("id") not in seen_ids
+                    r for r in records if r.get("id") not in seen_ids_set
                 ]
                 for r in fresh:
                     rid = r.get("id")
                     if rid is not None:
-                        seen_ids.add(rid)
+                        _mark_seen(rid)
                     if as_json:
                         click.echo(_json.dumps(r, default=str))
                     else:
@@ -227,11 +277,37 @@ def tail(
             except KeyboardInterrupt:
                 click.echo("\n(interrupted)", err=True)
                 break
+            except VeraAuthError as e:
+                # Auth errors won't self-heal — retrying in --follow mode
+                # would spin forever. Exit immediately regardless of follow.
+                click.echo(f"FAIL Authentication failed: {e}", err=True)
+                sys.exit(1)
+            except VeraValidationError as e:
+                # 4xx other than 401/429 — usually a programmer error in
+                # our filters. Won't self-heal either.
+                click.echo(f"FAIL {e}", err=True)
+                sys.exit(1)
+            except (
+                VeraTimeoutError,
+                VeraNetworkError,
+                VeraServerError,
+            ) as e:
+                if not follow:
+                    click.echo(
+                        f"FAIL {type(e).__name__}: {e}", err=True
+                    )
+                    sys.exit(1)
+                click.echo(
+                    f"WARN Transient error: {e} "
+                    f"(retrying in {interval}s)",
+                    err=True,
+                )
+                time.sleep(interval)
             except VeraError as e:
                 click.echo(f"FAIL {e}", err=True)
                 if not follow:
                     sys.exit(1)
-                # In follow mode, sleep + retry.
+                # In follow mode, sleep + retry for unclassified errors.
                 time.sleep(interval)
     finally:
         try:
@@ -241,13 +317,17 @@ def tail(
 
 
 def _print_record(r: dict) -> None:
-    seq = r.get("sequence_number", "?")
-    ts = r.get("recorded_at", "?")
-    agent = r.get("agent_name", "?")
-    action = r.get("action_name", "?")
-    result = r.get("result", "?")
+    # Coerce every field through ``str`` first so ``None`` values (or any
+    # other non-string type the server might return) can't blow up width-
+    # formatted f-strings with ``TypeError``.
+    seq = r.get("sequence_number")
+    seq_str = str(seq) if seq is not None else "?"
+    ts = r.get("recorded_at") or "?"
+    agent = r.get("agent_name") or "?"
+    action = r.get("action_name") or "?"
+    result = r.get("result") or "?"
     click.echo(
-        f"[{seq:>6}] {ts}  {agent:<24}  {action:<32}  {result}"
+        f"[{seq_str:>6}] {ts}  {agent:<24}  {action:<32}  {result}"
     )
 
 
