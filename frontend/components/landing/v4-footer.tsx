@@ -1,6 +1,14 @@
 import Link from "next/link";
 import { PrototypeDisclaimer } from "./brand";
 
+// Keep in lockstep with V4Nav's NAV_ITEMS (see components/landing/v4-nav.tsx).
+// If you add a top-level page to the nav, add it here too.
+const FOOTER_NAV_ITEMS: Array<[string, string]> = [
+  ["Product", "/"],
+  ["Regulations", "/regulations"],
+  ["Maturity", "/maturity"],
+];
+
 export function V4Footer() {
   return (
     <footer
@@ -22,18 +30,15 @@ export function V4Footer() {
           textTransform: "uppercase",
         }}
       >
-        <Link
-          href="/regulations"
-          style={{ color: "rgba(243,239,231,.7)", textDecoration: "none" }}
-        >
-          Regulations
-        </Link>
-        <Link
-          href="/maturity"
-          style={{ color: "rgba(243,239,231,.7)", textDecoration: "none" }}
-        >
-          Maturity
-        </Link>
+        {FOOTER_NAV_ITEMS.map(([label, href]) => (
+          <Link
+            key={label}
+            href={href}
+            style={{ color: "rgba(243,239,231,.7)", textDecoration: "none" }}
+          >
+            {label}
+          </Link>
+        ))}
       </div>
       <PrototypeDisclaimer tone="dark" />
     </footer>

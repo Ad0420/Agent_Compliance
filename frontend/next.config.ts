@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import type { NextConfig } from "next";
 
 // CSP that allows Clerk's components + their CAPTCHA challenge to load.
@@ -34,7 +35,28 @@ const securityHeaders = [
   { key: "Content-Security-Policy", value: cspDirectives.join("; ") },
 ];
 
+// Resolve the last-modified timestamp of the maturity page at build time so
+// the `/maturity` "last updated" stamp can't rot. We try git first (committed
+// state) and fall back to "now" when git history isn't available (shallow
+// clones, build environments without git, etc).
+const maturityLastUpdated = (() => {
+  try {
+    const out = execSync("git log -1 --format=%cI -- app/maturity/page.tsx", {
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+    if (out) return out;
+  } catch {
+    // fall through
+  }
+  return new Date().toISOString();
+})();
+
 const nextConfig: NextConfig = {
+  env: {
+    NEXT_PUBLIC_MATURITY_LAST_UPDATED: maturityLastUpdated,
+  },
   async headers() {
     return [
       {

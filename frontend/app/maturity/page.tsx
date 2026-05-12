@@ -1,7 +1,7 @@
 import type { CSSProperties } from "react";
 import type { Metadata } from "next";
-import Link from "next/link";
-import { HashStamp, PrototypeDisclaimer, Wordmark } from "@/components/landing/brand";
+import { HashStamp } from "@/components/landing/brand";
+import { V4Footer } from "@/components/landing/v4-footer";
 import { V4Nav } from "@/components/landing/v4-nav";
 
 export const metadata: Metadata = {
@@ -10,7 +10,12 @@ export const metadata: Metadata = {
     "Honest assessment of Vera's pilot-grade systems and the work required to reach production-grade. Updated continuously.",
 };
 
-const LAST_UPDATED = "2026-05-12";
+// LAST_UPDATED is injected at build time from the git commit timestamp of
+// this file (see next.config.ts). Falls back to "now" if the env var is
+// missing (dev without the build wrapper). Render via <time dateTime> so
+// crawlers + screen readers can parse it.
+const LAST_UPDATED_RAW =
+  process.env.NEXT_PUBLIC_MATURITY_LAST_UPDATED ?? new Date().toISOString();
 
 type Tier =
   | "pilot"
@@ -78,11 +83,11 @@ const ROWS: SystemRow[] = [
   },
   {
     system: "Clerk role-drift reconciler",
-    detail: "Periodic re-fetch on stale membership",
-    current: "Periodic re-fetch",
-    tier: "pilot-partial",
+    detail: "Svix-verified webhooks + periodic re-fetch fallback",
+    current: "Webhook-driven + periodic re-fetch fallback",
+    tier: "pilot",
     prod:
-      "Full event-sourced reconciler with delta-driven sync; Clerk webhook-driven invalidation.",
+      "SLA on webhook delivery; reconciliation worker for missed events; per-org audit dashboard of role drift events.",
   },
   {
     system: "SDK fork safety",
@@ -149,6 +154,7 @@ const sectionLabelStyle: CSSProperties = {
   color: "var(--ink-3)",
   fontWeight: 700,
   letterSpacing: 1.8,
+  margin: 0,
 };
 
 const proseStyle: CSSProperties = {
@@ -159,6 +165,11 @@ const proseStyle: CSSProperties = {
   maxWidth: 760,
   fontWeight: 400,
 };
+
+const LAST_UPDATED_DISPLAY = new Date(LAST_UPDATED_RAW).toLocaleDateString(
+  "en-US",
+  { year: "numeric", month: "long", day: "numeric" },
+);
 
 export default function MaturityPage() {
   return (
@@ -186,7 +197,15 @@ export default function MaturityPage() {
             EXHIBIT M · MATURITY MANIFEST
           </span>
           <span style={{ flex: 1, height: 1, background: "var(--ink-4)" }} />
-          <HashStamp value={`last updated · ${LAST_UPDATED}`} tone="amber" />
+          <HashStamp
+            value={
+              <>
+                last updated ·{" "}
+                <time dateTime={LAST_UPDATED_RAW}>{LAST_UPDATED_DISPLAY}</time>
+              </>
+            }
+            tone="amber"
+          />
         </div>
 
         <h1 className="v3-hero-h1" style={{ marginBottom: 22, fontSize: "clamp(40px, 7.2vw, 88px)" }}>
@@ -230,7 +249,7 @@ export default function MaturityPage() {
       {/* Tier definitions */}
       <section className="v3-section" style={{ paddingTop: 24, paddingBottom: 48 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 14, marginBottom: 24 }}>
-          <span style={sectionLabelStyle}>§ 01 · THE THREE TIERS</span>
+          <h2 style={sectionLabelStyle}>§ 01 · THE THREE TIERS</h2>
           <span style={{ flex: 1, height: 1, background: "var(--ink-4)" }} />
         </div>
 
@@ -262,7 +281,7 @@ export default function MaturityPage() {
       {/* System-by-system table */}
       <section className="v3-section" style={{ paddingTop: 24, paddingBottom: 64 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 14, marginBottom: 24 }}>
-          <span style={sectionLabelStyle}>§ 02 · SYSTEM BY SYSTEM</span>
+          <h2 style={sectionLabelStyle}>§ 02 · SYSTEM BY SYSTEM</h2>
           <span style={{ flex: 1, height: 1, background: "var(--ink-4)" }} />
         </div>
 
@@ -279,108 +298,101 @@ export default function MaturityPage() {
             overflow: "hidden",
           }}
         >
-          {/* Desktop header */}
-          <div
-            className="mat-row mat-row--head"
-            style={{
-              display: "grid",
-              gridTemplateColumns: "minmax(220px, 1.4fr) minmax(160px, 0.8fr) minmax(280px, 1.8fr)",
-              gap: 24,
-              padding: "16px 24px",
-              background: "var(--ink)",
-              color: "var(--paper)",
-              fontFamily: "var(--mono)",
-              fontSize: 11,
-              fontWeight: 700,
-              letterSpacing: 1.6,
-            }}
-          >
-            <span>SYSTEM</span>
-            <span>CURRENT TIER</span>
-            <span>PRODUCTION-GRADE REQUIRES</span>
-          </div>
+          <table className="mat-table">
+            <caption className="mat-table__caption">
+              Vera systems by current maturity tier and what production-grade requires.
+            </caption>
+            <thead>
+              <tr className="mat-row mat-row--head">
+                <th scope="col">SYSTEM</th>
+                <th scope="col">CURRENT TIER</th>
+                <th scope="col">PRODUCTION-GRADE REQUIRES</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ROWS.map((row, i) => {
+                const badge = TIER_BADGE[row.tier];
+                return (
+                  <tr
+                    key={row.system}
+                    className="mat-row"
+                    style={{
+                      borderTop: i === 0 ? "none" : "1px solid var(--ink-4)",
+                    }}
+                  >
+                    <th scope="row" data-label="System" className="mat-cell mat-cell--system">
+                      <div
+                        style={{
+                          fontWeight: 700,
+                          fontSize: 16,
+                          letterSpacing: "-0.01em",
+                          marginBottom: 4,
+                        }}
+                      >
+                        {row.system}
+                      </div>
+                      <div
+                        style={{
+                          fontFamily: "var(--mono)",
+                          fontSize: 12,
+                          color: "var(--ink-3)",
+                          lineHeight: 1.5,
+                          fontWeight: 400,
+                        }}
+                      >
+                        {row.detail}
+                      </div>
+                    </th>
 
-          {ROWS.map((row, i) => {
-            const badge = TIER_BADGE[row.tier];
-            return (
-              <div
-                key={row.system}
-                className="mat-row"
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "minmax(220px, 1.4fr) minmax(160px, 0.8fr) minmax(280px, 1.8fr)",
-                  gap: 24,
-                  padding: "22px 24px",
-                  borderTop: i === 0 ? "none" : "1px solid var(--ink-4)",
-                  alignItems: "start",
-                }}
-              >
-                <div>
-                  <div
-                    style={{
-                      fontWeight: 700,
-                      fontSize: 16,
-                      letterSpacing: "-0.01em",
-                      marginBottom: 4,
-                    }}
-                  >
-                    {row.system}
-                  </div>
-                  <div
-                    style={{
-                      fontFamily: "var(--mono)",
-                      fontSize: 12,
-                      color: "var(--ink-3)",
-                      lineHeight: 1.5,
-                    }}
-                  >
-                    {row.detail}
-                  </div>
-                </div>
+                    <td data-label="Current tier" className="mat-cell">
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        <span
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 6,
+                            alignSelf: "flex-start",
+                            fontFamily: "var(--mono)",
+                            fontSize: 10.5,
+                            fontWeight: 700,
+                            letterSpacing: 1.6,
+                            padding: "4px 8px",
+                            background: badge.bg,
+                            color: badge.fg,
+                            border: `1px solid ${badge.border}`,
+                            borderRadius: 3,
+                          }}
+                        >
+                          {badge.label}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: 13,
+                            color: "var(--ink-2)",
+                            lineHeight: 1.45,
+                          }}
+                        >
+                          {row.current}
+                        </span>
+                      </div>
+                    </td>
 
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  <span
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 6,
-                      alignSelf: "flex-start",
-                      fontFamily: "var(--mono)",
-                      fontSize: 10.5,
-                      fontWeight: 700,
-                      letterSpacing: 1.6,
-                      padding: "4px 8px",
-                      background: badge.bg,
-                      color: badge.fg,
-                      border: `1px solid ${badge.border}`,
-                      borderRadius: 3,
-                    }}
-                  >
-                    {badge.label}
-                  </span>
-                  <span
-                    style={{
-                      fontSize: 13,
-                      color: "var(--ink-2)",
-                      lineHeight: 1.45,
-                    }}
-                  >
-                    {row.current}
-                  </span>
-                </div>
-
-                <div
-                  style={{
-                    fontSize: 14.5,
-                    color: "var(--ink)",
-                    lineHeight: 1.55,
-                  }}
-                >
-                  {row.prod}
-                </div>
-              </div>
-            );
-          })}
+                    <td
+                      data-label="Production-grade requires"
+                      className="mat-cell"
+                      style={{
+                        fontSize: 14.5,
+                        color: "var(--ink)",
+                        lineHeight: 1.55,
+                      }}
+                    >
+                      {row.prod}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </section>
 
@@ -396,17 +408,18 @@ export default function MaturityPage() {
         }}
       >
         <div style={{ display: "flex", alignItems: "baseline", gap: 14, marginBottom: 22 }}>
-          <span
+          <h2
             style={{
               fontFamily: "var(--mono)",
               fontSize: 11,
               color: "rgba(243,239,231,.55)",
               fontWeight: 700,
               letterSpacing: 1.8,
+              margin: 0,
             }}
           >
             § 03 · WHY WE PUBLISH THIS
-          </span>
+          </h2>
           <span style={{ flex: 1, height: 1, background: "rgba(243,239,231,.18)" }} />
         </div>
 
@@ -469,39 +482,7 @@ export default function MaturityPage() {
         </div>
       </section>
 
-      {/* Footer */}
-      <footer
-        style={{
-          padding: "0 var(--gutter)",
-          background: "var(--night)",
-          color: "var(--night-text-2)",
-        }}
-      >
-        <div className="v3-footer-row" style={{ paddingLeft: 0, paddingRight: 0 }}>
-          <Wordmark size={14} color="var(--paper)" />
-          <span>· file no. vera/0.2.0 · maturity</span>
-          <div style={{ flex: 1 }} />
-          <Link
-            href="/"
-            style={{ color: "rgba(243,239,231,.7)", textDecoration: "none" }}
-          >
-            Product
-          </Link>
-          <Link
-            href="/regulations"
-            style={{ color: "rgba(243,239,231,.7)", textDecoration: "none" }}
-          >
-            Regulations
-          </Link>
-          <Link
-            href="/maturity"
-            style={{ color: "var(--paper)", textDecoration: "none" }}
-          >
-            Maturity
-          </Link>
-        </div>
-        <PrototypeDisclaimer tone="dark" />
-      </footer>
+      <V4Footer />
     </div>
   );
 }

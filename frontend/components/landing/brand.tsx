@@ -81,7 +81,7 @@ export function HashStamp({
   value = "7a5e9f06d2c41b…79ae",
   tone = "emerald",
 }: {
-  value?: string;
+  value?: ReactNode;
   tone?: "emerald" | "amber" | "default";
 }) {
   const cls =
