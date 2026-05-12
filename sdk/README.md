@@ -17,7 +17,73 @@ pip install "vera-sdk[langchain,openai,anthropic,crewai]"
 
 ## Quickstart
 
-### 1. Sync client — record actions directly
+```python
+import vera
+
+vera.init(api_key="al_live_...", agent_name="loan-screener")
+
+@vera.audit(action_name="approve_loan")
+def approve_loan(applicant_id: str, amount: int) -> dict:
+    # Your agent logic here
+    return {"approved": True, "score": 0.93}
+```
+
+That's it. Every call to `approve_loan` becomes a cryptographically-signed
+audit record in your Vera dashboard.
+
+### Environment variables
+
+`vera.init()` falls back to these env vars when args are omitted:
+
+| Variable | Purpose |
+|---|---|
+| `VERA_API_KEY` | API key (issued via dashboard) |
+| `VERA_API_URL` | Base URL (default: `https://api.usevera.xyz`) |
+| `VERA_AGENT_NAME` | Agent identifier |
+| `VERA_AGENT_VERSION` | Optional agent version |
+| `VERA_MODEL_ID` | Optional LLM model identifier |
+| `VERA_FRAMEWORK` | Optional framework (`openai`, `anthropic`, `langchain`, `crewai`) |
+| `VERA_DEV` | Set to `1` for dev mode (prints to stderr, no API key required) |
+| `VERA_SPOOL_PATH` | Durable buffer path (requires `VERA_SPOOL_KEY`) |
+| `VERA_SPOOL_KEY` | AES-256-GCM passphrase for the durable spool |
+
+Explicit kwargs always win; env vars are the fallback.
+
+### Dev mode
+
+Run without an API key:
+
+```bash
+export VERA_DEV=1
+python my_agent.py
+# Records print to stderr as [vera-dev] {...}
+```
+
+Or programmatically:
+
+```python
+vera.init(dev=True, agent_name="my-agent")
+# — or —
+client = vera.VeraClient.dev(agent_name="my-agent")
+```
+
+### Testing
+
+Vera ships a pytest fixture (`vera_recording`) that auto-loads when the
+SDK is installed:
+
+```python
+def test_loan_decision(vera_recording):
+    approve_loan(applicant_id="x", amount=10000)
+    assert len(vera_recording.records) == 1
+    assert vera_recording.records[0]["action_name"] == "approve_loan"
+```
+
+No mocks, no HTTP server, no API key required.
+
+## More patterns
+
+### Sync client — record actions directly
 
 ```python
 from vera import VeraClient
@@ -40,7 +106,7 @@ client.record_action(
 )
 ```
 
-### 2. `@audit` decorator — zero-boilerplate logging
+### `@audit` decorator — zero-boilerplate logging
 
 ```python
 from vera import audit, set_default_client
@@ -53,7 +119,7 @@ def process_payment(invoice_id: str):
     # Recorded automatically on success or failure (with traceback).
 ```
 
-### 3. Async client — non-blocking, batched
+### Async client — non-blocking, batched
 
 ```python
 from vera import AsyncVeraClient, async_audit, set_default_async_client
@@ -71,7 +137,7 @@ async with AsyncVeraClient(
         ...  # Zero added latency — auditing runs in the background queue.
 ```
 
-### 4. Human-in-the-loop approval (EU AI Act Article 14)
+### Human-in-the-loop approval (EU AI Act Article 14)
 
 ```python
 from vera import VeraClient, ApprovalRejectedError

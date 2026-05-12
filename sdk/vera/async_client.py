@@ -47,9 +47,9 @@ class AsyncVeraClient:
 
     def __init__(
         self,
-        api_url: str = "http://localhost:8000",
-        api_key: str = "",
-        agent_name: str = "default-agent",
+        api_url: str | None = None,
+        api_key: str | None = None,
+        agent_name: str | None = None,
         agent_version: str | None = None,
         model_id: str | None = None,
         framework: str | None = None,
@@ -63,6 +63,29 @@ class AsyncVeraClient:
         persistent_buffer_path: str | None = None,
         persistent_buffer_max_bytes: int = 100_000_000,
     ):
+        # Env-var fallbacks (mirrors :class:`vera.client.VeraClient`).
+        # Explicit kwargs always win; ``None`` (or omitted) falls through
+        # to the matching env var, then to the documented default. Empty
+        # string env vars are treated as "unset".
+        api_url = api_url or os.environ.get("VERA_API_URL") or "https://api.usevera.xyz"
+        api_key = api_key if api_key is not None else os.environ.get("VERA_API_KEY", "")
+        agent_name = agent_name or os.environ.get("VERA_AGENT_NAME") or "default-agent"
+        agent_version = agent_version or os.environ.get("VERA_AGENT_VERSION") or None
+        model_id = model_id or os.environ.get("VERA_MODEL_ID") or None
+        framework = framework or os.environ.get("VERA_FRAMEWORK") or None
+        persistent_buffer_path = (
+            persistent_buffer_path
+            or os.environ.get("VERA_SPOOL_PATH")
+            or None
+        )
+
+        if not api_key:
+            logger.warning(
+                "vera.async_client: No API key configured (set api_key= or "
+                "VERA_API_KEY). Records will not be authenticated to Vera. "
+                "Use vera.init(dev=True) or VERA_DEV=1 for a development sink."
+            )
+
         self.api_url = api_url.rstrip("/")
         self.agent_name = agent_name
         self.agent_version = agent_version
@@ -329,7 +352,7 @@ class AsyncVeraClient:
         assert last_exc is not None
         raise wrap_httpx_error(last_exc) from last_exc
 
-    async def record_action(
+    def _build_payload(
         self,
         action_name: str,
         action_type: str = "function_call",
@@ -341,8 +364,13 @@ class AsyncVeraClient:
         error_message: str | None = None,
         **kwargs,
     ) -> dict:
-        """Record a single action (makes HTTP call immediately)."""
-        payload = {
+        """Construct the wire-shape payload for a single action.
+
+        Mirrors :meth:`vera.client.VeraClient._build_payload`. Stamps the
+        client-level identity onto caller-supplied fields and normalises
+        optional JSON blobs to empty dicts.
+        """
+        return {
             "action_name": action_name,
             "action_type": action_type,
             "agent_name": self.agent_name,
@@ -357,6 +385,31 @@ class AsyncVeraClient:
             "error_message": error_message,
             **kwargs,
         }
+
+    async def record_action(
+        self,
+        action_name: str,
+        action_type: str = "function_call",
+        result: str = "success",
+        input_data: dict | None = None,
+        outcome: dict | None = None,
+        reasoning: dict | None = None,
+        duration_ms: int | None = None,
+        error_message: str | None = None,
+        **kwargs,
+    ) -> dict:
+        """Record a single action (makes HTTP call immediately)."""
+        payload = self._build_payload(
+            action_name=action_name,
+            action_type=action_type,
+            result=result,
+            input_data=input_data,
+            outcome=outcome,
+            reasoning=reasoning,
+            duration_ms=duration_ms,
+            error_message=error_message,
+            **kwargs,
+        )
         payload = self._redact_payload_fields(payload)
         # The retry loop reuses kwargs across attempts so the same
         # Idempotency-Key is sent on retries.

@@ -49,6 +49,9 @@ dev = [
     "cryptography>=42.0.0",
 ]
 
+[project.entry-points.pytest11]
+vera = "vera.pytest_plugin"
+
 [tool.setuptools.packages.find]
 include = ["vera*"]
 exclude = ["tests*"]

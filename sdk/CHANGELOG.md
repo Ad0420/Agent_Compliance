@@ -7,6 +7,44 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `vera.init(api_key=..., agent_name=...)` Sentry-style one-call setup.
+  Constructs a `VeraClient` from explicit kwargs + env vars and registers it
+  as the default for `@audit` decorators. Calling `init()` twice replaces
+  (and drains) the previous default.
+- `vera.init_async(...)` for the async equivalent.
+- `vera.get_client()` / `vera.get_async_client()` to retrieve the
+  initialized client(s).
+- `VeraClient.dev()` factory and `VERA_DEV=1` env var for dev mode (prints
+  records to stderr instead of POSTing). Returns a `DevClient` subclass
+  whose `record_action` / `enqueue_action` route through an in-memory
+  `_StderrSink` after running the same `_build_payload` + redactor path as
+  the production client. No API key required.
+- pytest fixture `vera_recording` (auto-loaded via the `pytest11` entry
+  point). Yields the underlying sink so tests can assert on captured
+  audit records without HTTP mocks. Echo disabled by default so test
+  output stays clean.
+- Env-var loaders in `VeraClient` and `AsyncVeraClient` constructors:
+  `VERA_API_KEY`, `VERA_API_URL`, `VERA_AGENT_NAME`, `VERA_AGENT_VERSION`,
+  `VERA_MODEL_ID`, `VERA_FRAMEWORK`, `VERA_SPOOL_PATH`. Explicit kwargs
+  always win; empty-string env vars fall through to defaults.
+- README Quickstart that leads with `vera.init()` plus an env-var table
+  and dev-mode + pytest fixture cookbook.
+
+### Changed
+- Default `api_url` changed from `"http://localhost:8000"` (self-host
+  default) to `"https://api.usevera.xyz"` (SaaS default) when neither arg
+  nor env is provided. Self-host customers should set `api_url=` or
+  `VERA_API_URL` explicitly. All existing tests already pass explicit
+  `api_url` so this is a no-op for the test suite; production self-host
+  deployments need to update their config.
+- `VeraClient.__init__` (and `AsyncVeraClient.__init__`) now WARN once when
+  no API key is configured rather than silently shipping records with a
+  blank `Bearer` header. The warning points at `vera.init(dev=True)` /
+  `VERA_DEV=1` for development workflows.
+- `record_action` payload construction extracted into `_build_payload()`
+  so the dev-mode subclass can reuse the production identity-stamping
+  logic without duplicating the field shape.
+
 - Durable on-disk spool (`vera/spool.py`). When in-memory queue overflows, records
   spill to an encrypted SQLite spool instead of being dropped. Survives process
   restarts via `persistent_buffer_path` constructor param. Requires
