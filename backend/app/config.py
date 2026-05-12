@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     # Comma-separated env var, e.g. CLERK_AUTHORIZED_PARTIES=https://app.example.com,https://staging.example.com
     clerk_authorized_parties: list[str] | None = None
 
+    # Clerk webhook signing secret. Configured in the Clerk Dashboard under
+    # "Webhooks → <Endpoint> → Signing Secret". Verified via Svix on every
+    # delivery to ``POST /v1/clerk/webhooks``. Empty means the route refuses
+    # all incoming events (503) — never silently accept unsigned bodies.
+    clerk_webhook_secret: str = ""
+
     model_config = {"env_file": ".env"}
 
     @field_validator("clerk_authorized_parties", mode="before")

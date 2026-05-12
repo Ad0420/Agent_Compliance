@@ -14,7 +14,7 @@ import os
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer, ThreadingHTTPServer
 
 import pytest
 
@@ -45,10 +45,10 @@ class _CountingHandler(BaseHTTPRequestHandler):
         except Exception:
             payload = {}
         records = payload.get("records") or []
-        # Lock-protected — under ThreadingHTTPServer multiple handler
-        # threads can call do_POST concurrently, so a plain ``+=`` would
-        # race and lose increments.
-        with self.server.counter_lock:  # type: ignore[attr-defined]
+        # ``received_records`` is touched from multiple handler threads
+        # (ThreadingHTTPServer fans out requests). Guard with the server's
+        # lock so concurrent increments don't lose count.
+        with self.server.records_lock:  # type: ignore[attr-defined]
             self.server.received_records += len(records)  # type: ignore[attr-defined]
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -58,16 +58,15 @@ class _CountingHandler(BaseHTTPRequestHandler):
 
 class _CountingServer:
     def __init__(self):
-        # ThreadingHTTPServer instead of HTTPServer: the multiprocessing
-        # test fires 4 worker processes at the mock server concurrently. A
-        # single-threaded HTTPServer can only accept one connection at a
-        # time — the rest sit in the kernel listen backlog or, when that
-        # fills up, get ECONNREFUSED on Linux. The Vera SDK then burns its
-        # 5s drain window retrying with 0.5s/1s/2s backoff and silently
-        # drops batches. Threading makes the server actually concurrent.
+        # ``ThreadingHTTPServer`` (rather than the single-threaded
+        # ``HTTPServer``) so 4 multiprocessing-pool workers can flush in
+        # parallel without serializing through one socket. The previous
+        # single-threaded version caused TCP backlog overflow + ECONNREFUSED
+        # under load, which surfaced as flaky drain failures on slower CI
+        # runners (Python 3.11/3.12).
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), _CountingHandler)
         self.server.received_records = 0  # type: ignore[attr-defined]
-        self.server.counter_lock = threading.Lock()  # type: ignore[attr-defined]
+        self.server.records_lock = threading.Lock()  # type: ignore[attr-defined]
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     def __enter__(self):
@@ -136,8 +135,11 @@ def test_fork_after_init():
 
 
 # Module-level so the Pool can pickle it. This client is constructed in the
-# parent and the Pool's fork-mode workers inherit a copy. Each child must
-# notice the pid mismatch on first enqueue and reinit its own queue+thread.
+# parent and the Pool's fork-mode workers inherit a copy. Each child uses
+# the blocking ``record_action`` API which exercises the SAME ``httpx.Client``
+# fork-safety needs to handle correctly — without the async daemon-thread
+# drain race that made the previous (enqueue_action + flush + close) version
+# flaky on slower CI runners (Python 3.10 in particular).
 _pool_client_holder: dict[str, VeraClient] = {}
 
 
@@ -145,18 +147,18 @@ def _pool_init(api_url: str) -> None:
     _pool_client_holder["c"] = VeraClient(
         api_url=api_url,
         api_key="test",
-        flush_interval=0.05,
-        batch_size=20,
-        atexit_drain_timeout=5.0,
     )
 
 
 def _pool_worker(n: int) -> int:
-    # Use the SYNC ``record_action`` API: each call POSTs and blocks until
-    # the mock server acknowledges. This still exercises fork-safety — the
-    # same ``httpx.Client`` is shared with ``enqueue_action`` and must be
-    # rebuilt post-fork — but eliminates the async-drain race that made
-    # this test flaky across Python 3.10/3.11/3.12.
+    """Each worker performs ``n`` synchronous POSTs.
+
+    ``record_action`` blocks until the server acks (or retries are
+    exhausted), so by the time this function returns the mock server has
+    deterministically counted every record. No async drain, no daemon
+    thread, no flush-timeout race — the only thing under test here is
+    that the post-fork ``httpx.Client`` works correctly.
+    """
     c = _pool_client_holder["c"]
     for i in range(n):
         c.record_action(action_name=f"w{i}")
@@ -252,16 +254,21 @@ def test_child_only_enqueue_after_parent_warmed_connection():
     os.environ.get("CI") == "true",
     reason=(
         "multiprocessing.Pool + in-process _CountingServer is unreliable in "
-        "GitHub Actions: workers' async drain doesn't complete consistently "
-        "across Python 3.10/3.11/3.12 before pool teardown. Single-fork "
-        "fork-safety is covered by test_fork_after_init and "
+        "GitHub Actions: child workers can't reach the parent's mock server "
+        "consistently across Python 3.10/3.11/3.12. Single-fork fork-safety "
+        "is covered by test_fork_after_init and "
         "test_child_only_enqueue_after_parent_warmed_connection (both green "
         "in CI). This test still runs locally for sanity checks. "
         "TODO: rebuild with a real out-of-process HTTP server fixture."
     ),
 )
 def test_multiprocessing_pool():
-    """4 workers × 100 enqueues each; expect 400 records server-side."""
+    """4 workers × 100 sync POSTs each; expect 400 records server-side.
+
+    Exercises post-fork ``httpx.Client`` rebuild in worker processes via
+    the blocking ``record_action`` path. By the time ``pool.map`` returns,
+    every record has been ack'd by the mock server — no drain race.
+    """
     if mp.get_start_method(allow_none=True) != "fork":
         # On macOS Python 3.8+, default is "spawn" — explicitly request fork.
         ctx = mp.get_context("fork")
@@ -277,8 +284,8 @@ def test_multiprocessing_pool():
             results = pool.map(_pool_worker, [100, 100, 100, 100])
         assert sum(results) == 400
 
-        # ``record_action`` is synchronous: each call blocked until the
-        # mock server acked. By the time ``pool.map`` returns every
-        # record has already been counted server-side. No drain window
-        # required.
-        assert server.received >= 400, f"only {server.received} records"
+        # record_action is synchronous — each call blocks until the mock
+        # server has incremented its counter. The assertion is therefore
+        # deterministic: every record is accounted for by the time the
+        # pool exits.
+        assert server.received == 400, f"only {server.received} records"

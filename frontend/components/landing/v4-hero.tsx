@@ -53,9 +53,9 @@ export function V4Hero() {
             fontWeight: 400,
           }}
         >
-          When something goes wrong, or a regulator asks, the answer is provable
-          in seconds. Vera seals every AI decision the moment it happens, into a
-          record that holds up later.
+          When a regulator asks or a customer disputes a decision, the answer
+          is one attachment away. Vera seals every AI decision the moment it&rsquo;s
+          made, and the seal can&rsquo;t be edited after the fact.
         </p>
         <div
           style={{
@@ -69,16 +69,16 @@ export function V4Hero() {
             <Link
               href="/register"
               style={{
-                background: "var(--emerald)",
+                background: "var(--ink)",
                 color: "var(--paper)",
-                border: "1px solid var(--emerald)",
+                border: "1px solid var(--ink)",
                 padding: "14px 22px",
                 fontSize: 15,
                 fontWeight: 600,
                 fontFamily: "var(--sans)",
                 cursor: "pointer",
                 borderRadius: 8,
-                boxShadow: "var(--shadow-glow-em)",
+                boxShadow: "var(--shadow-1)",
                 letterSpacing: "-0.005em",
                 textDecoration: "none",
                 display: "inline-block",
@@ -117,7 +117,7 @@ export function V4Hero() {
               color: "var(--ink-3)",
             }}
           >
-            <span>Free to start · 30 seconds to your first sealed decision</span>
+            <span>Free to start · Thirty seconds to your first sealed decision</span>
           </div>
         </div>
       </div>
@@ -133,6 +133,23 @@ export function V4Hero() {
         }}
       >
         <HeroAnimation />
+      </div>
+
+      <div
+        style={{
+          marginTop: "clamp(32px, 5vw, 48px)",
+          paddingTop: 24,
+          borderTop: "1px solid var(--ink-4)",
+          fontFamily: "var(--mono)",
+          fontSize: 12,
+          letterSpacing: 1.2,
+          color: "var(--ink-3)",
+          textTransform: "uppercase",
+          fontWeight: 600,
+        }}
+      >
+        For teams running AI in lending, underwriting, clinical decision
+        support, and hiring.
       </div>
     </section>
   );

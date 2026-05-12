@@ -140,7 +140,7 @@ export function V4Compare() {
           kicker="TAMPER-EVIDENT"
           rows={[
             "A single character change breaks the seal",
-            "Sealed by a third-party signer",
+            "Sealed by a third party at the moment of decision",
             "Verifiable without our software",
           ]}
           tone="good"

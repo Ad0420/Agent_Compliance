@@ -18,3 +18,12 @@ fpdf2>=2.7.0
 # `[crypto]` pulls in `cryptography` for RS256 / RSA JWK loading.
 # >=2.10.1 fixes CVE-2024-53861 (issuer validation bypass with list iss claim).
 pyjwt[crypto]>=2.10.1
+# Clerk webhook signature verification (Workstream E3). Clerk's webhook
+# deliveries are signed with Svix; this package exposes the `Webhook`
+# verifier we use in `routes/clerk_webhooks.py`.
+#
+# Upper bound: svix >= 1.63.0 imports `ModelWrapValidatorHandler` (added in
+# pydantic 2.10), which breaks against our pinned `pydantic==2.9.2`. The
+# webhook-verification API we use is stable across 1.21–1.62, so cap below
+# the breaking change rather than bumping pydantic (transitive-dep risk).
+svix>=1.21.0,<1.63
