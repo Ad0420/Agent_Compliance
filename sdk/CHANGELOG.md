@@ -6,6 +6,64 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- Durable on-disk spool (`vera/spool.py`). When in-memory queue overflows, records
+  spill to an encrypted SQLite spool instead of being dropped. Survives process
+  restarts via `persistent_buffer_path` constructor param. Requires
+  `VERA_SPOOL_KEY` env var for AES-256-GCM encryption at rest. WAL mode for
+  multi-process safety. File mode 0600.
+- New extra `pip install vera-sdk[spool]` adds the `cryptography` dependency.
+- **Quarantine table for undecryptable rows.** When `Spool.dequeue_batch`
+  encounters a row whose AES-GCM tag fails, the row is now MOVED (in one
+  transaction) into the new `spool_quarantine_records` table rather than
+  silently DELETED. A `SpoolDecryptionError` is raised carrying the affected
+  ids. Behavior change vs. earlier releases — the old behavior destroyed the
+  audit chain on key rotation. See `sdk/docs/spool-key-rotation.md` for the
+  recovery procedure. New API: `Spool.list_quarantined()` and
+  `Spool.quarantine_size()`.
+- **Passphrase sentinel.** Every spool now writes an encrypted sentinel into
+  `spool_metadata` at first init. Subsequent opens decrypt the sentinel and
+  raise `SpoolPassphraseError` (a subclass of `SpoolDecryptionError`) when
+  the passphrase doesn't match — even when the row table is empty. Catches
+  operator typos at `VERA_SPOOL_KEY` rotation time before they become
+  permanent.
+- **`AsyncVeraClient` post-fork hook.** Mirrors the sync client: registers
+  `os.register_at_fork(after_in_child=...)` (where available) to rebuild the
+  `httpx.AsyncClient`, reopen the spool's SQLite connection, and clear the
+  `id()`-keyed `_spool_row_map`. Without this, uvicorn workers /
+  gunicorn+uvloop / anything that forks would inherit the parent's SQLite
+  connection and corrupt the spool DB on the child's first write.
+- `sdk/docs/spool-key-rotation.md` — operator-facing recovery procedure for
+  the new quarantine behavior, plus the supported planned-rotation path.
+
+### Changed
+- When `persistent_buffer_path` is configured, enqueue overflow spills to spool
+  rather than triggering drop-oldest. Drop-oldest remains the fallback when the
+  spool is full or unconfigured.
+- **`max_bytes` cap is now enforced under concurrency.** `Spool.enqueue` wraps
+  the size-check + insert in a single `BEGIN IMMEDIATE` transaction so
+  multiple producer threads (or processes sharing the spool file) can't all
+  pass the check independently and exceed the cap by N batches. `_size_bytes`
+  also now counts the WAL sidecar file in addition to the main DB pages.
+  Documented as "strict within one process, best-effort within ±1 batch
+  across processes" — cross-process accounting can race on the final commit.
+- **Spool file mode race fixed.** Process umask is set to `0o077` BEFORE
+  `sqlite3.connect`, so the `.db` (and any `.db-wal`/`.db-shm`/`.db-journal`
+  sidecars) are created at `0o600` rather than the process default (often
+  `0o644`, world-readable). Belt-and-suspenders explicit `chmod 0600`
+  remains for any sidecar created later.
+- **Per-record idempotency key is now on the wire.** The internal
+  `_idempotency_key` (set at enqueue time, persisted to spool) is promoted
+  into `metadata.record_idempotency_key` before the batch is POSTed.
+  Previously the only idempotency signal on the wire was the batch header,
+  which used the first record's key and could shift across restart-induced
+  batch recomposition. The metadata-key approach lets the server dedupe per
+  record. Additive — backend accepts arbitrary `metadata: dict` already.
+- `_is_disk_full_error` now prefers Python 3.11's
+  `sqlite3.Error.sqlite_errorcode` (locale-independent) over substring
+  matching of the error message. Substring matching is retained as a 3.10
+  fallback.
+
 ### Security / Reliability
 - **Fork-safety:** `_after_in_child` now closes the inherited `httpx.Client`
   and creates a fresh one. Customers using `gunicorn --preload`, Celery
