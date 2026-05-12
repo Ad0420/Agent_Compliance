@@ -28,7 +28,11 @@ from .routes.dashboard_compliance import (
     compliance_router as dashboard_compliance_namespace_router,
 )
 from .routes.clerk_webhooks import router as clerk_webhooks_router
-from .middleware import RateLimitMiddleware, RequestIDMiddleware
+from .middleware import (
+    ComplianceAuditMiddleware,
+    RateLimitMiddleware,
+    RequestIDMiddleware,
+)
 from .services.immutability import install_sqlite_triggers
 
 logger = logging.getLogger("vera")
@@ -62,6 +66,15 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization"],
 )
 app.add_middleware(RateLimitMiddleware)
+# Compliance audit middleware lives between RequestID (outer) and the route
+# handlers (inner). It needs ``request.state.request_id`` to be set by the
+# time it dispatches, so it's added BEFORE RequestIDMiddleware (Starlette's
+# add_middleware is LIFO — the last add is the outermost). The middleware
+# reads the per-request ``_audit_ctx`` populated by ``compliance_review_audit``
+# and writes a ComplianceReviewRecord after the route returns, capturing
+# the real response.status_code (which a BackgroundTasks-based approach
+# can't see when the handler returns a dict / Pydantic model).
+app.add_middleware(ComplianceAuditMiddleware)
 # Added last so it is the outermost middleware: every response — including
 # rate-limit 429s and CORS preflights — carries an X-Request-ID header.
 app.add_middleware(RequestIDMiddleware)

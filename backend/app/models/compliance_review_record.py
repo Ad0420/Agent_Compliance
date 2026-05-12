@@ -5,11 +5,25 @@ recorded here. Compliance teams can prove their reviews happened.
 Admin and developer actions are NOT recorded — only ``compliance_reviewer``
 (per F3 in ``mvp-hardening-plan.md``).
 
-The recorder lives in ``app.middleware.clerk_auth.compliance_review_audit``:
-it's a FastAPI ``yield`` dependency that runs after the route handler and
-inserts a row when the active membership has the ``compliance_reviewer``
-role. Failures are logged and swallowed so the audit-of-audit never breaks
-the originating request.
+The recorder lives in ``app.middleware.clerk_auth``:
+
+  1. ``compliance_review_audit`` (dep): runs role gating, then stashes
+     an audit context on ``request.state.compliance_audit_ctx`` when the
+     active membership is a ``compliance_reviewer`` and the route hasn't
+     opted out via ``exclude_path_audit=True``.
+  2. ``ComplianceAuditMiddleware``: reads the context after the route
+     returns, augments it with the REAL ``response.status_code``, and
+     writes the row from a fresh DB session.
+
+Failures inside the middleware are logged and swallowed so the audit-of-
+audit never breaks the originating request.
+
+PHI safety (post-PR #172 audit, CRITICAL #4):
+  ``target_id``, ``http_path``, ``action`` are PHI-redacted by the dep:
+  values from path-params known to carry patient IDs / subject IDs are
+  HMAC-SHA-256-hashed with a per-org salt. ``query_params`` is allowlist-
+  filtered. Same value within the same org → same hash, so analysts
+  retain correlation power; raw PHI never lands in the audit table.
 """
 from __future__ import annotations
 
@@ -49,10 +63,17 @@ class ComplianceReviewRecord(Base):
         nullable=False,
         index=True,
     )
-    membership_id: Mapped[str] = mapped_column(
+    # membership_id is NULLABLE + SET NULL on delete: when an org is deleted
+    # by Clerk, the ``organization.deleted`` webhook hard-deletes all
+    # ``org_memberships`` rows. The previous RESTRICT FK turned that into a
+    # FK violation → webhook 500 → Clerk retries forever. SET NULL keeps the
+    # audit row intact (which is the entire point of an audit-of-audit log)
+    # while letting the membership go. Identity is still recoverable via
+    # ``clerk_user_id`` below, which never gets NULLed.
+    membership_id: Mapped[Optional[str]] = mapped_column(
         String,
-        ForeignKey("org_memberships.id", ondelete="RESTRICT"),
-        nullable=False,
+        ForeignKey("org_memberships.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     clerk_user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)

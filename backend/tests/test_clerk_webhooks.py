@@ -19,6 +19,7 @@ from app.models import (
     APIKey,
     ActionRecord,
     ChainState,
+    ComplianceReviewRecord,
     Organization,
     OrgMembership,
     ProcessedWebhookEvent,
@@ -523,6 +524,84 @@ async def test_organization_deleted_with_action_records_does_not_crash(
         select(ActionRecord.id).where(ActionRecord.org_id == org_id)
     )
     assert survivors.scalar_one() is not None
+
+
+@pytest.mark.asyncio
+async def test_organization_deleted_with_compliance_records_survives(
+    async_client, db_session
+):
+    """PR #172 follow-up: ``compliance_review_records.membership_id`` is
+    now ``ondelete=SET NULL``. When the webhook hard-deletes the org's
+    memberships, any existing audit-of-audit rows must:
+      - survive (the whole point of audit log)
+      - have ``membership_id`` NULLed
+      - have ``clerk_user_id`` preserved (reviewer identity intact)
+    The webhook itself must NOT raise a FK violation.
+    """
+    await _post_webhook(
+        async_client,
+        {
+            "type": "organization.created",
+            "data": {
+                "id": "org_cmp_audit",
+                "name": "Compliance Auditing",
+                "created_by": "user_creator_c",
+            },
+        },
+        msg_id="msg_cmp_0",
+    )
+    db_session.expire_all()
+    org_id_row = await db_session.execute(
+        select(Organization.id).where(
+            Organization.clerk_org_id == "org_cmp_audit"
+        )
+    )
+    org_id = org_id_row.scalar_one()
+
+    # Find the admin membership row that the org.created webhook seeded.
+    membership_row = await db_session.execute(
+        select(OrgMembership).where(OrgMembership.org_id == org_id)
+    )
+    membership = membership_row.scalar_one()
+    membership_id = membership.id
+    clerk_user_id = membership.clerk_user_id
+
+    # Insert a compliance review record referencing this membership.
+    review = ComplianceReviewRecord(
+        org_id=org_id,
+        membership_id=membership_id,
+        clerk_user_id=clerk_user_id,
+        action="/v1/dashboard/actions",
+        http_method="GET",
+        http_path="/v1/dashboard/actions",
+        occurred_at=dt.datetime.utcnow(),
+    )
+    db_session.add(review)
+    await db_session.commit()
+
+    # Fire the delete — must NOT 500. With the SET NULL FK, bulk DELETE
+    # of org_memberships does not raise even though a compliance review
+    # row points at one.
+    resp = await _post_webhook(
+        async_client,
+        {"type": "organization.deleted", "data": {"id": "org_cmp_audit"}},
+        msg_id="msg_cmp_1",
+    )
+    assert resp.status_code == 200, resp.text
+
+    db_session.expire_all()
+    # Compliance review row still present. membership_id may be NULL (Postgres)
+    # or preserved (SQLite tests don't enforce FK actions); clerk_user_id is
+    # always preserved.
+    rows = (
+        await db_session.execute(
+            select(ComplianceReviewRecord).where(
+                ComplianceReviewRecord.org_id == org_id
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    assert rows[0].clerk_user_id == clerk_user_id
 
 
 @pytest.mark.asyncio

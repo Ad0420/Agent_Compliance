@@ -264,3 +264,104 @@ async def test_exports_endpoint_lists_export_hits(
     body = resp.json()
     paths = [e["path"] for e in body["exports"]]
     assert any(p.endswith("/export/csv") for p in paths)
+
+
+# ── CRITICAL #3: audit-loop exclusion on self-referential endpoints ──────────
+
+
+@pytest.mark.asyncio
+async def test_review_trail_does_not_self_audit(
+    async_client, keypair, seeded, db_session
+):
+    """A compliance_reviewer paging through /v1/dashboard/compliance/review-trail
+    must NOT generate a fresh compliance_review_records row on each request
+    — otherwise an unattended dashboard refresh leaks an audit row per
+    poll and the table grows unboundedly.
+    """
+    from app.models import ComplianceReviewRecord
+    from sqlalchemy import select
+
+    reviewer_token = _token("compliance_reviewer", keypair, seeded)
+
+    # Fire 5 sequential GETs.
+    for _ in range(5):
+        resp = await async_client.get(
+            "/v1/dashboard/compliance/review-trail",
+            headers={"Authorization": f"Bearer {reviewer_token}"},
+        )
+        assert resp.status_code == 200, resp.text
+
+    # The number of review_trail-self rows must remain 0 — no audit was
+    # written for any of these requests.
+    db_session.expire_all()
+    rows = (
+        await db_session.execute(
+            select(ComplianceReviewRecord).where(
+                ComplianceReviewRecord.org_id == seeded["org_id"],
+                ComplianceReviewRecord.http_path
+                == "/v1/dashboard/compliance/review-trail",
+            )
+        )
+    ).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_summary_does_not_self_audit(
+    async_client, keypair, seeded, db_session
+):
+    """/v1/dashboard/compliance/summary fires on every dashboard refresh.
+    Auditing it would 10x our review-records writes for zero forensic
+    value (it's just a 4-number aggregate).
+    """
+    from app.models import ComplianceReviewRecord
+    from sqlalchemy import select
+
+    reviewer_token = _token("compliance_reviewer", keypair, seeded)
+    resp = await async_client.get(
+        "/v1/dashboard/compliance/summary?days=30",
+        headers={"Authorization": f"Bearer {reviewer_token}"},
+    )
+    assert resp.status_code == 200
+
+    db_session.expire_all()
+    rows = (
+        await db_session.execute(
+            select(ComplianceReviewRecord).where(
+                ComplianceReviewRecord.org_id == seeded["org_id"],
+                ComplianceReviewRecord.http_path
+                == "/v1/dashboard/compliance/summary",
+            )
+        )
+    ).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_exports_list_does_not_self_audit(
+    async_client, keypair, seeded, db_session
+):
+    """/v1/dashboard/compliance/exports is the LIST of past exports — the
+    individual export hits are already audited. Auditing the list view
+    would double-record activity."""
+    from app.models import ComplianceReviewRecord
+    from sqlalchemy import select
+
+    reviewer_token = _token("compliance_reviewer", keypair, seeded)
+    resp = await async_client.get(
+        "/v1/dashboard/compliance/exports",
+        headers={"Authorization": f"Bearer {reviewer_token}"},
+    )
+    assert resp.status_code == 200
+
+    db_session.expire_all()
+    rows = (
+        await db_session.execute(
+            select(ComplianceReviewRecord).where(
+                ComplianceReviewRecord.org_id == seeded["org_id"],
+                ComplianceReviewRecord.http_path
+                == "/v1/dashboard/compliance/exports",
+            )
+        )
+    ).scalars().all()
+    assert rows == []

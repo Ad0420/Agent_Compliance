@@ -16,7 +16,16 @@ Two flavours of route live here:
 2. **Compliance-dashboard data routes** under
    ``/v1/dashboard/compliance/*`` that Phase 4b's UI will call to build
    summary cards, recent-risk lists, exports list, and the review-trail
-   itself.
+   itself. These wear ``compliance_review_audit(..., exclude_path_audit=True)``
+   so a reviewer reading their own log doesn't generate a fresh row on
+   every page refresh (audit-loop bug).
+
+Single-dep pattern: each audited route accepts ONE dependency,
+``compliance_review_audit([...])``. FastAPI's dependency DAG dedupes the
+underlying ``require_clerk_role`` call so RBAC enforcement still happens
+once per request — but routes no longer declare the role check twice
+(once in ``dependencies=[]``, once as a param), which was running the
+membership lookup + Clerk freshness re-check redundantly.
 """
 from __future__ import annotations
 
@@ -29,10 +38,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
-from ..middleware.clerk_auth import (
-    compliance_review_audit,
-    require_clerk_role,
-)
+from ..middleware.clerk_auth import compliance_review_audit
 from ..models import (
     ActionRecord,
     Approval,
@@ -43,6 +49,18 @@ from ..schemas.action import ActionRecordListResponse, ActionRecordResponse
 from ..schemas.approval import ApprovalListResponse, ApprovalResponse
 from ..services.export import generate_pdf, stream_csv
 from ..services.verification import verify_chain
+
+
+# Broad reader tier — admin, developer, compliance_reviewer all read.
+_READ_ROLES = ["admin", "developer", "compliance_reviewer"]
+# Review-trail / audit-of-audit data is admin + compliance_reviewer only.
+# Developers don't get a "look at my colleague's audit trail" surface.
+_REVIEW_TRAIL_ROLES = ["admin", "compliance_reviewer"]
+
+
+def _utcnow_naive() -> datetime:
+    """Tz-aware UTC, stripped to naïve for the DateTime columns."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _record_to_response(record: ActionRecord) -> ActionRecordResponse:
@@ -96,11 +114,10 @@ router = APIRouter(prefix="/v1/dashboard", tags=["dashboard-compliance"])
 @router.get(
     "/actions",
     response_model=ActionRecordListResponse,
-    dependencies=[Depends(compliance_review_audit())],
 )
 async def dashboard_list_actions(
     session: AsyncSession = Depends(get_db),
-    ctx: dict = Depends(require_clerk_role(["admin", "developer", "compliance_reviewer"])),
+    ctx: dict = Depends(compliance_review_audit(_READ_ROLES)),
     agent_name: Optional[str] = None,
     action_type: Optional[str] = None,
     result: Optional[str] = None,
@@ -157,12 +174,11 @@ async def dashboard_list_actions(
 @router.get(
     "/actions/{record_id}",
     response_model=ActionRecordResponse,
-    dependencies=[Depends(compliance_review_audit())],
 )
 async def dashboard_get_action(
     record_id: str,
     session: AsyncSession = Depends(get_db),
-    ctx: dict = Depends(require_clerk_role(["admin", "developer", "compliance_reviewer"])),
+    ctx: dict = Depends(compliance_review_audit(_READ_ROLES)),
 ) -> ActionRecordResponse:
     org_id = ctx["org_id"]
     row = (
@@ -180,11 +196,10 @@ async def dashboard_get_action(
 @router.get(
     "/approvals",
     response_model=ApprovalListResponse,
-    dependencies=[Depends(compliance_review_audit())],
 )
 async def dashboard_list_approvals(
     session: AsyncSession = Depends(get_db),
-    ctx: dict = Depends(require_clerk_role(["admin", "developer", "compliance_reviewer"])),
+    ctx: dict = Depends(compliance_review_audit(_READ_ROLES)),
     status: Optional[str] = Query(
         default=None, pattern="^(pending|approved|rejected|expired|cancelled)$"
     ),
@@ -209,12 +224,11 @@ async def dashboard_list_approvals(
 @router.get(
     "/approvals/{approval_id}",
     response_model=ApprovalResponse,
-    dependencies=[Depends(compliance_review_audit())],
 )
 async def dashboard_get_approval(
     approval_id: str,
     session: AsyncSession = Depends(get_db),
-    ctx: dict = Depends(require_clerk_role(["admin", "developer", "compliance_reviewer"])),
+    ctx: dict = Depends(compliance_review_audit(_READ_ROLES)),
 ) -> ApprovalResponse:
     org_id = ctx["org_id"]
     row = (
@@ -229,13 +243,10 @@ async def dashboard_get_approval(
     return ApprovalResponse.model_validate(row)
 
 
-@router.get(
-    "/violations",
-    dependencies=[Depends(compliance_review_audit())],
-)
+@router.get("/violations")
 async def dashboard_list_violations(
     session: AsyncSession = Depends(get_db),
-    ctx: dict = Depends(require_clerk_role(["admin", "developer", "compliance_reviewer"])),
+    ctx: dict = Depends(compliance_review_audit(_READ_ROLES)),
     severity: Optional[str] = Query(
         default=None, pattern="^(critical|high|medium|low)$"
     ),
@@ -277,13 +288,10 @@ async def dashboard_list_violations(
     }
 
 
-@router.get(
-    "/export/pdf",
-    dependencies=[Depends(compliance_review_audit())],
-)
+@router.get("/export/pdf")
 async def dashboard_export_pdf(
     session: AsyncSession = Depends(get_db),
-    ctx: dict = Depends(require_clerk_role(["admin", "developer", "compliance_reviewer"])),
+    ctx: dict = Depends(compliance_review_audit(_READ_ROLES)),
     start_date: Optional[datetime] = Query(default=None),
     end_date: Optional[datetime] = Query(default=None),
     agent_name: Optional[str] = Query(default=None),
@@ -298,7 +306,7 @@ async def dashboard_export_pdf(
         "action_type": action_type,
         "result": result,
     }
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = _utcnow_naive().strftime("%Y%m%d_%H%M%S")
     filename = f"vera_report_{timestamp}.pdf"
     pdf_bytes = await generate_pdf(session, org_id, filters)
     return Response(
@@ -308,13 +316,10 @@ async def dashboard_export_pdf(
     )
 
 
-@router.get(
-    "/export/csv",
-    dependencies=[Depends(compliance_review_audit())],
-)
+@router.get("/export/csv")
 async def dashboard_export_csv(
     session: AsyncSession = Depends(get_db),
-    ctx: dict = Depends(require_clerk_role(["admin", "developer", "compliance_reviewer"])),
+    ctx: dict = Depends(compliance_review_audit(_READ_ROLES)),
     start_date: Optional[datetime] = Query(default=None),
     end_date: Optional[datetime] = Query(default=None),
     agent_name: Optional[str] = Query(default=None),
@@ -331,7 +336,7 @@ async def dashboard_export_csv(
         "result": result,
         "limit": limit,
     }
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    timestamp = _utcnow_naive().strftime("%Y%m%d_%H%M%S")
     filename = f"vera_export_{timestamp}.csv"
     return StreamingResponse(
         stream_csv(session, org_id, filters),
@@ -340,13 +345,10 @@ async def dashboard_export_csv(
     )
 
 
-@router.get(
-    "/verify/chain",
-    dependencies=[Depends(compliance_review_audit())],
-)
+@router.get("/verify/chain")
 async def dashboard_verify_chain(
     session: AsyncSession = Depends(get_db),
-    ctx: dict = Depends(require_clerk_role(["admin", "developer", "compliance_reviewer"])),
+    ctx: dict = Depends(compliance_review_audit(_READ_ROLES)),
     start_seq: Optional[int] = Query(default=None),
     end_seq: Optional[int] = Query(default=None),
 ) -> dict:
@@ -360,20 +362,25 @@ async def dashboard_verify_chain(
     }
 
 
-@router.get(
-    "/data-subjects/{data_subject_id}",
-    dependencies=[Depends(compliance_review_audit())],
-)
+@router.get("/data-subjects/{data_subject_id}")
 async def dashboard_get_data_subject(
     data_subject_id: str,
     session: AsyncSession = Depends(get_db),
-    ctx: dict = Depends(require_clerk_role(["admin", "developer", "compliance_reviewer"])),
+    ctx: dict = Depends(compliance_review_audit(_READ_ROLES)),
     limit: int = Query(default=100, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
     """GDPR/HIPAA right-of-access lookup — all records mentioning this
     data subject. Every hit is audited so the org can prove which
-    reviewer pulled what subject's data."""
+    reviewer pulled what subject's data.
+
+    Note: ``data_subject_id`` is treated as PHI by the audit middleware —
+    the value is HMAC-hashed before it lands in
+    ``compliance_review_records.target_id`` / ``http_path``. Analysts can
+    still correlate within an org (same subject + same org → same hash)
+    but cannot reverse-engineer the raw identifier from a stolen audit
+    table.
+    """
     org_id = ctx["org_id"]
     actions_q = (
         select(ActionRecord)
@@ -394,26 +401,38 @@ async def dashboard_get_data_subject(
 
 
 # ── Compliance dashboard data routes (Phase 4b will consume) ────────────────
+#
+# These routes have ``exclude_path_audit=True``: role gating still happens
+# but no compliance review record is written. The reasoning:
+#
+#   /summary       — page-view metadata, low audit value, fires on every
+#                    dashboard refresh.
+#   /recent        — same; renders the dashboard hero list.
+#   /exports       — surfacing PAST exports is itself non-PHI. The export
+#                    rows are already audited via the underlying
+#                    /v1/dashboard/export/{pdf,csv} hits.
+#   /review-trail  — the audit-loop endpoint. A compliance_reviewer
+#                    paging through THEIR OWN audit log must NOT generate
+#                    fresh rows on every refresh (CRITICAL #3).
 
 compliance_router = APIRouter(
     prefix="/v1/dashboard/compliance", tags=["dashboard-compliance"]
 )
 
 
-@compliance_router.get(
-    "/summary",
-    dependencies=[Depends(compliance_review_audit())],
-)
+@compliance_router.get("/summary")
 async def compliance_summary(
     session: AsyncSession = Depends(get_db),
-    ctx: dict = Depends(require_clerk_role(["admin", "developer", "compliance_reviewer"])),
+    ctx: dict = Depends(
+        compliance_review_audit(_READ_ROLES, exclude_path_audit=True)
+    ),
     days: int = Query(default=30, ge=1, le=365),
 ) -> dict:
     """30-day rollup the compliance landing page uses for its hero
     cards: count of high-risk decisions, HITL approvals taken, and
     policy violations."""
     org_id = ctx["org_id"]
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+    cutoff = _utcnow_naive() - timedelta(days=days)
 
     high_risk_approvals_q = select(func.count(Approval.id)).where(
         Approval.org_id == org_id,
@@ -438,13 +457,12 @@ async def compliance_summary(
     }
 
 
-@compliance_router.get(
-    "/recent",
-    dependencies=[Depends(compliance_review_audit())],
-)
+@compliance_router.get("/recent")
 async def compliance_recent(
     session: AsyncSession = Depends(get_db),
-    ctx: dict = Depends(require_clerk_role(["admin", "developer", "compliance_reviewer"])),
+    ctx: dict = Depends(
+        compliance_review_audit(_READ_ROLES, exclude_path_audit=True)
+    ),
     limit: int = Query(default=20, le=100),
 ) -> dict:
     """Last N records that either failed, were blocked, or triggered a
@@ -466,13 +484,12 @@ async def compliance_recent(
     }
 
 
-@compliance_router.get(
-    "/exports",
-    dependencies=[Depends(compliance_review_audit())],
-)
+@compliance_router.get("/exports")
 async def compliance_exports(
     session: AsyncSession = Depends(get_db),
-    ctx: dict = Depends(require_clerk_role(["admin", "developer", "compliance_reviewer"])),
+    ctx: dict = Depends(
+        compliance_review_audit(_READ_ROLES, exclude_path_audit=True)
+    ),
     limit: int = Query(default=50, le=200),
 ) -> dict:
     """List of recent PDF/CSV exports the org has generated. We don't
@@ -506,17 +523,18 @@ async def compliance_exports(
     }
 
 
-@compliance_router.get(
-    "/review-trail",
-    # Reviewers can see their own trail; admins can see the team's. Developers
-    # are NOT a recorded role and don't need this view per F3 spec.
-    dependencies=[
-        Depends(compliance_review_audit(["admin", "compliance_reviewer"]))
-    ],
-)
+@compliance_router.get("/review-trail")
 async def compliance_review_trail(
     session: AsyncSession = Depends(get_db),
-    ctx: dict = Depends(require_clerk_role(["admin", "compliance_reviewer"])),
+    # Reviewers can see their own trail; admins can see the team's. Developers
+    # are NOT a recorded role and don't need this view per F3 spec.
+    # ``exclude_path_audit=True`` prevents the audit-loop: a reviewer paging
+    # through their own log otherwise generates a new row per request.
+    ctx: dict = Depends(
+        compliance_review_audit(
+            _REVIEW_TRAIL_ROLES, exclude_path_audit=True
+        )
+    ),
     limit: int = Query(default=100, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> dict:

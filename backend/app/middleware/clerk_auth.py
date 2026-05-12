@@ -40,19 +40,39 @@ Membership freshness re-check (post-PR #164 audit, CRITICAL #5 + #6):
     If ``CLERK_SECRET_KEY`` isn't configured, OR the Clerk API call fails
     (timeout / 5xx), we log a warning and fall back to the cached role —
     availability beats consistency for a defense-in-depth check.
+
+Compliance audit-of-audit pipeline (Workstream F3, post-PR #172 audit):
+    ``compliance_review_audit`` is now a thin shim. It runs ``require_clerk_role``
+    to enforce RBAC, then — if the active membership is a ``compliance_reviewer``
+    and the route hasn't opted out — stashes a context dict in a ``ContextVar``.
+    ``ComplianceAuditMiddleware`` reads that context AFTER the route handler
+    has run, augments it with the real ``response.status_code``, and writes a
+    ``ComplianceReviewRecord`` row using a fresh DB session so a rolled-back
+    request transaction can't take the audit row with it.
+
+    Why a middleware, not ``BackgroundTasks``: FastAPI's request-scoped
+    ``Response`` sentinel stays at ``status_code=None`` when the handler
+    returns a dict / Pydantic model (Starlette builds a separate
+    ``JSONResponse``). The old background-task implementation therefore wrote
+    ``status_code=200`` for every audit — including 4xx and 5xx — which is an
+    audit-integrity bug.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable
 
 import httpx
-from fastapi import BackgroundTasks, Depends, HTTPException, Request, Response
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response as StarletteResponse
 
 from ..config import settings
 from ..database import get_db
@@ -92,6 +112,14 @@ def _map_clerk_role(clerk_role: str | None) -> str:
 
 
 _CLERK_API_BASE = "https://api.clerk.com"
+
+
+def _utcnow_naive() -> datetime:
+    """Tz-aware UTC, stripped to naïve for the DateTime columns (which are
+    naïve at the SQLAlchemy type level). We compute the value in tz-aware
+    form for clarity, then drop the offset right before passing to the ORM.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 async def require_clerk_auth(
@@ -198,7 +226,7 @@ async def _maybe_refresh_membership(
         # CLERK_SECRET_KEY, we skip silently. The cached role is trusted.
         return membership
 
-    age = (datetime.utcnow() - membership.updated_at).total_seconds()
+    age = (_utcnow_naive() - membership.updated_at).total_seconds()
     if age < freshness:
         return membership
 
@@ -232,7 +260,7 @@ async def _maybe_refresh_membership(
         await session.commit()
         return None
 
-    now = datetime.utcnow()
+    now = _utcnow_naive()
     if fresh_role != membership.role:
         logger.info(
             "Refreshing role for user %s in org %s: %s -> %s",
@@ -347,89 +375,267 @@ def require_clerk_role(allowed_roles: Iterable[str]):
 
 
 # ── Compliance reviewer audit-of-audit (Workstream F3) ───────────────────────
+#
+# Request-scoped audit context. Populated by ``compliance_review_audit``
+# dep AFTER role gating succeeds and the active membership has role
+# ``compliance_reviewer``; consumed by ``ComplianceAuditMiddleware`` AFTER
+# the route handler has run so the recorded ``status_code`` is the real
+# response status (200/4xx/5xx).
+#
+# Implementation note: we stash the dict on ``request.state`` rather than
+# a module-level ``ContextVar``. Starlette's ``BaseHTTPMiddleware`` calls
+# ``call_next`` in a CHILD anyio task with its own copy of the context, so
+# a ``ContextVar.set()`` inside the route handler is invisible to the
+# middleware when ``call_next`` returns. ``request.state`` is the same
+# mutable object both sides see, which is exactly the shape we need.
+_AUDIT_STATE_KEY = "compliance_audit_ctx"
 
 
-async def _write_compliance_audit_row(
-    *,
-    org_id: str,
-    membership_id: str,
-    clerk_user_id: str,
-    http_path: str,
-    http_method: str,
-    query_params: dict[str, str] | None,
-    target_id: str | None,
-    status_code: int,
-    request_id: str | None,
-    ip_address: str | None,
-    user_agent: str | None,
-) -> None:
-    """Persist a ComplianceReviewRecord in a fresh session.
+# Path-segment param names known to carry PHI / patient identifiers.
+# Their values are HMAC-hashed before persistence so analysts can correlate
+# within an org but can't reverse the hash to recover the raw subject ID.
+# Extend this set as new routes introduce PHI-bearing path params.
+_PHI_PATH_PARAMS: set[str] = {
+    "data_subject_id",
+    "subject_id",
+    "patient_id",
+    "mrn",
+}
+
+# Path-segment param names that are safe to record verbatim. These are
+# internal record IDs / approvals / policy IDs etc. — opaque slugs the org
+# already controls, never sourced from user input.
+_SAFE_PATH_PARAMS: tuple[str, ...] = (
+    "id",
+    "record_id",
+    "approval_id",
+    "key_id",
+    "policy_id",
+    "violation_id",
+)
+
+# Query-param keys we allow to be recorded verbatim. Everything else is
+# dropped — defensive allowlist, since query strings sometimes carry
+# patient IDs / emails / search terms that have no place in an audit row.
+_QUERY_PARAM_ALLOWLIST: set[str] = {
+    "limit",
+    "offset",
+    "page",
+    "sort",
+    "order",
+    "since",
+    "until",
+    "from",
+    "to",
+    "before",
+    "after",
+    "agent_name",
+    "action_name",
+    "result",
+    "framework",
+    "model_id",
+    "severity",
+    "status",
+    "tier",
+    "days",
+    "start_date",
+    "end_date",
+    "action_type",
+    "start_seq",
+    "end_seq",
+}
+
+
+def _hash_phi(value: str, org_id: str) -> str:
+    """HMAC-SHA-256 of a PHI-bearing value, salted with the org_id.
+
+    Same value within the same org → same hash → analysts can correlate
+    reviewer activity across audit rows. Different orgs → different hashes
+    → no cross-tenant correlation. The truncated 32-char hex prefix keeps
+    audit rows readable while preserving >120 bits of collision resistance.
+
+    The org_id is not a secret per se but it's not exposed externally either;
+    combined with HMAC's PRF property this means an attacker who steals an
+    audit table dump cannot brute-force the original IDs without also
+    learning the org_id and the small space of plausible inputs.
+    """
+    key = f"vera-audit-phi-salt:{org_id}".encode()
+    return "sha256:" + hmac.new(key, value.encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def _extract_target_id(request: Request, org_id: str) -> str | None:
+    """Return the route's primary target identifier.
+
+    PHI-bearing path-params (see ``_PHI_PATH_PARAMS``) are hashed; safe
+    path-params are returned verbatim. Hash + safe is in a single pass so
+    routes with both kinds of params (e.g. ``/data-subjects/{sid}/records/{rid}``)
+    record the most specific one — currently the PHI param wins by
+    iteration order, which is what we want for HIPAA reporting.
+    """
+    path_params = request.path_params or {}
+    # First pass: PHI param if any (always wins; the route is about a subject).
+    for key, value in path_params.items():
+        if key in _PHI_PATH_PARAMS:
+            return _hash_phi(str(value), org_id)
+    # Second pass: first safe param in priority order.
+    for safe_key in _SAFE_PATH_PARAMS:
+        if safe_key in path_params:
+            return str(path_params[safe_key])
+    return None
+
+
+def _redact_http_path(path: str, org_id: str) -> str:
+    """If ``path`` contains a PHI segment, replace that segment with a hashed
+    token. Currently only ``/data-subjects/<phi>`` is recognised — extend
+    this list (and the test) as new PHI-bearing routes appear.
+    """
+    if "/data-subjects/" not in path:
+        return path
+    prefix, sep, rest = path.partition("/data-subjects/")
+    if not sep or not rest:
+        return path
+    parts = rest.split("/", 1)
+    hashed = _hash_phi(parts[0], org_id)
+    suffix = "/" + parts[1] if len(parts) > 1 else ""
+    return f"{prefix}/data-subjects/{hashed}{suffix}"
+
+
+def _redact_query_params(qp: dict[str, str]) -> dict[str, str] | None:
+    """Allowlist-filter query params. Anything not on
+    ``_QUERY_PARAM_ALLOWLIST`` is dropped. Empty dict → ``None`` (so the
+    JSON column stores NULL rather than ``{}``)."""
+    if not qp:
+        return None
+    filtered = {k: v for k, v in qp.items() if k in _QUERY_PARAM_ALLOWLIST}
+    return filtered or None
+
+
+def _infer_target_type(request: Request) -> str | None:
+    """Best-effort target-type label inferred from the route's path. Lets
+    a compliance investigator group review-trail rows by what the reviewer
+    was looking at without re-parsing every ``http_path``."""
+    path = request.url.path
+    if "/data-subjects/" in path:
+        return "data_subject"
+    if "/actions" in path:
+        return "action_record"
+    if "/approvals" in path:
+        return "approval"
+    if "/api-keys" in path:
+        return "api_key"
+    if "/violations" in path:
+        return "policy_violation"
+    return None
+
+
+async def _write_audit_record(ctx: dict[str, Any]) -> None:
+    """Persist a ``ComplianceReviewRecord`` from a fresh session.
 
     We deliberately don't share the route's session — a route-level
     rollback (e.g. a handler that raises before commit) would otherwise
-    discard the audit write too. Failures here are caught at the caller
-    so the originating request still completes."""
+    discard the audit write too. Best-effort: callers catch exceptions
+    so the originating response is never blocked on an audit failure.
+    """
     from ..database import AsyncSessionLocal
 
     record = ComplianceReviewRecord(
-        org_id=org_id,
-        membership_id=membership_id,
-        clerk_user_id=clerk_user_id,
-        action=http_path,
-        target_type=None,
-        target_id=target_id,
-        query_params=query_params or None,
-        response_metadata={"status_code": status_code},
-        http_method=http_method,
-        http_path=http_path,
-        request_id=request_id,
-        ip_address=ip_address,
-        user_agent=user_agent,
-        occurred_at=datetime.utcnow(),
+        org_id=ctx["org_id"],
+        membership_id=ctx["membership_id"],
+        clerk_user_id=ctx["clerk_user_id"],
+        action=ctx["action"],
+        target_type=ctx.get("target_type"),
+        target_id=ctx.get("target_id"),
+        query_params=ctx.get("query_params"),
+        response_metadata={"status_code": ctx["status_code"]},
+        http_method=ctx["http_method"],
+        http_path=ctx["http_path"],
+        request_id=ctx.get("request_id"),
+        ip_address=ctx.get("ip_address"),
+        user_agent=ctx.get("user_agent"),
+        occurred_at=ctx["occurred_at"],
     )
     async with AsyncSessionLocal() as audit_session:
         audit_session.add(record)
         await audit_session.commit()
 
 
-def compliance_review_audit(allowed_roles: Iterable[str] | None = None):
-    """Dependency factory that gates a route on RBAC AND queues a
-    ``ComplianceReviewRecord`` write to run after the response is sent —
-    but only when the active membership has role ``compliance_reviewer``.
+class ComplianceAuditMiddleware(BaseHTTPMiddleware):
+    """Captures the REAL ``response.status_code`` after the route runs and
+    writes the ``ComplianceReviewRecord`` row.
+
+    The previous implementation used ``BackgroundTasks`` and read the
+    request-scoped ``Response`` sentinel. That sentinel only carries the
+    status code when the handler explicitly mutated it (rare); when the
+    handler returns a dict / Pydantic model, Starlette builds a separate
+    ``JSONResponse`` and the sentinel stays at ``None`` → every audit
+    recorded ``status_code=200`` regardless of the actual response. The
+    middleware approach sees the assembled response on its way back through
+    the ASGI stack and reads the true status code.
+
+    Audit failures are caught and logged at WARN. F3 is defense-in-depth —
+    we do NOT break the originating request when the audit-side commit
+    fails.
+    """
+
+    async def dispatch(
+        self, request: Request, call_next
+    ) -> StarletteResponse:
+        # The dep populates request.state.compliance_audit_ctx if it
+        # decides to audit. We don't pre-set it here; absence ==
+        # "nothing to audit".
+        response = await call_next(request)
+        ctx = getattr(request.state, _AUDIT_STATE_KEY, None)
+        if ctx is not None:
+            ctx["status_code"] = response.status_code
+            try:
+                await _write_audit_record(ctx)
+            except Exception as exc:  # noqa: BLE001 — by design
+                logger.warning(
+                    "Failed to record compliance review action: %s",
+                    exc,
+                    extra={
+                        "clerk_user_id": ctx.get("clerk_user_id"),
+                        "path": ctx.get("http_path"),
+                    },
+                )
+        return response
+
+
+def compliance_review_audit(
+    allowed_roles: Iterable[str] | None = None,
+    *,
+    exclude_path_audit: bool = False,
+):
+    """Composite dependency: enforce RBAC AND register an audit-of-audit
+    context entry for the active request.
+
+    Replaces the old "every route declares both ``Depends(compliance_review_audit())``
+    AND ``Depends(require_clerk_role(...))``" pattern. FastAPI's dep-DAG
+    dedupes ``require_clerk_role`` within a single request, so routes that
+    use this dep get role gating + audit registration in one go.
 
     Usage::
 
         @router.get(
             "/v1/dashboard/actions",
-            dependencies=[Depends(compliance_review_audit())],
+            response_model=ActionRecordListResponse,
         )
+        async def list_actions(
+            ctx: dict = Depends(
+                compliance_review_audit(
+                    ["admin", "developer", "compliance_reviewer"]
+                )
+            ),
+        ): ...
 
-    By default the gate allows ``admin``, ``developer``, and
-    ``compliance_reviewer`` (the broadest read tier from the F1 matrix).
-    Callers can override by passing an explicit list — e.g.
-    ``compliance_review_audit(["admin", "compliance_reviewer"])`` for the
-    review-trail endpoint where developers should be 403'd.
+    ``allowed_roles``: roles permitted to call the route. Default is
+    ``admin / developer / compliance_reviewer`` — the broadest read tier.
 
-    Implementation:
-        We hand the audit write to FastAPI's ``BackgroundTasks``. FastAPI
-        attaches it to the OUTGOING response (which it builds AFTER the
-        route runs), and Starlette executes background tasks after the
-        body has been sent. By that point the response status_code is
-        final.
-
-        The dep-injected ``Response`` parameter is the request-scoped
-        sentinel handlers use to mutate status/headers; reading
-        ``response.status_code`` at task-run time gives the route's set
-        status when the handler returned a value (FastAPI copies it onto
-        the actual JSONResponse it builds). When the handler returned a
-        Response instance directly, the sentinel's status stays at None,
-        and we fall back to 200 — the only way to get here is the
-        request hitting the handler successfully (failures short-circuit
-        before this dep finishes).
-
-        Audit failures are logged at WARN and swallowed. F3 is defense-
-        in-depth — losing one audit row must not break the originating
-        request.
+    ``exclude_path_audit``: when ``True``, the role gate still runs but no
+    audit record is written. Use on the review-trail endpoint and other
+    self-referential dashboard pages so a compliance_reviewer reading their
+    own log doesn't generate fresh log rows on every refresh
+    (audit-loop bug — CRITICAL #3).
     """
     allowed = tuple(allowed_roles) if allowed_roles else (
         "admin",
@@ -440,60 +646,38 @@ def compliance_review_audit(allowed_roles: Iterable[str] | None = None):
 
     async def _dep(
         request: Request,
-        response: Response,
-        background_tasks: BackgroundTasks,
         ctx: dict[str, Any] = Depends(gate),
     ) -> dict[str, Any]:
+        if exclude_path_audit:
+            return ctx
         membership = ctx.get("membership")
         if membership is None or membership.role != "compliance_reviewer":
             return ctx
 
-        # Snapshot now, while membership is still session-attached. The
-        # background task only sees primitives.
-        path_params = request.path_params or {}
         org_id = membership.org_id
-        membership_id = membership.id
-        clerk_user_id = membership.clerk_user_id
-        http_path = request.url.path
-        http_method = request.method
-        query_params = dict(request.query_params)
-        target_id = (
-            path_params.get("id")
-            or path_params.get("record_id")
-            or path_params.get("approval_id")
-            or path_params.get("data_subject_id")
-        )
-        request_id = getattr(request.state, "request_id", None)
-        ip_address = request.client.host if request.client else None
-        user_agent = request.headers.get("user-agent")
-
-        async def _emit_audit() -> None:
-            status_code = response.status_code or 200
-            try:
-                await _write_compliance_audit_row(
-                    org_id=org_id,
-                    membership_id=membership_id,
-                    clerk_user_id=clerk_user_id,
-                    http_path=http_path,
-                    http_method=http_method,
-                    query_params=query_params,
-                    target_id=target_id,
-                    status_code=status_code,
-                    request_id=request_id,
-                    ip_address=ip_address,
-                    user_agent=user_agent,
-                )
-            except Exception as exc:  # noqa: BLE001 — by design, see docstring
-                logger.warning(
-                    "Failed to record compliance review action: %s",
-                    exc,
-                    extra={
-                        "clerk_user_id": clerk_user_id,
-                        "path": http_path,
-                    },
-                )
-
-        background_tasks.add_task(_emit_audit)
+        audit_data: dict[str, Any] = {
+            "org_id": org_id,
+            "membership_id": membership.id,
+            "clerk_user_id": membership.clerk_user_id,
+            "action": _redact_http_path(request.url.path, org_id),
+            "target_type": _infer_target_type(request),
+            "target_id": _extract_target_id(request, org_id),
+            "query_params": _redact_query_params(dict(request.query_params)),
+            "http_method": request.method,
+            "http_path": _redact_http_path(request.url.path, org_id),
+            "request_id": getattr(request.state, "request_id", None),
+            "ip_address": request.client.host if request.client else None,
+            "user_agent": request.headers.get("user-agent"),
+            "occurred_at": _utcnow_naive(),
+            # status_code populated by ComplianceAuditMiddleware after the
+            # route returns. We pre-set 0 here as a sentinel so a developer
+            # reading a record dump can tell at a glance if the middleware
+            # never ran (which would be a bug).
+            "status_code": 0,
+        }
+        # Stash on request.state — middleware reads it after the response
+        # is built (which is where the real status_code becomes known).
+        setattr(request.state, _AUDIT_STATE_KEY, audit_data)
         return ctx
 
     return _dep
@@ -503,4 +687,5 @@ __all__ = [
     "require_clerk_auth",
     "require_clerk_role",
     "compliance_review_audit",
+    "ComplianceAuditMiddleware",
 ]
