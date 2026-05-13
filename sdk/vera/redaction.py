@@ -337,6 +337,7 @@ _MEDTECH_BLOCK_KEYS: set[str] = {
     "address", "street", "street_address",
     "city", "state", "zip", "zipcode", "zip_code", "postal_code",
     "phone", "phone_number", "mobile", "cell",
+    "fax", "fax_number",
     "email", "email_address",
     "diagnosis", "icd10", "icd_10", "icd10_code",
     "medication", "prescription", "rx",
