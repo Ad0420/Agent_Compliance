@@ -1,3 +1,15 @@
+/**
+ * /regulations/eu-ai-act — moved from `(dashboard)/compliance/page.tsx`.
+ *
+ * The original "AI Compliance Guide" page was a long static reference covering
+ * the EU AI Act, Colorado SB 24-205, and how Vera maps to each requirement. It
+ * was previously routed at `/compliance` inside the legacy dashboard group, but
+ * Phase 4b F2 needed `/compliance` for the live compliance-reviewer dashboard.
+ *
+ * We didn't want to lose the reference content — it's genuinely useful for
+ * customers — so it lives here under the public `/regulations/*` namespace
+ * (which is already linked from the marketing nav).
+ */
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -124,9 +136,9 @@ const HIGH_RISK_CATEGORIES = [
   "Housing & rental decisions",
 ];
 
-export default function CompliancePage() {
+export default function EuAiActReferencePage() {
   return (
-    <div className="space-y-8 max-w-5xl">
+    <main className="mx-auto max-w-5xl space-y-8 p-6">
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold tracking-tight">AI Compliance Guide</h1>
@@ -378,6 +390,6 @@ export default function CompliancePage() {
           </div>
         </CardContent>
       </Card>
-    </div>
+    </main>
   );
 }
