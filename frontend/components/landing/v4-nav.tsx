@@ -8,6 +8,7 @@ import { Wordmark } from "./brand";
 const NAV_ITEMS: Array<[string, string]> = [
   ["Product", "/"],
   ["Regulations", "/regulations"],
+  ["Maturity", "/maturity"],
 ];
 
 const linkStyle = (hot: boolean): CSSProperties => ({
