@@ -7,6 +7,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `vera` command-line interface (Phase 4a DX-F) with three subcommands:
+  - `vera config show` — print the effective configuration (env vars +
+    defaults). API key is masked by default; pass `--reveal-secrets` to
+    print it in full.
+  - `vera ping` — verify the API key authenticates against the
+    `/v1/verify` endpoint. Reports latency in ms.
+  - `vera tail` — tail recent records for the org via `query_actions`.
+    Supports `--agent`, `--result`, `--follow`, `--interval`, `--json`,
+    and `--limit` (clamped to 500).
+
+  Entry point registered in `pyproject.toml` as `vera = "vera.cli:main"`.
+  Uses Click — `click>=8.0` is now a **runtime dependency** so the CLI
+  works out of the box after `pip install vera-sdk` (no extra needed).
 - `vera.init(api_key=..., agent_name=...)` Sentry-style one-call setup.
   Constructs a `VeraClient` from explicit kwargs + env vars and registers it
   as the default for `@audit` decorators. Calling `init()` twice replaces

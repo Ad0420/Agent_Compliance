@@ -85,6 +85,33 @@ def test_loan_decision(vera_sdk_recording):
 
 No mocks, no HTTP server, no API key required.
 
+### Command-line interface
+
+The `vera` CLI ships with the SDK. Three subcommands for ops + dev
+verification:
+
+```bash
+# Verify your env vars + defaults resolve correctly
+vera config show
+
+# Verify the API key authenticates against Vera
+vera ping
+
+# Tail recent records for the org
+vera tail --limit 20
+
+# Follow new records as they arrive
+vera tail --follow --interval 2
+
+# Emit JSON lines for pipelines (jq, fluentd, etc.)
+vera tail --json | jq '.action_name'
+```
+
+All commands respect `VERA_API_KEY`, `VERA_API_URL`, `VERA_AGENT_NAME`,
+and the rest of the `VERA_*` env vars. `config show` masks the API key
+by default; pass `--reveal-secrets` to print it in full. Run
+`vera <command> --help` for the full set of options.
+
 ## More patterns
 
 ### Sync client — record actions directly
