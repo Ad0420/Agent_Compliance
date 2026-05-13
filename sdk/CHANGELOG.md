@@ -6,6 +6,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Documentation
+- README expansion (Phase 4b DX-G + B2). The README is now a reference doc
+  instead of a quickstart-only file. New sections:
+  - 5-minute quickstart with signup, install, init, verify, and dashboard
+    steps.
+  - Concepts section for `vera.init()`, `@audit`, `Redactor`, dev mode,
+    durable spool, and branded errors.
+  - Four framework cookbooks (OpenAI, Anthropic, LangChain, CrewAI), each
+    with a minimal and a realistic example plus an example audit-record
+    JSON.
+  - HIPAA and medtech section covering the 18 PHI Safe Harbor identifiers,
+    opaque vs MRN-shaped patient IDs, free-text PHI handling, custom block
+    keys and patterns, and the durable-spool encryption-at-rest requirement.
+  - Environment variables table covering every `VERA_*` env var the SDK
+    reads.
+  - Command-line interface section with `vera config show`, `vera ping`
+    (with exit codes), and `vera tail` (with `--follow`, `--json`, `jq`
+    pipelines).
+  - Troubleshooting section with the 11 most common errors and resolutions.
+  - HTTP API reference link.
+
 ### Added
 - `vera` command-line interface (Phase 4a DX-F) with three subcommands:
   - `vera config show` — print the effective configuration (env vars +
