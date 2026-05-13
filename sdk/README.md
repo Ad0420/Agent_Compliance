@@ -2,9 +2,9 @@
 
 Python SDK for **Vera**, a runtime trust layer for AI agents. Vera gives every
 agent action an immutable, cryptographically verifiable audit trail; supports
-human-in-the-loop (HITL) approvals for high-risk actions; and enforces policies
-in real time. Built for teams shipping AI into regulated contexts (EU AI Act,
-GDPR, NIST AI RMF, HIPAA).
+human-in-the-loop (HITL) approvals for high-risk actions; and captures policy
+violations so they're queryable after the fact. Built for teams shipping AI
+into regulated contexts (EU AI Act, GDPR, NIST AI RMF, HIPAA).
 
 If your agent makes decisions a regulator, auditor, or DPO might one day need
 to inspect, Vera turns "what did the model do?" from an after-the-fact
@@ -110,8 +110,11 @@ vera.init(
 ```
 
 Calling `init()` twice replaces the previous default and closes the old
-client. Use `vera.init_async(...)` (or `vera.init_async_awaitable(...)`) for
-async codepaths.
+client. For async codepaths use `vera.init_async(...)` (synchronous entry
+point — drops in-flight records on re-init) at startup, or
+`vera.init_async_awaitable(...)` (async; awaits the previous client's drain
+on re-init) inside long-running uvicorn workers where mid-process re-init is
+possible and losing queued records is unacceptable.
 
 ### `@vera.audit` decorator
 
@@ -257,17 +260,25 @@ from vera.redaction import Redactor
 os.environ.setdefault("VERA_SPOOL_PATH", "/var/lib/vera/spool.db")
 # VERA_SPOOL_KEY must be set in the environment from your secret manager.
 
+# Build the redactor once. AuditedOpenAI does NOT inherit the redactor
+# passed to vera.init() — it must be passed explicitly to the wrapper.
+redactor = Redactor.medtech(
+    extra_block_keys={"insurance_member_id"},
+)
+
 vera.init(
     api_key=os.environ["VERA_API_KEY"],
     agent_name="medical-scribe",
     framework="openai",
     model_id="gpt-4o",
-    redactor=Redactor.medtech(
-        extra_block_keys={"insurance_member_id"},
-    ),
+    redactor=redactor,
 )
 
-client = AuditedOpenAI(openai.OpenAI(), ledger_client=vera.get_client())
+client = AuditedOpenAI(
+    openai.OpenAI(),
+    ledger_client=vera.get_client(),
+    redactor=redactor,
+)
 
 response = client.chat.completions.create(
     model="gpt-4o",
@@ -409,7 +420,13 @@ print(result.content)
 ```
 
 **Realistic** (agent with tools, PHI redactor, attached at the agent level so
-every nested call inherits it):
+every nested call inherits it). The agent constructor (`create_tool_calling_agent`)
+requires `langchain>=0.1.17`; the SDK extras only install
+`langchain-core`. Install both:
+
+```bash
+pip install "vera-sdk[langchain]" "langchain>=0.1.17"
+```
 
 ```python
 import os
@@ -522,6 +539,12 @@ disable_crewai_auditing()`. Useful for tests.
 
 ## HIPAA and medtech
 
+> ⚠️ **Using `Redactor.medtech()` is one piece of HIPAA-grade handling. It
+> does not make your deployment HIPAA-compliant on its own.** You still need
+> a signed BAA with Vera and your other vendors, encryption at rest, access
+> controls, audit-log integrity monitoring, and BCP/DR — none of which are
+> SDK concerns.
+
 Vera ships first-class support for HIPAA-aware workloads. The path:
 
 1. Sign a Business Associate Agreement (BAA) with Vera. Required before
@@ -562,7 +585,7 @@ vera.init(api_key="al_live_...", agent_name="my-agent", redactor=redactor)
 | Geographic subdivisions | block_keys: `address`, `street`, `city`, `state`, `zip`, `postal_code`; schema REDACT |
 | Dates (DOB, admission, discharge, death) | regex: `dob` pattern (MM/DD/YYYY, ISO, DD-Mon-YYYY); schema PATTERN on `dob` and `date_of_birth` |
 | Phone numbers | regex: `phone` pattern; block_keys: `phone`, `phone_number`, `mobile`, `cell` |
-| Fax numbers | block_keys: same as phone; declare a `fax` field via custom schema |
+| Fax numbers | block_keys: `fax`, `fax_number` |
 | Email addresses | regex: `email` pattern; block_keys: `email`, `email_address` |
 | Social Security numbers | regex: `ssn` pattern; block_keys: `ssn`, `social_security` |
 | Medical record numbers | regex: `mrn` pattern; block_keys: `mrn`, `medical_record_number`; schema PATTERN |
@@ -584,9 +607,9 @@ them is for clarity, not safety.
 
 ### Opaque patient IDs vs MRN-shaped IDs
 
-Opaque, randomly-generated `patient_id` values (e.g. `pat_a8f3b2c1`) are
-HIPAA-safe. The starter schema marks `patient_id` as `PASSTHROUGH` so audit
-records stay searchable.
+**Use opaque, randomly-generated `patient_id` values (e.g. `pat_a8f3b2c1`).**
+Opaque IDs are HIPAA-safe and the starter schema marks `patient_id` as
+`PASSTHROUGH` so audit records stay searchable.
 
 If your `patient_id` is an MRN or otherwise contains real PHI, force
 redaction:
@@ -600,22 +623,35 @@ with real-world identifiers.
 
 ### Free-text PHI
 
-Regex cannot reliably scrub names, dates, and identifiers from prose. The
-starter schema redacts `notes`, `description`, `summary`, `comment`,
+> ⚠️ **Use opaque, randomly-generated identifiers for patients, encounters,
+> and clinicians.** Free-text fields (notes, descriptions, prose) cannot be
+> reliably scrubbed by regex — names, dates, and identifiers slip through any
+> pattern pass. Declare every prose field that may contain PHI in your
+> `Redactor` schema, or omit it from audit payloads entirely.
+
+The starter schema redacts `notes`, `description`, `summary`, `comment`,
 `comments`, `message`, `transcript`, `audio_transcript`, `email_body`,
 `body`, and `text` wholesale.
 
 If you have a free-text field with PHI that uses a non-default name, declare
-it explicitly:
+it explicitly. Note that `Schema` builds its case-insensitive lookup table at
+construction time, so mutating `schema.fields` AFTER construction does not
+take effect. Build the merged schema up front and pass it to
+`Redactor.medtech(schema=...)`:
 
 ```python
-from vera.redaction import Redactor
-from vera.redaction import Schema, FieldRule, FieldPolicy
+from vera.redaction import Redactor, Schema, FieldRule, FieldPolicy
 
-schema = Redactor.medtech_starter_schema()
-schema.fields["physician_notes"] = FieldRule(
-    FieldPolicy.REDACT,
-    description="Free-text physician notes.",
+base = Redactor.medtech_starter_schema()
+schema = Schema(
+    fields={
+        **base.fields,
+        "physician_notes": FieldRule(
+            FieldPolicy.REDACT,
+            description="Free-text physician notes.",
+        ),
+    },
+    unmapped_policy=base.unmapped_policy,
 )
 redactor = Redactor.medtech(schema=schema)
 ```
@@ -664,6 +700,7 @@ always win; env vars are the fallback.
 | `VERA_MODEL_ID` | (none) | Optional LLM model identifier (e.g. `gpt-4o`, `claude-sonnet-4-6`). |
 | `VERA_FRAMEWORK` | (none) | Optional framework name: `openai`, `anthropic`, `langchain`, `crewai`. |
 | `VERA_DEV` | (unset) | Set to `1` to enable dev mode. Records print to stderr; no API key required. |
+| `VERA_DEV_CONFIRM` | (unset) | Bypass the production-key guard when running in dev mode. Set to `1` only if you really need `VERA_DEV=1` with a production-shaped API key (`al_live_*`). Without this, dev mode refuses to start with such keys to prevent accidentally silencing real audit logging in production. |
 | `VERA_SPOOL_PATH` | (none) | Path to the durable encrypted SQLite spool. Requires `VERA_SPOOL_KEY`. |
 | `VERA_SPOOL_KEY` | (none) | AES-256-GCM passphrase for the durable spool. Mandatory when `VERA_SPOOL_PATH` is set. |
 
@@ -684,15 +721,14 @@ Print the effective configuration: env vars and computed defaults.
 
 ```bash
 vera config show
-# api_url:         https://api.usevera.xyz
-# api_key:         ...x9f2
-# agent_name:      loan-screener
-# agent_version:   (unset)
-# model_id:        gpt-4o
-# framework:       openai
-# spool_path:      (unset)
-# dev_mode:        false
-# sdk_version:     0.5.0
+#   api_url                 https://api.usevera.xyz
+#   api_key                 ...x9f2
+#   agent_name              loan-screener
+#   agent_version           (unset)
+#   model_id                gpt-4o
+#   framework               openai
+#   persistent_buffer_path  (off)
+#   dev_mode                off
 ```
 
 The API key is masked by default (`...<last4>` for keys at least 12 chars,
@@ -794,10 +830,13 @@ You're sending records faster than your plan allows. Options:
 
 ### `VeraValidationError: ...`
 
-Your `record_action(...)` call has an invalid field. Usually a missing
-`action_name`, a `risk_tier` outside `{low, medium, high, critical}`, or a
-`data_subject_id` longer than 255 chars. The exception message names the
-field.
+A call has an invalid field. The exception message names the offending
+field. Common cases:
+
+- `record_action(...)`: missing `action_name`, or `action_name` longer than
+  the server limit. The exception message names the field.
+- `request_approval(...)`: `risk_tier` outside `{low, medium, high,
+  critical}`, or a `data_subject_id` longer than 255 chars.
 
 ### Spool refuses to start: "Spool requires a non-empty passphrase"
 
