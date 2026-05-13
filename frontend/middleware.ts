@@ -10,6 +10,11 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 //                            The page-level `<SignedIn>` guard is keep-honest
 //                            UX; the middleware backstop is what actually
 //                            blocks unauthenticated requests.
+//   - `/compliance(.*)`    — Phase 4b F2 compliance reviewer dashboard. Same
+//                            shape as `/api-keys`: lives outside `(dashboard)`
+//                            specifically to be Clerk-gated. The page-level
+//                            server component re-checks `auth()` for defense
+//                            in depth.
 //   - `/api/dashboard(.*)` — Next.js route handlers that proxy to the Vera
 //                            backend's `/v1/dashboard/*` endpoints. These
 //                            handlers attach the Clerk session token; without
@@ -25,6 +30,7 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 const isProtectedRoute = createRouteMatcher([
   "/api/protected(.*)",
   "/api-keys(.*)",
+  "/compliance(.*)",
   "/api/dashboard(.*)",
   // /dashboard(.*) intentionally NOT included until Phase 3 (E4) migrates
   // dashboard pages from legacy localStorage API-key auth to Clerk sessions.
