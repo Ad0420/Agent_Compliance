@@ -101,10 +101,10 @@ def upgrade() -> None:
                 "success",
                 sa.Boolean(),
                 nullable=True,
-                server_default=sa.text("0"),
+                server_default=sa.text("false"),
             ),
         )
-        op.execute("UPDATE processed_webhook_events SET success = 1")
+        op.execute("UPDATE processed_webhook_events SET success = TRUE")
         dialect = bind.dialect.name
         if dialect == "sqlite":
             pass

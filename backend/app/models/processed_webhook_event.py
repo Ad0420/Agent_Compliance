@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, String, func
+from sqlalchemy import Boolean, DateTime, String, false, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base
@@ -39,5 +39,5 @@ class ProcessedWebhookEvent(Base):
     # handlers therefore eventually exhaust the Svix retry budget instead of
     # infinite-retrying (the row stays as a tombstone for investigation).
     success: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default="0", default=False
+        Boolean, nullable=False, server_default=false(), default=False
     )
