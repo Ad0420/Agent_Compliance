@@ -1,4 +1,25 @@
-# Design System — Vera
+# Design System — Vera Landing & Marketing Surface
+
+> **Scope:** This document is the design system for Vera's **marketing
+> surface only** — landing page, regulations page, marketing sub-pages,
+> login/register, and any other public-facing content. It does NOT
+> cover the in-app dashboard.
+>
+> **Dashboard design system:** see
+> [dashboard-design-system.md](dashboard-design-system.md) for the
+> visual tokens and component library used in the in-app surface.
+> The dashboard inherits this system's typography, palette, and posture,
+> but applies them at higher density with an operational component
+> library (sidebar nav, tables, AI chat, severity badges, etc.).
+>
+> **Dashboard UX & wireframes:** see [dashboard-design.md](dashboard-design.md).
+>
+> The two systems share foundational tokens (Petrona display, Inter body,
+> warm-cream `#FEFAF3` paper, espresso `#1F1610` ink, no emerald) so the
+> brand reads as continuous across surfaces. They diverge on density,
+> layout, and component vocabulary.
+
+---
 
 ## Product Context
 
