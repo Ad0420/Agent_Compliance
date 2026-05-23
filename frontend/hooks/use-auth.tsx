@@ -1,94 +1,76 @@
 "use client";
 
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
-import { useClerk } from "@clerk/nextjs";
-import { getApiKey, setApiKey as storeApiKey, clearApiKey, getIsAdmin, setIsAdmin as storeIsAdmin } from "@/lib/auth";
-import { getOrganization, getApiKeys } from "@/lib/api-client";
+import { createContext, useContext, useCallback, type ReactNode } from "react";
+import { useClerk, useUser, useOrganization } from "@clerk/nextjs";
+import { useQuery } from "@tanstack/react-query";
+import { getOrganization } from "@/lib/api-client";
 import type { Organization } from "@/lib/api-types";
 
+/**
+ * Dashboard auth state, sourced from Clerk (E4 cutover).
+ *
+ * What changed in E4:
+ *   - The legacy localStorage `apiKey` is gone. Humans sign in with Clerk;
+ *     the SDK still uses `al_*` Bearer keys, but those keys are minted from
+ *     /api-keys, not pasted into a login form.
+ *   - `organization` is fetched from the backend with the active Clerk
+ *     session attached by `lib/api-client.ts`. The Clerk org id is the join
+ *     key on the backend side (`OrgMembership.clerk_org_id`).
+ *   - `isAdmin` is derived from the Clerk org role. The backend is still the
+ *     source of truth for write/admin actions — UI gating off this is
+ *     "keep honest" only.
+ */
 interface AuthState {
-  apiKey: string | null;
   organization: Organization | null;
   isAdmin: boolean;
   isLoading: boolean;
+  isSignedIn: boolean;
 }
 
 interface AuthContextValue extends AuthState {
-  login: (apiKey: string) => Promise<void>;
   logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const { signOut: clerkSignOut } = useClerk();
-  const [state, setState] = useState<AuthState>({
-    apiKey: null,
-    organization: null,
-    isAdmin: false,
-    isLoading: true,
+  const { signOut } = useClerk();
+  const { isLoaded: userLoaded, isSignedIn } = useUser();
+  const { organization: clerkOrg, membership } = useOrganization();
+
+  // Fetch the backend Organization row whenever there's an active Clerk
+  // session with an active org context. React Query handles caching across
+  // route changes so the dashboard doesn't re-hit /v1/organizations/me on
+  // every navigation.
+  const { data: organization, isPending: orgPending } = useQuery({
+    queryKey: ["organization", clerkOrg?.id],
+    queryFn: getOrganization,
+    enabled: Boolean(isSignedIn && clerkOrg?.id),
+    staleTime: 60_000,
   });
 
-  useEffect(() => {
-    const key = getApiKey();
-    if (key) {
-      getOrganization()
-        .then((org) => {
-          setState({
-            apiKey: key,
-            organization: org,
-            isAdmin: getIsAdmin(),
-            isLoading: false,
-          });
-        })
-        .catch(() => {
-          clearApiKey();
-          setState({ apiKey: null, organization: null, isAdmin: false, isLoading: false });
-        });
-    } else {
-      setState((prev) => ({ ...prev, isLoading: false }));
-    }
-  }, []);
-
-  const login = useCallback(async (apiKey: string) => {
-    storeApiKey(apiKey);
-    const org = await getOrganization();
-
-    // Probe for admin access
-    let isAdmin = false;
-    try {
-      await getApiKeys();
-      isAdmin = true;
-    } catch {
-      isAdmin = false;
-    }
-    storeIsAdmin(isAdmin);
-
-    setState({ apiKey, organization: org, isAdmin, isLoading: false });
-  }, []);
+  // Clerk org role values look like "org:admin", "admin", "org:member", etc.
+  // Treat any "admin" variant as admin for UI gating; everything else is
+  // non-admin. Backend still 403s on write/admin if the membership row
+  // disagrees, so this is keep-honest, not load-bearing.
+  const role = membership?.role ?? "";
+  const isAdmin = role === "org:admin" || role === "admin";
 
   const logout = useCallback(async () => {
-    // Clear the legacy API key first — this always succeeds and is what the
-    // existing pilot users rely on. The Clerk signOut is best-effort: errors
-    // are swallowed so a Clerk outage can't trap a user in a logged-in UI.
-    clearApiKey();
-    try {
-      await clerkSignOut();
-    } catch (e) {
-      // Don't surface to UI — the legacy session is already gone, which is
-      // the user's primary expectation. Log for debugging.
-      console.warn("Clerk signOut failed (legacy logout still completed)", e);
-    }
-    setState({ apiKey: null, organization: null, isAdmin: false, isLoading: false });
-  }, [clerkSignOut]);
+    await signOut({ redirectUrl: "/login" });
+  }, [signOut]);
 
-  const contextValue: AuthContextValue = { ...state, login, logout };
+  const isLoading = !userLoaded || (Boolean(isSignedIn) && orgPending);
 
-  return (
-    <AuthContext.Provider value={contextValue}>
-      {children}
-    </AuthContext.Provider>
-  );
+  const value: AuthContextValue = {
+    organization: organization ?? null,
+    isAdmin,
+    isLoading,
+    isSignedIn: Boolean(isSignedIn),
+    logout,
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

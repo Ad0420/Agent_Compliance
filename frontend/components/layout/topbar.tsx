@@ -1,21 +1,18 @@
 "use client";
 
-import { useAuth } from "@/hooks/use-auth";
+import { OrganizationSwitcher, UserButton } from "@clerk/nextjs";
 import { useChainVerification } from "@/hooks/use-verification";
-import { useRouter } from "next/navigation";
-import { Button } from "@/components/ui/button";
-import { LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+/**
+ * Dashboard topbar (post-E4).
+ *
+ * Chain-status pill on the left (unchanged) + Clerk's OrganizationSwitcher
+ * and UserButton on the right. UserButton owns sign-out; there's no more
+ * legacy localStorage to clear, so the bespoke Logout button is gone.
+ */
 export function Topbar() {
-  const { organization, logout } = useAuth();
   const { data: chainStatus } = useChainVerification();
-  const router = useRouter();
-
-  const handleLogout = async () => {
-    await logout();
-    router.push("/login");
-  };
 
   return (
     <header className="fixed left-56 right-0 top-0 z-20 flex h-14 items-center justify-between border-b border-border bg-card/80 px-6 backdrop-blur-sm">
@@ -34,14 +31,16 @@ export function Topbar() {
           </div>
         )}
       </div>
-      <div className="flex items-center gap-4">
-        {organization && (
-          <span className="text-sm text-muted-foreground">{organization.name}</span>
-        )}
-        <Button variant="ghost" size="sm" onClick={handleLogout} className="text-muted-foreground">
-          <LogOut className="mr-1 h-4 w-4" />
-          Logout
-        </Button>
+      <div className="flex items-center gap-3">
+        <OrganizationSwitcher
+          hidePersonal
+          afterCreateOrganizationUrl="/dashboard"
+          afterSelectOrganizationUrl="/dashboard"
+        />
+        {/* Sign-out redirect target comes from NEXT_PUBLIC_CLERK_SIGN_IN_URL
+            (=/login). In Clerk v7 UserButton doesn't take a per-instance
+            afterSignOutUrl prop; the provider-level fallback handles it. */}
+        <UserButton />
       </div>
     </header>
   );

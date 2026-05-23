@@ -196,7 +196,7 @@ async def _fetch_clerk_membership_role(
     return _map_clerk_role(role)
 
 
-async def _maybe_refresh_membership(
+async def maybe_refresh_membership(
     session: AsyncSession,
     membership: OrgMembership,
     *,
@@ -342,7 +342,7 @@ def require_clerk_role(allowed_roles: Iterable[str]):
         # Defense-in-depth freshness re-check against Clerk's REST API.
         # Skipped fast when the row was recently touched (common case) or
         # when CLERK_SECRET_KEY isn't configured (opt-in feature).
-        refreshed = await _maybe_refresh_membership(
+        refreshed = await maybe_refresh_membership(
             session,
             membership,
             clerk_user_id=clerk_user_id,
@@ -688,4 +688,5 @@ __all__ = [
     "require_clerk_role",
     "compliance_review_audit",
     "ComplianceAuditMiddleware",
+    "maybe_refresh_membership",
 ]

@@ -1,4 +1,4 @@
-import { getApiKey, clearApiKey } from "./auth";
+import { getClerkToken } from "./clerk-token";
 import type {
   HealthResponse,
   Organization,
@@ -40,25 +40,30 @@ export class ApiError extends Error {
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
-function getHeaders(): HeadersInit {
-  const apiKey = getApiKey();
+async function getHeaders(): Promise<HeadersInit> {
+  // Dashboard auth = Clerk session token (E4). The backend's
+  // `require_permission` accepts either this or an `al_*` API key; the SDK
+  // keeps using API keys, the dashboard does not.
+  const token = await getClerkToken();
   return {
     "Content-Type": "application/json",
-    ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
   };
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  const headers = await getHeaders();
   const response = await fetch(`${BASE_URL}${path}`, {
     ...options,
-    headers: { ...getHeaders(), ...options?.headers },
+    headers: { ...headers, ...options?.headers },
   });
 
   if (response.status === 401) {
-    clearApiKey();
-    if (typeof window !== "undefined") {
-      window.location.href = "/login";
-    }
+    // Don't auto-redirect: a 401 with a valid Clerk session means the
+    // backend membership isn't ready yet (webhook race) or the session was
+    // revoked server-side. Redirecting to /login would loop because Clerk
+    // sees the active session and bounces back to /dashboard. Let React
+    // Query surface the error; ProtectedRoute handles "no session at all".
     throw new ApiError(401, "Unauthorized");
   }
 
@@ -232,7 +237,7 @@ export interface ExportParams {
 
 async function downloadFile(path: string, filename: string): Promise<void> {
   const response = await fetch(`${BASE_URL}${path}`, {
-    headers: getHeaders(),
+    headers: await getHeaders(),
   });
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: "Export failed" }));

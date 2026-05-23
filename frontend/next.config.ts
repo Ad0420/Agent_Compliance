@@ -13,12 +13,30 @@ import type { NextConfig } from "next";
 // `'unsafe-inline'` and `'unsafe-eval'` for `script-src` are required by both
 // Next.js (chunked client bundles, Server Component hydration) and Clerk.
 // Tightening these to nonce-based CSP is tracked separately.
+// E4 cutover: the dashboard now fetches /v1/* directly from the browser
+// (Bearer = Clerk session token). Before E4 the same calls went through
+// Next.js route handlers, which never tripped CSP because the proxy is
+// same-origin. Add the backend origin to `connect-src` so the browser
+// permits the direct fetches.
+//
+// Resolve at build time from NEXT_PUBLIC_API_URL — same source the api-client
+// uses, so they can never drift. Strip path/trailing slash so we add only
+// the origin to the CSP directive.
+const apiOrigin = (() => {
+  const raw = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return raw;
+  }
+})();
+
 const cspDirectives = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.clerk.accounts.dev https://*.clerk.com https://challenges.cloudflare.com",
   "frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com https://challenges.cloudflare.com",
   "frame-ancestors 'self'",
-  "connect-src 'self' https://*.clerk.accounts.dev https://*.clerk.com https://api.clerk.com https://clerk-telemetry.com",
+  `connect-src 'self' ${apiOrigin} https://*.clerk.accounts.dev https://*.clerk.com https://api.clerk.com https://clerk-telemetry.com`,
   "img-src 'self' data: https://*.clerk.com https://*.clerk.accounts.dev https://img.clerk.com",
   "worker-src 'self' blob:",
   "style-src 'self' 'unsafe-inline'",

@@ -38,7 +38,7 @@ def _to_response(sub: WebhookSubscription) -> WebhookResponse:
 async def create_webhook(
     data: WebhookCreate,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("admin")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("admin")),
 ):
     """Register a new webhook subscription.
 
@@ -71,7 +71,7 @@ async def create_webhook(
 @router.get("", response_model=WebhookListResponse)
 async def list_webhooks(
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("admin")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("admin")),
 ):
     """List all webhook subscriptions for the caller's org. Secrets are NOT returned."""
     org_id, _ = auth
@@ -88,7 +88,7 @@ async def list_webhooks(
 async def get_webhook(
     webhook_id: str,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("admin")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("admin")),
 ):
     """Fetch a single webhook subscription. Secret is NOT returned."""
     org_id, _ = auth
@@ -103,7 +103,7 @@ async def update_webhook(
     webhook_id: str,
     data: WebhookUpdate,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("admin")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("admin")),
 ):
     """Partial update. Cannot change the secret here — use the rotate endpoint."""
     org_id, _ = auth
@@ -134,7 +134,7 @@ async def update_webhook(
 async def rotate_webhook_secret(
     webhook_id: str,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("admin")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("admin")),
 ):
     """Generate and return a new signing secret. The old secret stops working immediately."""
     org_id, _ = auth
@@ -152,7 +152,7 @@ async def rotate_webhook_secret(
 async def delete_webhook(
     webhook_id: str,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("admin")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("admin")),
 ):
     """Permanently delete a webhook subscription."""
     org_id, _ = auth

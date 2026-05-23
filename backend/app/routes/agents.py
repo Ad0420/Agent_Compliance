@@ -25,7 +25,7 @@ def _agent_to_response(agent: Agent) -> AgentResponse:
 async def create_agent(
     data: AgentCreate,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("write")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("write")),
 ):
     org_id, _ = auth
     agent = Agent(
@@ -43,7 +43,7 @@ async def create_agent(
 @router.get("", response_model=list[AgentResponse])
 async def list_agents(
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("read")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
 ):
     org_id, _ = auth
     result = await session.execute(
@@ -57,7 +57,7 @@ async def list_agents(
 async def get_agent(
     agent_id: str,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("read")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
 ):
     org_id, _ = auth
     result = await session.execute(

@@ -16,7 +16,7 @@ router = APIRouter(prefix="/api-keys", tags=["api-keys"])
 async def create_api_key(
     data: APIKeyCreate,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("admin")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("admin")),
 ):
     org_id, _ = auth
     raw_key, api_key = await generate_api_key(
@@ -36,7 +36,7 @@ async def create_api_key(
 @router.get("", response_model=list[APIKeyResponse])
 async def list_api_keys(
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("admin")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("admin")),
 ):
     org_id, _ = auth
     result = await session.execute(
@@ -62,7 +62,7 @@ async def list_api_keys(
 async def revoke_api_key(
     key_id: str,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("admin")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("admin")),
 ):
     org_id, _ = auth
     result = await session.execute(

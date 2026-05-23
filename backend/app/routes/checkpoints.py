@@ -24,7 +24,7 @@ router = APIRouter(prefix="/verify/checkpoints", tags=["checkpoints"])
 @router.post("", response_model=CheckpointResponse)
 async def create_checkpoint_endpoint(
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("admin")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("admin")),
 ):
     """Create a signed checkpoint of the current chain state."""
     org_id, _ = auth
@@ -35,7 +35,7 @@ async def create_checkpoint_endpoint(
 @router.get("", response_model=CheckpointListResponse)
 async def list_checkpoints_endpoint(
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("read")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
 ):
     """List all checkpoints for the organization."""
     org_id, _ = auth
@@ -46,7 +46,7 @@ async def list_checkpoints_endpoint(
 @router.post("/verify", response_model=CheckpointVerifyAllResponse)
 async def verify_checkpoints_endpoint(
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("read")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
 ):
     """Verify all checkpoints for the organization."""
     org_id, _ = auth

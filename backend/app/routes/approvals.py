@@ -101,7 +101,12 @@ async def cancel_approval_route(
 ):
     """Cancel a pending approval. Writes a resolution record to the chain."""
     org_id, api_key = auth
+    # api_key is None for Clerk-authenticated requests; use a generic label
+    # so the audit row still records the channel even without a key prefix.
+    canceller = (
+        f"api_key:{api_key.key_prefix}" if api_key is not None else "dashboard"
+    )
     approval = await cancel_approval(
-        session, org_id, approval_id, canceller=f"api_key:{api_key.key_prefix}"
+        session, org_id, approval_id, canceller=canceller
     )
     return ApprovalResponse.model_validate(approval)

@@ -13,7 +13,7 @@ router = APIRouter(prefix="/organizations", tags=["organizations"])
 async def create_organization(
     data: OrganizationCreate,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("admin")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("admin")),
 ):
     """Create a new organization. Requires admin API key."""
     org = Organization(name=data.name)
@@ -32,7 +32,7 @@ async def create_organization(
 @router.get("/me", response_model=OrganizationResponse)
 async def get_current_organization(
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("read")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
 ):
     org_id, _ = auth
     org = await session.get(Organization, org_id)
@@ -45,7 +45,7 @@ async def get_current_organization(
 async def update_alert_email(
     data: AlertEmailUpdate,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("admin")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("admin")),
 ):
     """Set or clear the tamper-alert email address for this organization."""
     org_id, _ = auth

@@ -298,18 +298,144 @@ async def get_current_org(
     return api_key.org_id, api_key
 
 
+# Clerk role → effective backend permissions. The legacy API-key model stored
+# an explicit permissions list (["read"], ["read", "write"], ["read", "write",
+# "admin"]); Clerk sessions carry a role string instead. This table lets a
+# Clerk session pass the same `require_permission("read")` gates that legacy
+# API keys hit, without changing every route handler.
+_CLERK_ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
+    "admin": frozenset({"read", "write", "admin"}),
+    "developer": frozenset({"read", "write"}),
+    "compliance_reviewer": frozenset({"read"}),
+}
+
+
+class _NoActiveOrgError(Exception):
+    """Clerk JWT verified but the session has no active org context."""
+
+
+async def _authenticate_clerk_session(
+    session: AsyncSession, raw_token: str
+) -> tuple[str, frozenset[str]] | None:
+    """Verify a Clerk JWT and resolve to (org_id, effective_permissions).
+
+    Returns None if verification fails or the user has no backend membership
+    (caller raises generic 401). Raises ``_NoActiveOrgError`` if the JWT is
+    valid but lacks an ``org_id`` claim, so the caller can map that to a
+    400 to match the convention used in ``middleware/clerk_auth.py``.
+
+    Defense-in-depth (matches ``middleware/clerk_auth.py:require_clerk_role``):
+    when the cached ``OrgMembership`` row is older than
+    ``settings.membership_freshness_seconds``, re-check the user's role
+    against Clerk's REST API. Closes the "stale admin" / "still-valid JWT
+    after kick" gap (PR #164 audit, CRITICAL #5 + #6) on the dual-auth
+    /v1/* path too.
+    """
+    # Import lazily to avoid a circular import — middleware/clerk_auth.py
+    # imports from services.auth, so we resolve maybe_refresh_membership
+    # at call time rather than at module load.
+    from ..middleware.clerk_auth import maybe_refresh_membership
+
+    try:
+        claims = await verify_clerk_jwt(raw_token)
+    except HTTPException:
+        logger.info("Clerk session rejected: JWT verification failed")
+        return None
+    clerk_user_id = claims.get("sub")
+    clerk_org_id = claims.get("org_id")
+    if not clerk_user_id:
+        logger.info("Clerk session rejected: JWT missing 'sub' claim")
+        return None
+    if not clerk_org_id:
+        logger.info(
+            "Clerk session rejected: no active organization (user=%s)",
+            clerk_user_id,
+        )
+        raise _NoActiveOrgError()
+    membership = await get_membership_for_clerk_user(
+        session,
+        clerk_user_id=clerk_user_id,
+        clerk_org_id=clerk_org_id,
+    )
+    if membership is None:
+        logger.info(
+            "Clerk session rejected: no backend membership (user=%s org=%s)",
+            clerk_user_id,
+            clerk_org_id,
+        )
+        return None
+    refreshed = await maybe_refresh_membership(
+        session,
+        membership,
+        clerk_user_id=clerk_user_id,
+        clerk_org_id=clerk_org_id,
+    )
+    if refreshed is None:
+        # Clerk reports the user was kicked from the org. Treat as
+        # no-membership; caller raises 401 (generic to avoid info leak).
+        logger.info(
+            "Clerk session rejected: membership revoked upstream (user=%s org=%s)",
+            clerk_user_id,
+            clerk_org_id,
+        )
+        return None
+    perms = _CLERK_ROLE_PERMISSIONS.get(refreshed.role, frozenset())
+    return refreshed.org_id, perms
+
+
 def require_permission(permission: str):
-    """Returns a dependency that checks for a specific permission."""
+    """Returns a dependency that checks for a specific permission.
+
+    Accepts EITHER a legacy API-key Bearer (``al_*``) OR a Clerk session JWT.
+    The SDK keeps using API keys; the dashboard uses Clerk. Both resolve to
+    the same ``(org_id, permissions)`` shape, so existing route handlers don't
+    need to know which auth method was used.
+
+    Return tuple is ``(org_id, api_key)`` where ``api_key`` is ``None`` for
+    Clerk-authenticated requests. Route handlers that need the APIKey row
+    (e.g. for audit-log labels) must handle the ``None`` case.
+    """
     async def _check(
-        auth: tuple[str, APIKey] = Depends(get_current_org),
-    ) -> tuple[str, APIKey]:
-        org_id, api_key = auth
-        if permission not in api_key.permissions:
+        credentials: HTTPAuthorizationCredentials = Security(security),
+        session: AsyncSession = Depends(get_db),
+    ) -> tuple[str, APIKey | None]:
+        raw = credentials.credentials
+        # Legacy API-key path: tokens start with our own prefix (e.g.
+        # ``al_live_``). Anything else we treat as a Clerk JWT candidate.
+        if raw.startswith(settings.api_key_prefix):
+            api_key = await authenticate_request(session, raw)
+            if api_key is None:
+                raise HTTPException(
+                    status_code=401, detail="Invalid or revoked API key"
+                )
+            if permission not in api_key.permissions:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"API key lacks '{permission}' permission",
+                )
+            return api_key.org_id, api_key
+
+        try:
+            clerk_result = await _authenticate_clerk_session(session, raw)
+        except _NoActiveOrgError:
+            # Match the 400 convention in middleware/clerk_auth.py:323 so
+            # frontends can distinguish "user-fixable, pick an org" from
+            # "session invalid, re-auth".
+            raise HTTPException(
+                status_code=400,
+                detail="No active organization in Clerk session",
+            )
+        if clerk_result is None:
+            raise HTTPException(
+                status_code=401, detail="Invalid or expired session"
+            )
+        org_id, perms = clerk_result
+        if permission not in perms:
             raise HTTPException(
                 status_code=403,
-                detail=f"API key lacks '{permission}' permission",
+                detail=f"Session role lacks '{permission}' permission",
             )
-        return org_id, api_key
+        return org_id, None
     return _check
 
 

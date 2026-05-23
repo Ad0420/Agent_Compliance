@@ -12,7 +12,6 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { formatDate } from "@/lib/utils";
-import { getKeyPrefix } from "@/lib/auth";
 import { PERMISSION_COLORS } from "@/lib/constants";
 import { Plus, Trash2, Copy, Check, AlertTriangle, Loader2, Bell } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -99,47 +98,35 @@ export default function SettingsPage() {
         <p className="text-sm text-muted-foreground">Organization and API key management</p>
       </div>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        {/* Org info */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Organization</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Name</span>
-              <span className="font-medium">{org?.name ?? "—"}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">ID</span>
-              <span className="font-mono text-xs">{org?.id ?? "—"}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Created</span>
-              <span>{org ? formatDate(org.created_at) : "—"}</span>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Current key info */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Current Session</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">API Key</span>
-              <span className="font-mono text-xs">{getKeyPrefix()}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Permission Level</span>
-              <Badge className={cn(PERMISSION_COLORS[isAdmin ? "admin" : "read"])}>
-                {isAdmin ? "admin" : "read/write"}
-              </Badge>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      {/* Org info. Post-E4 the dashboard authenticates via Clerk; the
+          "Current Session" card that used to show the localStorage API-key
+          prefix is gone. To see / mint / revoke API keys, use the dedicated
+          API Keys page in the sidebar. */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Organization</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Name</span>
+            <span className="font-medium">{org?.name ?? "—"}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">ID</span>
+            <span className="font-mono text-xs">{org?.id ?? "—"}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Created</span>
+            <span>{org ? formatDate(org.created_at) : "—"}</span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-muted-foreground">Your role</span>
+            <Badge className={cn(PERMISSION_COLORS[isAdmin ? "admin" : "read"])}>
+              {isAdmin ? "admin" : "member"}
+            </Badge>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Tamper alert email */}
       {isAdmin && (
