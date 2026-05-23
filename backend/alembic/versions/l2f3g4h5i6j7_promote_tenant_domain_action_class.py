@@ -62,6 +62,17 @@ def _has_index(inspector, table: str, index_name: str) -> bool:
 
 
 def upgrade() -> None:
+    """Add the three promoted columns + their indexes.
+
+    NOTE for future ops: at v1 scale (mostly-empty action_records pre-deploy)
+    the inline CREATE INDEX is fine. At prod scale (>1M rows) Postgres
+    locks ``action_records`` for the duration of each non-CONCURRENTLY
+    CREATE INDEX, which can stall the write path on the hot ingest table.
+    Future similar migrations should use
+    ``op.execute('CREATE INDEX CONCURRENTLY ...')`` inside an
+    ``op.get_context().autocommit_block()``. We do not retrofit that
+    here because the rows-at-deploy assumption holds for v1.
+    """
     bind = op.get_bind()
     inspector = sa.inspect(bind)
 
@@ -94,7 +105,37 @@ def upgrade() -> None:
                 op.add_column(_TABLE, sa.Column(col_name, col_type, nullable=True))
                 inspector = sa.inspect(bind)
 
-    # ── Backfill is a no-op (columns are nullable, no data to copy) ─
+    # ── Backfill from metadata_ JSON blob ────────────────────
+    # Dev / staging deployments may have stored these fields inside
+    # ``metadata_`` pre-Phase-1. Copy them onto the new columns ONLY
+    # where the new column is still NULL — COALESCE preserves any
+    # explicit value already written. The ``metadata_`` blob itself is
+    # untouched, so existing ``record_hash`` values remain valid (the
+    # hash is computed over the blob's exact bytes).
+    if dialect == "postgresql":
+        op.execute(
+            """
+            UPDATE action_records
+            SET tenant_id = COALESCE(tenant_id, metadata->>'tenant_id'),
+                domain = COALESCE(domain, metadata->>'domain'),
+                action_class = COALESCE(action_class, metadata->>'action_class')
+            WHERE metadata ? 'tenant_id'
+               OR metadata ? 'domain'
+               OR metadata ? 'action_class'
+            """
+        )
+    elif dialect == "sqlite":
+        op.execute(
+            """
+            UPDATE action_records
+            SET tenant_id = COALESCE(tenant_id, json_extract(metadata, '$.tenant_id')),
+                domain = COALESCE(domain, json_extract(metadata, '$.domain')),
+                action_class = COALESCE(action_class, json_extract(metadata, '$.action_class'))
+            WHERE json_extract(metadata, '$.tenant_id') IS NOT NULL
+               OR json_extract(metadata, '$.domain') IS NOT NULL
+               OR json_extract(metadata, '$.action_class') IS NOT NULL
+            """
+        )
 
     # ── Add indexes ──────────────────────────────────────────
     inspector = sa.inspect(bind)

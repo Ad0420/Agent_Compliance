@@ -16,6 +16,8 @@ Tables created:
     The hospital / bank / employer that the operator org serves. Identified
     by a free-form ``tenant_id`` string the SDK passes via vera.tenant().
     UNIQUE (org_id, tenant_id) so the same tenant string is scoped per-org.
+    ``baa_status`` CHECK includes ``'terminated'`` so a Customer whose BAA
+    was rescinded is distinguishable from one that simply expired.
 
   customer_agents
     The historical record of which agent_types have ever served a customer.
@@ -31,13 +33,17 @@ Tables created:
     One row per BAA between the operator org and a customer. Most lifecycle
     fields are nullable on draft — they fill in as the BAA flows through
     upload → effective → expiry. ``document_uri`` is populated by the BAA
-    upload endpoint (Phase 1 PR 10), not by this PR.
+    upload endpoint (Phase 1 PR 10), not by this PR. A temporal CHECK
+    constraint (``ck_baa_temporal_order``) refuses ``effective_at >
+    expires_at`` when both are present — a data-shape guard for ops typos.
 
   baa_scopes
     The (covered_services, covered_agent_types) scope of a BAA. Required
-    by Codex E2 so Phase 2/3 gate checks can be scope-aware. Existing /
-    backfilled BAAs use a broad scope (there are no real BAAs today; this
-    is a forward-looking design).
+    by Codex E2 so Phase 2/3 gate checks can be scope-aware. ``is_unrestricted``
+    is the explicit wildcard flag: when True, the two list columns are
+    advisory only and the BAA covers everything. Existing / backfilled
+    BAAs use a broad scope (there are no real BAAs today; this is a
+    forward-looking design).
 
 All FKs use the same cascade conventions as existing models:
   - org_id → organizations: CASCADE (already the convention for per-org rows)
@@ -45,8 +51,11 @@ All FKs use the same cascade conventions as existing models:
   - agent_id → agents: SET NULL (historical coverage outlives the agent row)
   - baa_agreement_id → baa_agreements: CASCADE (scopes follow the BAA)
 
-Idempotent: each CREATE TABLE is guarded by a table-existence check so
-this migration co-exists with ``Base.metadata.create_all`` test paths.
+Idempotency: every CREATE TABLE and every CREATE INDEX is guarded by an
+independent existence check. The previous structure nested index creation
+inside the ``if 'table' not in existing_tables`` block — if the table was
+pre-created by ``Base.metadata.create_all`` (test paths) or by a partial-
+apply recovery, the indexes were never created. Each step now self-checks.
 """
 import sqlalchemy as sa
 from alembic import op
@@ -55,6 +64,18 @@ revision = "m3g4h5i6j7k8"
 down_revision = "l2f3g4h5i6j7"
 branch_labels = None
 depends_on = None
+
+
+def _has_index(inspector, table: str, index_name: str) -> bool:
+    if table not in inspector.get_table_names():
+        return False
+    return index_name in {ix["name"] for ix in inspector.get_indexes(table)}
+
+
+def _has_column(inspector, table: str, column: str) -> bool:
+    if table not in inspector.get_table_names():
+        return False
+    return column in {c["name"] for c in inspector.get_columns(table)}
 
 
 def upgrade() -> None:
@@ -109,19 +130,25 @@ def upgrade() -> None:
                 name="ck_customer_status",
             ),
             sa.CheckConstraint(
-                "baa_status IN ('missing', 'pending', 'active', 'expired')",
+                "baa_status IN ('missing', 'pending', 'active', 'expired', 'terminated')",
                 name="ck_customer_baa_status",
             ),
         )
+
+    # Indexes for customers live OUTSIDE the create_table guard so they
+    # still apply if the table was pre-created via Base.metadata.create_all
+    # in test paths or by a partial-apply recovery.
+    inspector = sa.inspect(bind)
+    if not _has_index(inspector, "customers", "idx_customer_org_status"):
         op.create_index(
             "idx_customer_org_status", "customers", ["org_id", "status"]
         )
+    if not _has_index(inspector, "customers", "idx_customer_tenant"):
         op.create_index("idx_customer_tenant", "customers", ["tenant_id"])
 
+    # ── customer_agents ──────────────────────────────────────
     inspector = sa.inspect(bind)
     existing_tables = set(inspector.get_table_names())
-
-    # ── customer_agents ──────────────────────────────────────
     if "customer_agents" not in existing_tables:
         op.create_table(
             "customer_agents",
@@ -181,14 +208,16 @@ def upgrade() -> None:
                 name="ck_customer_agent_status",
             ),
         )
+
+    inspector = sa.inspect(bind)
+    if not _has_index(inspector, "customer_agents", "idx_ca_customer"):
         op.create_index(
             "idx_ca_customer", "customer_agents", ["customer_id"]
         )
 
+    # ── baa_agreements ───────────────────────────────────────
     inspector = sa.inspect(bind)
     existing_tables = set(inspector.get_table_names())
-
-    # ── baa_agreements ───────────────────────────────────────
     if "baa_agreements" not in existing_tables:
         op.create_table(
             "baa_agreements",
@@ -231,17 +260,23 @@ def upgrade() -> None:
                 "status IN ('draft', 'active', 'expired', 'terminated')",
                 name="ck_baa_status",
             ),
+            sa.CheckConstraint(
+                "effective_at IS NULL OR expires_at IS NULL OR effective_at <= expires_at",
+                name="ck_baa_temporal_order",
+            ),
         )
+
+    inspector = sa.inspect(bind)
+    if not _has_index(inspector, "baa_agreements", "idx_baa_customer_status"):
         op.create_index(
             "idx_baa_customer_status",
             "baa_agreements",
             ["customer_id", "status"],
         )
 
+    # ── baa_scopes ───────────────────────────────────────────
     inspector = sa.inspect(bind)
     existing_tables = set(inspector.get_table_names())
-
-    # ── baa_scopes ───────────────────────────────────────────
     if "baa_scopes" not in existing_tables:
         op.create_table(
             "baa_scopes",
@@ -254,6 +289,12 @@ def upgrade() -> None:
             ),
             sa.Column("covered_services", sa.JSON(), nullable=False),
             sa.Column("covered_agent_types", sa.JSON(), nullable=False),
+            sa.Column(
+                "is_unrestricted",
+                sa.Boolean(),
+                nullable=False,
+                server_default=sa.text("0"),
+            ),
             sa.Column("granted_at", sa.DateTime(), nullable=False),
             sa.Column(
                 "created_at",
@@ -262,6 +303,9 @@ def upgrade() -> None:
                 server_default=sa.func.now(),
             ),
         )
+
+    inspector = sa.inspect(bind)
+    if not _has_index(inspector, "baa_scopes", "idx_scope_baa"):
         op.create_index(
             "idx_scope_baa", "baa_scopes", ["baa_agreement_id"]
         )

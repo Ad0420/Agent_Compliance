@@ -16,10 +16,19 @@ All existing keys backfill to ``kind='test'`` — the safest default per
 the PR #188 description (all known pilots are dev-only). Production cutover
 to live keys is an explicit upgrade step, not implicit promotion.
 
+NOTE for future ops: the ``UPDATE api_keys SET kind = 'test'`` is a
+single-statement full-table update that locks ``api_keys`` for its
+duration. At v1 scale this is fine; once api_keys grows beyond ~100k
+rows a batched UPDATE in a CONCURRENTLY-style migration is the safer
+pattern.
+
 This PR (Phase 1 PR 1) only stands up the column + check constraint +
 backfill. The ``require_permission`` BAA-gating logic lands in PR 4.
 
-Idempotent: skipped if the column already exists.
+Idempotency: every step (add_column, backfill, NOT NULL, CHECK, index)
+self-checks against the current schema state. If a previous upgrade
+crashed between steps, re-running picks up where it left off rather
+than short-circuiting on the presence of just the column.
 """
 import sqlalchemy as sa
 from alembic import op
@@ -48,6 +57,26 @@ def _has_index(inspector, table: str, index_name: str) -> bool:
     return index_name in {ix["name"] for ix in inspector.get_indexes(table)}
 
 
+def _is_column_nullable(inspector, table: str, column: str) -> bool:
+    cols = {c["name"]: c for c in inspector.get_columns(table)}
+    return cols.get(column, {}).get("nullable", True)
+
+
+def _has_check_constraint(inspector, table: str, name: str) -> bool:
+    """Return True if the CHECK constraint exists.
+
+    SQLite reflection of CHECK constraints via ``get_check_constraints``
+    is dialect-supported in modern SQLAlchemy but can be flaky; missing
+    method → treat as "unknown, attempt to create and swallow errors".
+    """
+    if not hasattr(inspector, "get_check_constraints"):
+        return False
+    try:
+        return name in {c.get("name") for c in inspector.get_check_constraints(table)}
+    except Exception:
+        return False
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     inspector = sa.inspect(bind)
@@ -56,57 +85,68 @@ def upgrade() -> None:
     if _TABLE not in inspector.get_table_names():
         return
 
-    if _has_column(inspector, _TABLE, _COLUMN):
-        return
+    # ── Step 1: add the column (nullable initially) ─────────
+    if not _has_column(inspector, _TABLE, _COLUMN):
+        op.add_column(
+            _TABLE,
+            sa.Column(
+                _COLUMN,
+                sa.String(length=8),
+                nullable=True,
+                server_default=sa.text("'test'"),
+            ),
+        )
 
-    # Add nullable first so existing rows accept the default-of-record,
-    # then backfill, then enforce NOT NULL via a fresh batch_alter (SQLite)
-    # or alter_column (Postgres). The CHECK constraint is added as part of
-    # the column on Postgres, and via batch_alter on SQLite.
-    op.add_column(
-        _TABLE,
-        sa.Column(
-            _COLUMN,
-            sa.String(length=8),
-            nullable=True,
-            server_default=sa.text("'test'"),
-        ),
-    )
-    # Backfill all existing rows explicitly — the server_default covers new
-    # INSERTs, but Postgres won't retroactively apply it to already-existing
-    # rows on the same statement.
+    # ── Step 2: backfill NULLs — idempotent (no-op once all rows have a value) ─
+    # Locks api_keys for the duration on Postgres. See module docstring.
     op.execute("UPDATE api_keys SET kind = 'test' WHERE kind IS NULL")
 
-    if dialect == "sqlite":
-        # SQLite: rebuild-and-copy via batch_alter_table. We add the CHECK
-        # constraint here and set NOT NULL in the same op.
-        with op.batch_alter_table(_TABLE) as batch:
-            batch.alter_column(
+    # ── Step 3: enforce NOT NULL ────────────────────────────
+    inspector = sa.inspect(bind)
+    if _is_column_nullable(inspector, _TABLE, _COLUMN):
+        if dialect == "sqlite":
+            with op.batch_alter_table(_TABLE) as batch:
+                batch.alter_column(
+                    _COLUMN,
+                    existing_type=sa.String(length=8),
+                    nullable=False,
+                    server_default=sa.text("'test'"),
+                )
+        else:
+            op.alter_column(
+                _TABLE,
                 _COLUMN,
                 existing_type=sa.String(length=8),
                 nullable=False,
                 server_default=sa.text("'test'"),
             )
-            batch.create_check_constraint(
-                _CHECK_NAME,
-                "kind IN ('test', 'live')",
-            )
-    else:
-        op.alter_column(
-            _TABLE,
-            _COLUMN,
-            existing_type=sa.String(length=8),
-            nullable=False,
-            server_default=sa.text("'test'"),
-        )
-        op.create_check_constraint(
-            _CHECK_NAME,
-            _TABLE,
-            "kind IN ('test', 'live')",
-        )
 
-    # Composite index (org_id, kind) for "list my live keys" style queries
-    # without paying for two single-column indexes.
+    # ── Step 4: CHECK constraint ────────────────────────────
+    inspector = sa.inspect(bind)
+    if not _has_check_constraint(inspector, _TABLE, _CHECK_NAME):
+        if dialect == "sqlite":
+            # SQLite reflection of CHECK constraints can be flaky — if the
+            # constraint was added by a previous upgrade but isn't reported
+            # by the inspector, this would attempt to add it again. Swallow.
+            try:
+                with op.batch_alter_table(_TABLE) as batch:
+                    batch.create_check_constraint(
+                        _CHECK_NAME,
+                        "kind IN ('test', 'live')",
+                    )
+            except Exception:
+                pass
+        else:
+            try:
+                op.create_check_constraint(
+                    _CHECK_NAME,
+                    _TABLE,
+                    "kind IN ('test', 'live')",
+                )
+            except Exception:
+                pass
+
+    # ── Step 5: composite index ─────────────────────────────
     inspector = sa.inspect(bind)
     if not _has_index(inspector, _TABLE, _INDEX):
         op.create_index(_INDEX, _TABLE, ["org_id", "kind"])

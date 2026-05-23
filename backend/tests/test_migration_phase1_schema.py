@@ -154,13 +154,36 @@ def test_ar_promote_downgrade_removes_columns_and_indexes(temp_db_url):
 
 
 def test_ar_promote_idempotent_upgrade(temp_db_url):
-    """Running the upgrade twice must not error."""
+    """Running the upgrade twice must not error AND must not produce
+    suffix-duplicated columns/indexes (``tenant_id_1`` etc) or extra
+    artifacts that weren't there after the first run."""
     db_url, _ = temp_db_url
     cfg = _make_alembic_cfg(db_url)
     _upgrade(cfg, REV_AR_PROMOTE)
+
+    engine, insp = _inspector(db_url)
+    cols_before = sorted(c["name"] for c in insp.get_columns("action_records"))
+    idx_before = sorted(ix["name"] for ix in insp.get_indexes("action_records"))
+    engine.dispose()
+
     _rerun_upgrade(
         db_url, "l2f3g4h5i6j7_promote_tenant_domain_action_class.py"
     )
+
+    engine, insp = _inspector(db_url)
+    cols_after = sorted(c["name"] for c in insp.get_columns("action_records"))
+    idx_after = sorted(ix["name"] for ix in insp.get_indexes("action_records"))
+    assert cols_before == cols_after, (
+        f"rerun changed columns: {set(cols_after) ^ set(cols_before)}"
+    )
+    assert idx_before == idx_after, (
+        f"rerun changed indexes: {set(idx_after) ^ set(idx_before)}"
+    )
+    # Catch silent suffix-duplicates: e.g. ``tenant_id_1`` or ``idx_ar_tenant_id_1``
+    # appearing because the migration's existence-check missed the column.
+    assert not any(c.endswith("_1") for c in cols_after), cols_after
+    assert not any(ix.endswith("_1") for ix in idx_after), idx_after
+    engine.dispose()
 
 
 # ── Migration 2: Customer + BAA tables ────────────────────────
@@ -218,11 +241,37 @@ def test_customer_baa_downgrade_drops_tables(temp_db_url):
 
 def test_customer_baa_idempotent_upgrade(temp_db_url):
     """Re-running the customer/BAA migration over an existing schema must
-    not crash — the migration uses table-existence guards."""
+    not crash, and must not change the on-disk shape (no duplicate
+    tables, columns, or indexes)."""
     db_url, _ = temp_db_url
     cfg = _make_alembic_cfg(db_url)
     _upgrade(cfg, REV_CUSTOMER)
+
+    engine, insp = _inspector(db_url)
+    tables_before = sorted(insp.get_table_names())
+    per_table_before = {
+        t: (
+            sorted(c["name"] for c in insp.get_columns(t)),
+            sorted(ix["name"] for ix in insp.get_indexes(t)),
+        )
+        for t in EXPECTED_CUSTOMER_TABLES
+    }
+    engine.dispose()
+
     _rerun_upgrade(db_url, "m3g4h5i6j7k8_customer_and_baa_tables.py")
+
+    engine, insp = _inspector(db_url)
+    tables_after = sorted(insp.get_table_names())
+    per_table_after = {
+        t: (
+            sorted(c["name"] for c in insp.get_columns(t)),
+            sorted(ix["name"] for ix in insp.get_indexes(t)),
+        )
+        for t in EXPECTED_CUSTOMER_TABLES
+    }
+    assert tables_before == tables_after
+    assert per_table_before == per_table_after
+    engine.dispose()
 
 
 # ── Migration 3: api_keys.kind ────────────────────────────────
