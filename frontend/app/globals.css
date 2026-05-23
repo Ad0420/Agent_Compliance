@@ -129,6 +129,7 @@
   --ink-2: #57514D;
   --ink-3: rgba(31, 22, 16, 0.45);
   --ink-4: rgba(31, 22, 16, 0.14);
+  --ink-5: rgba(31, 22, 16, 0.08);
 
   /* Status — dashboard palette (oxidised, operational; denser than landing) */
   --status-ok: #3E5C3B;
@@ -191,6 +192,16 @@
   --border: var(--ink-4);
   --input: var(--ink-4);
   --ring: var(--ink);
+
+  /* Chart palette — dashboard rebinds to the operational status palette so
+     the small sparklines / mini-bars allowed by the design system stay
+     coherent with status-ok / status-warn / status-error. */
+  --chart-1: var(--status-ok);
+  --chart-2: var(--status-warn);
+  --chart-3: var(--status-error);
+  --chart-4: var(--ink-2);
+  --chart-5: var(--ink-3);
+
   --sidebar: var(--paper-2);
   --sidebar-foreground: var(--ink);
   --sidebar-primary: var(--ink);

@@ -891,10 +891,13 @@ Operational tone, more directive than the marketing surface.
 - **No dark mode in v1.** The dashboard is always served on warm
   paper. v2 may revisit if customer demand is strong, but inverting
   an editorial cream palette to dark is its own design phase.
-- **No charts or graphs.** Compliance officers want yes/no answers,
-  not visualizations. v2 may add a posture-over-time line chart on
-  the Compliance page if the data is genuinely useful, but it's
-  not v1.
+- **Minimal charts only.** Small sparklines and mini-bars (no axes,
+  no labels, no legend) are permitted where they sharpen a posture
+  trend or volume signal at a glance. Banned: gauges, large hero
+  charts, full-page dashboards, gamified score visualizations,
+  anything that reads as a marketing graphic. Compliance officers
+  want answers, not art — if a chart can't be read in under one
+  second, it doesn't ship.
 - **No marketing copy.** The dashboard is a work surface. No
   "Welcome back, John!" greetings, no product tips, no "what's new"
   feed.
@@ -1077,7 +1080,7 @@ specifications.
 Light theme, warm cream, Petrona display, Inter body — same tokens as
 the marketing surface, applied at higher density with a dense
 component library. Status colours are oxidised olive / amber / brick,
-used sparingly. No dark mode, no charts, no marketing chrome, no
+used sparingly. No dark mode, minimal sparklines only, no marketing chrome, no
 gradients, no slop. Sidebar + content + optional right panel covers
 every layout. Cards, tables, modals, badges, status indicators, and
 an AI chat panel cover every component. Everything is auditable

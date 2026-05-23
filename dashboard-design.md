@@ -404,7 +404,7 @@ tab. That's the goal.
 
 ### What's missing on purpose
 
-- No charts, no graphs
+- Minimal charts only — small sparklines / mini-bars where they sharpen a posture trend, no axes, no labels (gauges and large hero charts still banned)
 - No "compliance score" gauge (vanity metric; regulators care about evidence, not scores)
 - No marketing copy ("welcome back!")
 - No "tips" or "what's new"

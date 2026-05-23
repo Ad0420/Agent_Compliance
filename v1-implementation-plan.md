@@ -988,7 +988,7 @@ This section is the implementation-ready plan after both review passes, user adj
 | Posture page | asymmetric + eligibility-first (denominators visible alongside scores) | autoplan + Codex D2 |
 | SDK rename | `@vera.audit` → `@vera.gate` canonically as **1.0.0** breaking release; final 0.3.x with DeprecationWarning; pin `vera-sdk<1` for laggards; `vera codemod audit-to-gate` ships in Phase 1 (LibCST) | user override + Codex E3/X1/X2 |
 | SDK PyPI status | stays on PyPI; release 0.3.x deprecation patch + 1.0.0 cut | user override |
-| Sparkline charts | NO (autoplan default stood) | design system holds |
+| Sparkline charts | YES — minimal sparklines / mini-bars permitted (user override 2026-05-23); gauges + large hero charts still banned | design system updated |
 | OpenTimestamps | opt-in, not default; customer-S3 + KMS is default | autoplan default stood |
 | Slack channel | cut from v1; ship email digest instead with full auth (Clerk session, CSRF, single-use tokens, role check) | autoplan + Codex E4 |
 | CSV bulk import | cut from Phase 1 | autoplan default stood |
