@@ -38,6 +38,14 @@ class ActionRecordCreate(BaseModel):
     action_timestamp: Optional[datetime] = None
     target_system: Optional[str] = Field(default=None, max_length=500)
     target_resource: Optional[str] = Field(default=None, max_length=2000)
+    # ── Phase 1 PR 1: promoted from metadata blob ─────────
+    # SDK callers may now set these directly. Format-validation
+    # (tenant_id regex, PHI-shape heuristic on live keys) lands in
+    # Phase 1 PRs 4 & 5; here we only widen the input shape so the
+    # schema accepts the new fields.
+    tenant_id: Optional[str] = Field(default=None, max_length=64)
+    domain: Optional[str] = Field(default=None, max_length=32)
+    action_class: Optional[str] = Field(default=None, max_length=64)
     authorized_by: str = Field(default="system", max_length=500)
     authorization_scope: Optional[str] = Field(default=None, max_length=1000)
     delegation_chain: list = Field(default_factory=list)
@@ -119,6 +127,11 @@ class ActionRecordResponse(BaseModel):
     action_timestamp: datetime
     target_system: Optional[str] = None
     target_resource: Optional[str] = None
+    # Phase 1 PR 1: promoted columns surfaced in responses for
+    # dashboard rendering and SDK round-trip parity.
+    tenant_id: Optional[str] = None
+    domain: Optional[str] = None
+    action_class: Optional[str] = None
     authorized_by: str
     authorization_scope: Optional[str] = None
     delegation_chain: list = Field(default_factory=list)

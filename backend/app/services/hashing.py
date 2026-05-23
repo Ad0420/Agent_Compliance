@@ -71,6 +71,14 @@ HASHABLE_FIELDS = (
     "sequence_number",
     "framework",
     "framework_version",
+    # ── Phase 1 PR 1: promoted from metadata blob to indexed columns ──
+    # Appended at the end (order matters for the deterministic canonicalizer).
+    # ``None``-excluded canonicalization preserves backward-compat for records
+    # written before these columns existed: rows with NULL for all three new
+    # fields hash identically to their pre-Phase-1 selves.
+    "tenant_id",
+    "domain",
+    "action_class",
 )
 
 
@@ -79,5 +87,10 @@ def extract_hashable_fields(record) -> dict:
 
     Uses HASHABLE_FIELDS as the single source of truth.
     Works with both ORM models and SimpleNamespace test objects.
+
+    Missing attributes (e.g. fields added in a later schema PR against an
+    older test fixture) fall back to ``None`` so the canonicalizer
+    omits them — this preserves backwards-compatibility of pre-existing
+    record hashes when ``HASHABLE_FIELDS`` is extended.
     """
-    return {f: getattr(record, f) for f in HASHABLE_FIELDS}
+    return {f: getattr(record, f, None) for f in HASHABLE_FIELDS}

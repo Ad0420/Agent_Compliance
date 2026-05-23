@@ -1,13 +1,28 @@
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
-from sqlalchemy import String, DateTime, JSON, ForeignKey, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    JSON,
+    String,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base
 
 
 class APIKey(Base):
     __tablename__ = "api_keys"
+    __table_args__ = (
+        # Phase 1 PR 1: ``kind`` splits keys into sandbox vs production.
+        # BAA-gating on ``kind='live'`` lands in Phase 1 PR 4 — this PR only
+        # stands up the column + check + index.
+        CheckConstraint("kind IN ('test', 'live')", name="ck_api_keys_kind"),
+        Index("idx_api_keys_org_kind", "org_id", "kind"),
+    )
 
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
@@ -20,6 +35,11 @@ class APIKey(Base):
     key_prefix: Mapped[str] = mapped_column(String, nullable=False)
     permissions: Mapped[list] = mapped_column(
         JSON, nullable=False, default=lambda: ["write", "read"]
+    )
+    # Phase 1 PR 1: ``test`` (al_test_*) vs ``live`` (al_live_*). Existing
+    # keys backfilled to ``test`` per migration n4h5i6j7k8l9.
+    kind: Mapped[str] = mapped_column(
+        String(8), nullable=False, server_default="test", default="test"
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()

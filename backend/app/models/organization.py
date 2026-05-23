@@ -71,3 +71,9 @@ class Organization(Base):
         back_populates="organization",
         cascade="all, delete-orphan",
     )
+    # Phase 1 PR 1: customer-of-the-customer tenancy.
+    customers: Mapped[list["Customer"]] = relationship(
+        "Customer",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
