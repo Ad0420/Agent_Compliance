@@ -293,7 +293,9 @@ def upgrade() -> None:
                 "is_unrestricted",
                 sa.Boolean(),
                 nullable=False,
-                server_default=sa.text("0"),
+                # ``sa.false()`` emits ``FALSE`` on Postgres and ``0`` on SQLite;
+                # ``sa.text("0")`` raises ``DatatypeMismatch`` on Postgres BOOLEAN.
+                server_default=sa.false(),
             ),
             sa.Column("granted_at", sa.DateTime(), nullable=False),
             sa.Column(

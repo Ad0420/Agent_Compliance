@@ -53,10 +53,12 @@ class BAAScope(Base):
     covered_agent_types: Mapped[list] = mapped_column(JSON, nullable=False)
     # Explicit wildcard flag (Phase 1 PR 1). When True the two list
     # columns are advisory; gate checks accept any action_class / agent_type.
+    # ``sa.false()`` is dialect-portable (Postgres ``FALSE``, SQLite ``0``);
+    # ``sa.text("0")`` blows up on Postgres BOOLEAN columns.
     is_unrestricted: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
-        server_default=sa.text("0"),
+        server_default=sa.false(),
         default=False,
     )
     granted_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
