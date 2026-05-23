@@ -1,0 +1,73 @@
+name: frontend-typecheck
+
+# Why this exists:
+# The main `frontend/` (the Vera dashboard + landing) has no PR-level CI —
+# previously, lint/typecheck regressions only surfaced when Vercel built the
+# preview deploy. As Phase 1 lands more component primitives and downstream
+# PRs consume them, broken TypeScript and ESLint regressions need to fail
+# loud BEFORE merge, not on the deploy preview a reviewer might not click.
+#
+# This workflow runs `tsc --noEmit` on every PR that touches `frontend/**`
+# so TypeScript regressions fail loud before merge. It does NOT run
+# `next build` — that's heavier and Vercel already does it for previews.
+#
+# ESLint is scoped to files changed in the PR rather than the whole tree —
+# `main` carries pre-existing lint errors in unrelated files (regulations
+# page, landing v4-code, dashboard policies page) that we don't want to
+# block component primitive work behind. Lint-the-world cleanup is tracked
+# as a separate follow-up.
+
+on:
+  pull_request:
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-typecheck.yml"
+
+jobs:
+  typecheck:
+    name: frontend typecheck + lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Need both PR head + merge base SHAs available for the
+          # changed-files diff in the lint step.
+          fetch-depth: 0
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci --prefer-offline --no-audit --no-fund
+
+      - name: TypeScript check
+        working-directory: frontend
+        run: npx tsc --noEmit
+
+      - name: ESLint (changed files only)
+        # Scope to files touched in this PR (relative to the merge base) so
+        # we don't inherit pre-existing errors from unrelated files. Falls
+        # back to no-op when no frontend files changed.
+        run: |
+          set -euo pipefail
+          BASE_REF="${{ github.event.pull_request.base.sha }}"
+          # List changed files in this PR under frontend/, normalize paths
+          # so they're relative to the frontend/ workdir.
+          CHANGED=$(git diff --name-only --diff-filter=ACMR "$BASE_REF" HEAD -- 'frontend/' \
+            | sed 's|^frontend/||' \
+            | grep -E '\.(ts|tsx|js|jsx|mjs)$' \
+            || true)
+          if [[ -z "$CHANGED" ]]; then
+            echo "No frontend JS/TS files changed — skipping lint."
+            exit 0
+          fi
+          echo "Linting:"
+          echo "$CHANGED"
+          cd frontend
+          # shellcheck disable=SC2086
+          npx eslint $CHANGED --max-warnings 0
