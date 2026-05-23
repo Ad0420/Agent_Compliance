@@ -35,7 +35,8 @@ async def test_api_key_default_kind_is_test(db_session):
 
 @pytest.mark.asyncio
 async def test_api_key_explicit_live_accepted(db_session):
-    """A key with ``kind='live'`` is accepted at the schema level —
+    """A key with ``kind='live'`` is accepted at the ORM level only in
+    this PR — PR 4 adds the create-time ``kind`` input + BAA gate.
     BAA-gating is a separate concern in PR 4."""
     org = Organization(name="ak-live")
     db_session.add(org)

@@ -1,7 +1,7 @@
 """BAAAgreement + BAAScope model tests (Phase 1 PR 1)."""
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import select, text
@@ -10,20 +10,15 @@ from sqlalchemy.exc import IntegrityError
 from app.models import BAAAgreement, BAAScope, Customer, Organization
 
 
-async def _make_customer(db_session, name: str) -> tuple[Organization, Customer]:
-    org = Organization(name=name)
-    db_session.add(org)
-    await db_session.flush()
-    cust = Customer(org_id=org.id, tenant_id=f"{name}_t")
-    db_session.add(cust)
-    await db_session.commit()
-    await db_session.refresh(cust)
-    return org, cust
+def _now() -> datetime:
+    """Return tz-naive UTC ``datetime`` consistent with how the app writes
+    ``DateTime`` columns. Replaces deprecated ``datetime.utcnow()``."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 @pytest.mark.asyncio
-async def test_baa_agreement_default_status_draft(db_session):
-    org, cust = await _make_customer(db_session, "baa-defaults")
+async def test_baa_agreement_default_status_draft(db_session, make_org_and_customer):
+    org, cust = await make_org_and_customer("baa-defaults")
 
     baa = BAAAgreement(org_id=org.id, customer_id=cust.id)
     db_session.add(baa)
@@ -38,8 +33,8 @@ async def test_baa_agreement_default_status_draft(db_session):
 
 
 @pytest.mark.asyncio
-async def test_baa_agreement_invalid_status_rejected(db_session):
-    org, cust = await _make_customer(db_session, "baa-bad-status")
+async def test_baa_agreement_invalid_status_rejected(db_session, make_org_and_customer):
+    org, cust = await make_org_and_customer("baa-bad-status")
 
     db_session.add(
         BAAAgreement(org_id=org.id, customer_id=cust.id, status="unsigned")
@@ -50,10 +45,10 @@ async def test_baa_agreement_invalid_status_rejected(db_session):
 
 
 @pytest.mark.asyncio
-async def test_baa_scope_json_roundtrip(db_session):
+async def test_baa_scope_json_roundtrip(db_session, make_org_and_customer):
     """Codex E2: covered_services + covered_agent_types must round-trip
     as JSON arrays cleanly so Phase 2 gate checks can read them."""
-    org, cust = await _make_customer(db_session, "baa-scope-json")
+    org, cust = await make_org_and_customer("baa-scope-json")
     baa = BAAAgreement(org_id=org.id, customer_id=cust.id, status="active")
     db_session.add(baa)
     await db_session.commit()
@@ -63,7 +58,7 @@ async def test_baa_scope_json_roundtrip(db_session):
         baa_agreement_id=baa.id,
         covered_services=["chart_entry", "scheduling"],
         covered_agent_types=["scribe", "receptionist"],
-        granted_at=datetime.utcnow(),
+        granted_at=_now(),
     )
     db_session.add(scope)
     await db_session.commit()
@@ -74,15 +69,15 @@ async def test_baa_scope_json_roundtrip(db_session):
 
 
 @pytest.mark.asyncio
-async def test_baa_scope_cascade_on_agreement_delete(db_session):
+async def test_baa_scope_cascade_on_agreement_delete(db_session, make_org_and_customer):
     """Deleting a BAAAgreement must cascade to its scopes."""
-    org, cust = await _make_customer(db_session, "baa-cascade-scope")
+    org, cust = await make_org_and_customer("baa-cascade-scope")
     baa = BAAAgreement(org_id=org.id, customer_id=cust.id, status="active")
     db_session.add(baa)
     await db_session.commit()
     await db_session.refresh(baa)
 
-    now = datetime.utcnow()
+    now = _now()
     db_session.add(
         BAAScope(
             baa_agreement_id=baa.id,
@@ -102,7 +97,6 @@ async def test_baa_scope_cascade_on_agreement_delete(db_session):
     await db_session.commit()
     baa_id = baa.id
 
-    await db_session.execute(text("PRAGMA foreign_keys = ON"))
     await db_session.execute(
         text("DELETE FROM baa_agreements WHERE id = :id"), {"id": baa_id}
     )
@@ -116,10 +110,10 @@ async def test_baa_scope_cascade_on_agreement_delete(db_session):
 
 
 @pytest.mark.asyncio
-async def test_baa_agreement_cascade_on_customer_delete(db_session):
+async def test_baa_agreement_cascade_on_customer_delete(db_session, make_org_and_customer):
     """Deleting a Customer must cascade to BAAAgreements (and via that
     cascade, to BAAScopes)."""
-    org, cust = await _make_customer(db_session, "baa-cust-cascade")
+    org, cust = await make_org_and_customer("baa-cust-cascade")
     baa = BAAAgreement(org_id=org.id, customer_id=cust.id, status="draft")
     db_session.add(baa)
     await db_session.commit()
@@ -130,13 +124,12 @@ async def test_baa_agreement_cascade_on_customer_delete(db_session):
             baa_agreement_id=baa.id,
             covered_services=["s"],
             covered_agent_types=["a"],
-            granted_at=datetime.utcnow(),
+            granted_at=_now(),
         )
     )
     await db_session.commit()
     cust_id = cust.id
 
-    await db_session.execute(text("PRAGMA foreign_keys = ON"))
     await db_session.execute(
         text("DELETE FROM customers WHERE id = :id"), {"id": cust_id}
     )
@@ -149,3 +142,68 @@ async def test_baa_agreement_cascade_on_customer_delete(db_session):
     assert bagm.scalars().all() == []
     scopes = await db_session.execute(select(BAAScope))
     assert scopes.scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_baa_agreement_rejects_inverted_dates(db_session, make_org_and_customer):
+    """The ``ck_baa_temporal_order`` CHECK constraint rejects ``effective_at
+    > expires_at`` when both are populated. Guards against ops-typo BAAs."""
+    org, cust = await make_org_and_customer("baa-inverted")
+    db_session.add(
+        BAAAgreement(
+            org_id=org.id,
+            customer_id=cust.id,
+            effective_at=datetime(2030, 1, 1),
+            expires_at=datetime(2025, 1, 1),
+        )
+    )
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_baa_scope_is_unrestricted_default_false(db_session, make_org_and_customer):
+    """New BAAScope rows default to is_unrestricted=False (the strict
+    enumerated semantics). Legacy backfill to True lands in PR 4/5."""
+    org, cust = await make_org_and_customer("baa-unr")
+    baa = BAAAgreement(org_id=org.id, customer_id=cust.id, status="active")
+    db_session.add(baa)
+    await db_session.commit()
+    await db_session.refresh(baa)
+    s = BAAScope(
+        baa_agreement_id=baa.id,
+        covered_services=["x"],
+        covered_agent_types=["y"],
+        granted_at=_now(),
+    )
+    db_session.add(s)
+    await db_session.commit()
+    await db_session.refresh(s)
+    assert s.is_unrestricted is False
+
+
+@pytest.mark.asyncio
+async def test_baa_agreement_updated_at_bumps_on_change(
+    db_session, make_org_and_customer
+):
+    """``onupdate=func.now()`` must bump ``updated_at`` on any column change.
+
+    SQLite ``CURRENT_TIMESTAMP`` has second-level resolution; sleep > 1s
+    so the bump is observable in the assertion.
+    """
+    import asyncio
+
+    org, cust = await make_org_and_customer("baa-upd")
+    baa = BAAAgreement(org_id=org.id, customer_id=cust.id, status="draft")
+    db_session.add(baa)
+    await db_session.commit()
+    await db_session.refresh(baa)
+    first_updated = baa.updated_at
+
+    await asyncio.sleep(1.1)  # SQLite CURRENT_TIMESTAMP is second-resolution
+
+    baa.status = "active"
+    await db_session.commit()
+    await db_session.refresh(baa)
+    assert baa.updated_at > first_updated

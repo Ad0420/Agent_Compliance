@@ -198,3 +198,66 @@ def test_domain_and_action_class_change_record_hash():
         assert base_hash != variant_hash, (
             f"changing {field} from None to {value} did not change the hash"
         )
+
+
+# ── Pinned-digest regression ──────────────────────────────────
+
+
+def test_legacy_record_hash_matches_frozen_digest():
+    """Pre-Phase-1 records must hash to the same value forever.
+
+    The two earlier tests (``test_legacy_record_hash_unchanged_after_field_addition``
+    and ``test_extract_hashable_fields_handles_legacy_record``) both
+    pipe through ``canonicalize()`` — a bug in the canonicalizer itself
+    would be invisible to them. This test pins the canonical output by
+    comparing against a hard-coded SHA-256 hex computed once from a
+    fully-specified legacy fixture.
+
+    If this test fails, the canonicalizer or hash function drifted, and
+    every pre-Phase-1 ``record_hash`` in production has been invalidated.
+    Do NOT update the constant to silence the failure — investigate the
+    drift first.
+    """
+    record = _legacy_record()
+    fields = extract_hashable_fields(record)
+    canonical = canonicalize(fields)
+    h = compute_record_hash(canonical, record.previous_hash)
+    # Generated once from the canonical pipeline; lock it forever.
+    EXPECTED = "623e43bbafe3460fe8fe549e48bf84b694fd54ecf8d4b85f19e2bbc15fda68b0"
+    assert h == EXPECTED, f"Pre-Phase-1 hash drifted: {h}"
+
+
+def test_hashable_fields_all_resolve_on_populated_record():
+    """If a ``HASHABLE_FIELDS`` entry doesn't exist on ``ActionRecord``,
+    ``getattr(record, f, None)`` returns ``None`` silently — a typo
+    in ``HASHABLE_FIELDS`` would weaken the hash forever without any
+    test failing. This guards against that.
+
+    Fields that can legitimately be ``None`` in practice (``error_message``
+    on success cases) are skipped. Every other entry MUST resolve to a
+    non-``None`` value on a fully-populated record.
+    """
+    record = _new_record(
+        tenant_id="t",
+        domain="d",
+        action_class="a",
+        framework="f",
+        framework_version="1.0",
+        agent_version="v",
+        model_id="m",
+        model_version="1",
+        action_description="desc",
+        target_system="ts",
+        target_resource="tr",
+        authorization_scope="scope",
+        data_subject_id="ds",
+    )
+    fields = extract_hashable_fields(record)
+    nullable_in_practice = {"error_message"}
+    for f in HASHABLE_FIELDS:
+        if f in nullable_in_practice:
+            continue
+        assert fields[f] is not None, (
+            f"{f!r} resolved to None — likely a typo in HASHABLE_FIELDS "
+            f"(field does not exist on the record fixture)."
+        )

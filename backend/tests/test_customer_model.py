@@ -97,6 +97,9 @@ async def test_customer_cascade_on_org_delete(db_session):
 
     (The app uses soft-delete on Organization in practice, but the FK
     behaviour matters for ops cleanups and integration tests.)
+
+    SQLite FK enforcement is now wired on every fresh connection via the
+    ``connect`` event in conftest.py — no per-test PRAGMA needed.
     """
     org = Organization(name="org-cascade")
     db_session.add(org)
@@ -106,8 +109,6 @@ async def test_customer_cascade_on_org_delete(db_session):
     db_session.add(Customer(org_id=org.id, tenant_id="c2"))
     await db_session.commit()
 
-    # SQLite requires PRAGMA foreign_keys=ON to honour ON DELETE CASCADE.
-    await db_session.execute(text("PRAGMA foreign_keys = ON"))
     await db_session.execute(
         text("DELETE FROM organizations WHERE id = :id"), {"id": org.id}
     )
@@ -159,3 +160,45 @@ async def test_customer_organization_relationship(db_session):
     loaded = result.scalar_one()
     tenant_ids = {c.tenant_id for c in loaded.customers}
     assert tenant_ids == {"rel_a", "rel_b"}
+
+
+@pytest.mark.asyncio
+async def test_customer_baa_status_accepts_terminated(db_session):
+    """Phase 1 PR 1: ``terminated`` is a valid BAA lifecycle state added
+    to distinguish a rescinded BAA from one that merely expired."""
+    org = Organization(name="org-baa-term")
+    db_session.add(org)
+    await db_session.flush()
+
+    db_session.add(
+        Customer(org_id=org.id, tenant_id="x", baa_status="terminated")
+    )
+    await db_session.commit()  # no IntegrityError
+
+
+@pytest.mark.asyncio
+async def test_customer_updated_at_bumps_on_change(db_session):
+    """``onupdate=func.now()`` must bump ``updated_at`` on any column change.
+
+    Pre-fix the column had only ``server_default``, so ``updated_at``
+    froze at INSERT and silently broke change tracking. SQLite
+    ``CURRENT_TIMESTAMP`` has second-level resolution; sleep > 1s so
+    the bump is visible.
+    """
+    import asyncio
+
+    org = Organization(name="ts-org-upd")
+    db_session.add(org)
+    await db_session.flush()
+    c = Customer(org_id=org.id, tenant_id="t")
+    db_session.add(c)
+    await db_session.commit()
+    await db_session.refresh(c)
+    first_updated = c.updated_at
+
+    await asyncio.sleep(1.1)  # SQLite CURRENT_TIMESTAMP is second-resolution
+
+    c.display_name = "Updated Name"
+    await db_session.commit()
+    await db_session.refresh(c)
+    assert c.updated_at > first_updated

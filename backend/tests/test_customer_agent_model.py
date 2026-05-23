@@ -16,21 +16,15 @@ from sqlalchemy.exc import IntegrityError
 from app.models import Agent, Customer, CustomerAgent, Organization
 
 
-async def _make_org_and_customer(db_session, name: str) -> tuple[Organization, Customer]:
-    org = Organization(name=name)
-    db_session.add(org)
-    await db_session.flush()
-    customer = Customer(org_id=org.id, tenant_id=f"{name}_tenant")
-    db_session.add(customer)
-    await db_session.commit()
-    await db_session.refresh(customer)
-    return org, customer
+def _now() -> datetime:
+    """Tz-naive UTC ``datetime`` matching how the app writes ``DateTime`` columns."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 @pytest.mark.asyncio
-async def test_customer_agent_basic_create(db_session):
-    org, customer = await _make_org_and_customer(db_session, "ca-basic")
-    now = datetime.utcnow()
+async def test_customer_agent_basic_create(db_session, make_org_and_customer):
+    org, customer = await make_org_and_customer("ca-basic")
+    now = _now()
 
     ca = CustomerAgent(
         customer_id=customer.id,
@@ -50,9 +44,9 @@ async def test_customer_agent_basic_create(db_session):
 
 
 @pytest.mark.asyncio
-async def test_customer_agent_unique_per_customer_and_type(db_session):
-    org, customer = await _make_org_and_customer(db_session, "ca-unique")
-    now = datetime.utcnow()
+async def test_customer_agent_unique_per_customer_and_type(db_session, make_org_and_customer):
+    org, customer = await make_org_and_customer("ca-unique")
+    now = _now()
 
     db_session.add(
         CustomerAgent(
@@ -78,12 +72,12 @@ async def test_customer_agent_unique_per_customer_and_type(db_session):
 
 
 @pytest.mark.asyncio
-async def test_customer_agent_same_type_different_customers_ok(db_session):
+async def test_customer_agent_same_type_different_customers_ok(db_session, make_org_and_customer):
     """Two different customers may each have a CustomerAgent of type
     'scribe' — uniqueness is (customer_id, agent_type), not just agent_type."""
-    org1, customer1 = await _make_org_and_customer(db_session, "ca-multi-1")
-    org2, customer2 = await _make_org_and_customer(db_session, "ca-multi-2")
-    now = datetime.utcnow()
+    org1, customer1 = await make_org_and_customer("ca-multi-1")
+    org2, customer2 = await make_org_and_customer("ca-multi-2")
+    now = _now()
 
     db_session.add(
         CustomerAgent(
@@ -105,9 +99,9 @@ async def test_customer_agent_same_type_different_customers_ok(db_session):
 
 
 @pytest.mark.asyncio
-async def test_customer_agent_invalid_source_rejected(db_session):
-    org, customer = await _make_org_and_customer(db_session, "ca-src")
-    now = datetime.utcnow()
+async def test_customer_agent_invalid_source_rejected(db_session, make_org_and_customer):
+    org, customer = await make_org_and_customer("ca-src")
+    now = _now()
 
     db_session.add(
         CustomerAgent(
@@ -124,9 +118,9 @@ async def test_customer_agent_invalid_source_rejected(db_session):
 
 
 @pytest.mark.asyncio
-async def test_customer_agent_invalid_confidence_rejected(db_session):
-    org, customer = await _make_org_and_customer(db_session, "ca-conf")
-    now = datetime.utcnow()
+async def test_customer_agent_invalid_confidence_rejected(db_session, make_org_and_customer):
+    org, customer = await make_org_and_customer("ca-conf")
+    now = _now()
 
     db_session.add(
         CustomerAgent(
@@ -143,9 +137,9 @@ async def test_customer_agent_invalid_confidence_rejected(db_session):
 
 
 @pytest.mark.asyncio
-async def test_customer_agent_invalid_status_rejected(db_session):
-    org, customer = await _make_org_and_customer(db_session, "ca-stat")
-    now = datetime.utcnow()
+async def test_customer_agent_invalid_status_rejected(db_session, make_org_and_customer):
+    org, customer = await make_org_and_customer("ca-stat")
+    now = _now()
 
     db_session.add(
         CustomerAgent(
@@ -162,16 +156,16 @@ async def test_customer_agent_invalid_status_rejected(db_session):
 
 
 @pytest.mark.asyncio
-async def test_customer_agent_set_null_on_agent_delete(db_session):
+async def test_customer_agent_set_null_on_agent_delete(db_session, make_org_and_customer):
     """Codex E1: deleting the Agent row must NULL the agent_id FK but
     keep the CustomerAgent row intact (historical coverage preserved)."""
-    org, customer = await _make_org_and_customer(db_session, "ca-agentdel")
+    org, customer = await make_org_and_customer("ca-agentdel")
     agent = Agent(org_id=org.id, name="scribe-agent-1")
     db_session.add(agent)
     await db_session.commit()
     await db_session.refresh(agent)
 
-    now = datetime.utcnow()
+    now = _now()
     ca = CustomerAgent(
         customer_id=customer.id,
         agent_id=agent.id,
@@ -183,7 +177,6 @@ async def test_customer_agent_set_null_on_agent_delete(db_session):
     await db_session.commit()
     ca_id = ca.id
 
-    await db_session.execute(text("PRAGMA foreign_keys = ON"))
     await db_session.execute(
         text("DELETE FROM agents WHERE id = :id"), {"id": agent.id}
     )
@@ -202,10 +195,10 @@ async def test_customer_agent_set_null_on_agent_delete(db_session):
 
 
 @pytest.mark.asyncio
-async def test_customer_agent_cascade_on_customer_delete(db_session):
+async def test_customer_agent_cascade_on_customer_delete(db_session, make_org_and_customer):
     """Deleting the Customer cascades to CustomerAgent rows."""
-    org, customer = await _make_org_and_customer(db_session, "ca-custdel")
-    now = datetime.utcnow()
+    org, customer = await make_org_and_customer("ca-custdel")
+    now = _now()
 
     db_session.add(
         CustomerAgent(
@@ -225,7 +218,6 @@ async def test_customer_agent_cascade_on_customer_delete(db_session):
     )
     await db_session.commit()
 
-    await db_session.execute(text("PRAGMA foreign_keys = ON"))
     await db_session.execute(
         text("DELETE FROM customers WHERE id = :id"), {"id": customer.id}
     )
@@ -235,3 +227,37 @@ async def test_customer_agent_cascade_on_customer_delete(db_session):
         select(CustomerAgent).where(CustomerAgent.customer_id == customer.id)
     )
     assert result.scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_customer_agent_type_normalized(db_session, make_org_and_customer):
+    """The ``@validates('agent_type')`` hook lowercases + strips. Without
+    it, ``'scribe'``, ``'Scribe'``, and ``'scribe '`` would all bypass
+    the unique constraint and create three rows for the same logical type.
+    """
+    org, customer = await make_org_and_customer("ca-norm")
+    now = _now()
+    ca = CustomerAgent(
+        customer_id=customer.id,
+        agent_type="  Scribe  ",
+        first_seen_at=now,
+        last_seen_at=now,
+    )
+    db_session.add(ca)
+    await db_session.commit()
+    await db_session.refresh(ca)
+    assert ca.agent_type == "scribe"
+
+    # Second insert with the same logical type but different casing must
+    # now hit the unique constraint.
+    db_session.add(
+        CustomerAgent(
+            customer_id=customer.id,
+            agent_type="SCRIBE",
+            first_seen_at=now,
+            last_seen_at=now,
+        )
+    )
+    with pytest.raises(IntegrityError):
+        await db_session.commit()
+    await db_session.rollback()

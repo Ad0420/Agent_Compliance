@@ -3,9 +3,10 @@ import asyncio
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.models import Base, Organization, ChainState, APIKey
+from app.models import Base, Customer, Organization, ChainState, APIKey
 from app.services.auth import generate_api_key
 from app.services.immutability import install_sqlite_triggers
 from app.database import get_db
@@ -26,6 +27,20 @@ async def db_engine():
         connect_args={"check_same_thread": False},
         echo=False,
     )
+
+    # SQLite has FK enforcement OFF by default. Per-test PRAGMA may not
+    # stick across aiosqlite's connection pool, so we wire it onto the
+    # underlying sync engine's connect event — every fresh DBAPI connection
+    # picks it up automatically. Required for accurate CASCADE / SET NULL
+    # behaviour in model tests.
+    @event.listens_for(engine.sync_engine, "connect")
+    def _enable_sqlite_fk(dbapi_conn, _connection_record):
+        cursor = dbapi_conn.cursor()
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(install_sqlite_triggers)
@@ -60,6 +75,27 @@ async def org_and_key(db_session):
         db_session, org.id, "test-admin-key", ["read", "write", "admin"]
     )
     return org, raw_key, api_key
+
+
+@pytest_asyncio.fixture
+async def make_org_and_customer(db_session):
+    """Factory fixture returning ``async def make(name) -> (Organization, Customer)``.
+
+    Centralised here so the Customer/CustomerAgent/BAA test modules don't
+    each maintain their own (drift-prone) helper.
+    """
+
+    async def _make(name: str) -> tuple[Organization, Customer]:
+        org = Organization(name=name)
+        db_session.add(org)
+        await db_session.flush()
+        customer = Customer(org_id=org.id, tenant_id=f"{name}_tenant")
+        db_session.add(customer)
+        await db_session.commit()
+        await db_session.refresh(customer)
+        return org, customer
+
+    return _make
 
 
 @pytest_asyncio.fixture
