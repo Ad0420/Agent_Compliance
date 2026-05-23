@@ -23,8 +23,8 @@ export function Sidebar() {
   return (
     <aside className="fixed left-0 top-0 z-30 flex h-screen w-56 flex-col border-r border-border bg-card">
       <div className="flex h-14 items-center gap-2 border-b border-border px-4">
-        <ShieldCheck className="h-6 w-6 text-emerald-400" />
-        <span className="text-base font-semibold tracking-tight">Vera</span>
+        <ShieldCheck className="h-6 w-6 text-foreground" />
+        <span className="font-display text-lg tracking-tight">Vera</span>
       </div>
       <nav className="flex-1 space-y-1 p-3">
         {NAV_ITEMS.map((item) => {

@@ -42,11 +42,13 @@ export function StatsRow() {
           <CardContent className="p-4">
             <div className="flex items-start justify-between">
               <div>
-                <p className="text-xs font-medium text-muted-foreground">{stat.label}</p>
-                <p className="mt-1 text-2xl font-bold">{stat.value}</p>
+                <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  {stat.label}
+                </p>
+                <p className="mt-1 font-display text-3xl text-foreground">{stat.value}</p>
                 <p className="mt-0.5 text-xs text-muted-foreground">{stat.description}</p>
               </div>
-              <stat.icon className="h-5 w-5 text-muted-foreground/50" />
+              <stat.icon className="h-5 w-5 text-[color:var(--ink-3)]" />
             </div>
           </CardContent>
         </Card>
