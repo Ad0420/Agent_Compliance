@@ -72,6 +72,24 @@ class Customer(Base):
     contact_email: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
     )
+    # Operator-supplied human contact name. Paired with ``contact_email``
+    # and edited via ``PATCH /v1/customers/{tenant_id}`` (Phase 1 PR 2).
+    contact_name: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True
+    )
+    # ``first_seen_at`` is set on INSERT by the auto-discovery path
+    # (Phase 1 PR 2). Nullable on the column so rows created before
+    # the o5i6j7k8l9m0 migration don't need a backfill — the API never
+    # exposes a NULL because auto-discovery always populates both.
+    first_seen_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    # ``last_seen_at`` is touched on every action_record write whose
+    # ``tenant_id`` matches this Customer. Drives the AI Coverage Matrix
+    # "stale customer" column.
+    last_seen_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
     # Jurisdictions covered for this customer (e.g. ``["CA", "TX"]``).
     # Drives state-by-state report filtering in Phase 3.
     jurisdictions: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)

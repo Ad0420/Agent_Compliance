@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
@@ -6,13 +7,30 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import ActionRecord, Agent, ChainState, Organization, PolicyViolation
+from ..models import (
+    ActionRecord,
+    Agent,
+    ChainState,
+    Customer,
+    CustomerAgent,
+    Organization,
+    PolicyViolation,
+)
 from ..schemas.action import ActionRecordCreate
 from .hashing import canonicalize, compute_record_hash, extract_hashable_fields
 from .policy_engine import evaluate_policies
 from .email import send_policy_violation_alert
 from .locks import get_org_lock
 from .webhooks import dispatch_event
+
+logger = logging.getLogger(__name__)
+
+
+# Auto-discovery default when the SDK has not classified the action.
+# Matches the v1-implementation-plan X4 guidance:
+# "Unknown action classes land as `unclassified`, not silently create
+# new coverage categories."
+_DEFAULT_AGENT_TYPE = "unclassified"
 
 
 def _is_sqlite(session: AsyncSession) -> bool:
@@ -122,6 +140,156 @@ def _create_record(
     canonical = canonicalize(fields)
     record.record_hash = compute_record_hash(canonical, previous_hash)
     return record
+
+
+async def _auto_discover_customer_and_agent(
+    session: AsyncSession,
+    *,
+    org_id: str,
+    tenant_id: str,
+    agent_id: str,
+    action_class: str | None,
+    now: datetime,
+) -> None:
+    """Auto-create / touch Customer + CustomerAgent rows on action insert.
+
+    Phase 1 PR 2 Stream B item B2.
+
+    Contract:
+      * If no Customer exists for ``(org_id, tenant_id)``, create one with
+        ``status='pending_setup'``, ``baa_status='missing'``,
+        ``display_name=tenant_id``, and ``first_seen_at=last_seen_at=now``.
+      * If a Customer already exists, only advance ``last_seen_at`` —
+        never rewrite ``display_name`` or ``status`` (the operator may
+        have edited the display_name from the dashboard, and lifecycle
+        state is owned by Phase 1 PR 3).
+      * Stamp / touch a CustomerAgent row keyed on
+        ``(customer_id, agent_type)``. ``agent_type`` is derived from
+        ``data.action_class`` if present, otherwise ``"unclassified"``
+        (matches X4 in v1-implementation-plan). The stamp is HISTORICAL
+        per Codex E1: subsequent actions with the same triple only
+        update ``last_seen_at``; the agent_type and agent_id columns are
+        never rewritten.
+
+    Cross-org tenant_id collision (a different org's customers table
+    already holds this tenant_id) is logged as a warning. The webhook
+    event emission is intentionally deferred to Phase 1 PR 3 — that PR
+    owns ``new_customer_detected`` / ``cross_org_collision`` events.
+
+    All inserts happen on the same session as the caller's. The caller
+    runs inside the org lock and commits after this returns — if the
+    parent commit fails, these rows roll back too (transactional safety
+    per the test_plan "auto-discover transactional" row).
+    """
+    if not tenant_id:
+        return
+
+    # ── Customer: find-or-create ────────────────────────────────
+    existing = await session.execute(
+        select(Customer).where(
+            Customer.org_id == org_id,
+            Customer.tenant_id == tenant_id,
+        )
+    )
+    customer = existing.scalar_one_or_none()
+    if customer is None:
+        # Cross-org collision detection. NB: we do NOT share or block —
+        # tenant_id is org-scoped on purpose (one operator's "abridge"
+        # may legitimately be a different operator's "abridge"). PR 3
+        # will emit a webhook for ops review; PR 2 just logs.
+        collision = await session.execute(
+            select(Customer.org_id).where(
+                Customer.tenant_id == tenant_id,
+                Customer.org_id != org_id,
+            ).limit(1)
+        )
+        other_org = collision.scalar_one_or_none()
+        if other_org is not None:
+            # TODO(PR 3): emit ``customer.cross_org_collision`` webhook
+            # event so ops can review whether the operators are pointing
+            # at the same downstream customer (a legitimate multi-tenant
+            # setup) or whether someone typo'd a competitor's identifier.
+            logger.warning(
+                "cross-org tenant_id collision: org_id=%s auto-discovered "
+                "tenant_id=%s which already exists under org_id=%s",
+                org_id,
+                tenant_id,
+                other_org,
+            )
+
+        customer = Customer(
+            org_id=org_id,
+            tenant_id=tenant_id,
+            display_name=tenant_id,
+            status="pending_setup",
+            baa_status="missing",
+            first_seen_at=now,
+            last_seen_at=now,
+        )
+        session.add(customer)
+        try:
+            await session.flush()
+        except IntegrityError:
+            # Concurrent insert (same tenant under same org) won the
+            # race — re-read so we work with the surviving row.
+            await session.rollback()
+            again = await session.execute(
+                select(Customer).where(
+                    Customer.org_id == org_id,
+                    Customer.tenant_id == tenant_id,
+                )
+            )
+            customer = again.scalar_one()
+            customer.last_seen_at = now
+    else:
+        customer.last_seen_at = now
+
+    # ── CustomerAgent: stamp historically ────────────────────────
+    # ``action_class`` is the most action-shaped signal we have today.
+    # X4 (Codex DX) calls for an explicit ``agent_type`` parameter at
+    # ``vera.init(...)`` in a later PR; until then ``unclassified``
+    # is the safe default that doesn't silently invent coverage
+    # categories.
+    agent_type = (action_class or _DEFAULT_AGENT_TYPE).strip().lower() \
+        or _DEFAULT_AGENT_TYPE
+
+    ca_existing = await session.execute(
+        select(CustomerAgent).where(
+            CustomerAgent.customer_id == customer.id,
+            # Compare to the normalised form to match the validates() hook.
+            CustomerAgent.agent_type == agent_type,
+        )
+    )
+    ca = ca_existing.scalar_one_or_none()
+    if ca is None:
+        ca = CustomerAgent(
+            customer_id=customer.id,
+            agent_id=agent_id,
+            agent_type=agent_type,
+            first_seen_at=now,
+            last_seen_at=now,
+            source="auto_discovered",
+            confidence="high",
+            status="active",
+        )
+        session.add(ca)
+        try:
+            await session.flush()
+        except IntegrityError:
+            await session.rollback()
+            again = await session.execute(
+                select(CustomerAgent).where(
+                    CustomerAgent.customer_id == customer.id,
+                    CustomerAgent.agent_type == agent_type,
+                )
+            )
+            ca = again.scalar_one()
+            ca.last_seen_at = now
+    else:
+        # Touch only; do NOT rewrite agent_id or agent_type — those are
+        # the historical stamp (Codex E1). If the same logical agent
+        # later changes its metadata, the past coverage stays intact.
+        ca.last_seen_at = now
 
 
 async def _store_violations_and_notify(
@@ -241,6 +409,21 @@ async def build_and_insert_record(
         record = _create_record(org_id, data, new_sequence, previous_hash, now, agent_id)
         session.add(record)
 
+        # [AUTO-DISCOVERY] Per Phase 1 PR 2 B2 — Customer + CustomerAgent
+        # rows are created/touched as part of the SAME transaction as the
+        # ActionRecord. If the ActionRecord commit below fails, these rows
+        # roll back too (covers the "auto-discover transactional" test
+        # case in v1-test-plan.md).
+        if data.tenant_id:
+            await _auto_discover_customer_and_agent(
+                session,
+                org_id=org_id,
+                tenant_id=data.tenant_id,
+                agent_id=agent_id,
+                action_class=data.action_class,
+                now=now,
+            )
+
         chain_state.latest_sequence = new_sequence
         chain_state.latest_hash = record.record_hash
         chain_state.updated_at = now
@@ -303,6 +486,20 @@ async def build_and_insert_batch(
             agent_id = await _get_or_create_agent(session, org_id, data.agent_name, data.agent_version)
             record = _create_record(org_id, data, new_sequence, previous_hash, now, agent_id)
             session.add(record)
+
+            # [AUTO-DISCOVERY] Same Customer/CustomerAgent touch path as
+            # the single-record API. Runs inside the batch's atomic
+            # transaction — if any record's commit fails, the whole batch
+            # rolls back including the customer/customer_agent rows.
+            if data.tenant_id:
+                await _auto_discover_customer_and_agent(
+                    session,
+                    org_id=org_id,
+                    tenant_id=data.tenant_id,
+                    agent_id=agent_id,
+                    action_class=data.action_class,
+                    now=now,
+                )
 
             chain_state.latest_sequence = new_sequence
             chain_state.latest_hash = record.record_hash

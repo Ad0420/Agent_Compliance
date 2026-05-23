@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -12,6 +13,13 @@ _MAX_JSON_BYTES = 1_000_000  # 1 MB
 # the policy engine assigns it when a block-action policy fires; clients are
 # not allowed to claim a record was blocked themselves.
 _CLIENT_RESULT_VALUES = ("success", "failure", "partial", "pending")
+
+# ``tenant_id`` format. Matches the regex on ``Customer.tenant_id`` and is
+# tested in test_customer_schemas. Rejecting at the action boundary too
+# means we never auto-discover a Customer with an unprintable / PHI-shaped
+# tenant_id — the dashboard's display_name=tenant_id default would then
+# leak that shape to operators.
+_TENANT_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 def _validate_json_size(v: dict | list, field_name: str) -> dict | list:
@@ -58,6 +66,26 @@ class ActionRecordCreate(BaseModel):
     reasoning: dict = Field(default_factory=dict)
     outcome: dict = Field(default_factory=dict)
     metadata: dict = Field(default_factory=dict)
+
+    @field_validator("tenant_id")
+    @classmethod
+    def check_tenant_id_format(cls, v: Optional[str]) -> Optional[str]:
+        """Reject malformed tenant_id at the API boundary (Phase 1 PR 2 B4).
+
+        Test plan: ``tenant_id="John Doe DOB 1972"`` → 422 (the regex
+        rejects whitespace and the digits-with-spaces shape that screams
+        "I'm a patient name"). ``tenant_id="cleveland_clinic"`` → 200.
+
+        Falsy values pass through as ``None`` — the field is optional on
+        the SDK side until Phase 1 PR 4 makes it required for live keys.
+        """
+        if v is None or v == "":
+            return None
+        if not _TENANT_ID_RE.match(v):
+            raise ValueError(
+                "tenant_id must match ^[a-zA-Z0-9_-]{1,64}$"
+            )
+        return v
 
     @field_validator("result")
     @classmethod
