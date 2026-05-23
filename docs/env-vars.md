@@ -91,8 +91,8 @@ build`) so missing or stub Clerk keys block the deploy.
 | `CLERK_SECRET_KEY` | yes | Clerk secret key (server-only). Enforced by `check-env.mjs`. | Vercel |
 | `NEXT_PUBLIC_CLERK_SIGN_IN_URL` | no | Custom sign-in route. Defaults to `/login`. | Vercel |
 | `NEXT_PUBLIC_CLERK_SIGN_UP_URL` | no | Custom sign-up route. Defaults to `/register`. | Vercel |
-| `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL` | no | Post-sign-in redirect. Defaults to `/dashboard`. | Vercel |
-| `NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL` | no | Post-sign-up redirect. Defaults to `/dashboard`. | Vercel |
+| `NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL` | no | Post-sign-in redirect. Defaults to `/home` (a stub that forwards to `/compliance` until PR 12 ships the real Home page). | Vercel |
+| `NEXT_PUBLIC_CLERK_AFTER_SIGN_UP_URL` | no | Post-sign-up redirect. Defaults to `/home` (a stub that forwards to `/compliance` until PR 12 ships the real Home page). | Vercel |
 | `NEXT_PUBLIC_API_URL` | yes in prod | Backend API base URL (e.g. `https://api.usevera.xyz`). Falls back to `http://localhost:8000` if unset, which is wrong for any deployed environment. | Vercel |
 
 ## SDK (`vera-sdk` on PyPI)
