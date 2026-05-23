@@ -1,8 +1,12 @@
 # Error Discipline — 12-class catalog
 
 This is a **cross-phase PR-gate checklist** for the Vera v1 implementation
-plan (Codex DX X5). Every new error path — SDK, backend, dashboard,
-webhook callback, CLI — MUST surface all four of:
+plan (Codex DX X5). The 12-class catalog and its runtime enforcement
+ship as part of SDK 1.0.0 (Phase 1 PR 6–8); until then the codes listed
+below are the planned shape, and this document is the only gate.
+
+Every new error path — SDK, backend, dashboard, webhook callback,
+CLI — MUST surface all four of:
 
 | Field | Purpose | Audience |
 |---|---|---|
@@ -11,14 +15,16 @@ webhook callback, CLI — MUST surface all four of:
 | `fix_url` | Deep link into the dashboard that lands the user on the screen where they can resolve it (e.g., the BAA upload page, the API-key rotation page, the policy-pack install page). | Customer remediation. |
 | `docs_url` | Deep link into Vera's docs site explaining the error class, common causes, and the fix flow. | Engineer understanding the failure mode. |
 
-A PR that adds an error path without all four fields fails the
-error-discipline gate and does not merge.
+Reviewers must verify error paths include all four fields. Once
+SDK 1.0.0 ships, a CI lint will enforce this automatically.
 
 ## The 12 classes
 
-These are the canonical error codes used across the SDK + backend +
-dashboard. New error conditions either map onto one of these or get
-added here in a follow-up PR before the new path lands.
+These are the canonical error codes planned for the SDK + backend +
+dashboard (SDK 1.0.0, Phase 1 PR 6–8). They are not yet defined in
+`sdk/vera/errors.py`, which today exposes six generic classes. New
+error conditions either map onto one of these or get added here in
+a follow-up PR before the new path lands.
 
 | Code | When raised |
 |---|---|
@@ -78,9 +84,11 @@ Reviewers checking a PR that touches an error path verify each box:
 Errors degrade silently if the discipline isn't enforced socially. A
 runtime check ("did you set fix_url?") catches missing fields too
 late — after the error has already been thrown in production. This
-doc is the PR-time gate; the SDK + backend each ship their own
-linter-style helpers (`vera.errors.ensure_complete(payload)`) that
-backs it up at runtime, but the doc is the contract.
+doc is the PR-time gate.
+
+The runtime helper `vera.errors.ensure_complete(payload)` and the
+SDK + backend linter-style enforcement are planned for SDK 1.0.0
+(Phase 1 PR 6–8). Until then, the doc is the only gate.
 
 ## References
 
