@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, List, ShieldCheck, Bot, Settings, Scale, Shield, UserCheck } from "lucide-react";
+import { LayoutDashboard, List, ShieldCheck, Bot, Settings, Scale, Shield, UserCheck, Key } from "lucide-react";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { href: "/agents", label: "Agents", icon: Bot },
   { href: "/policies", label: "Policies", icon: Shield },
   { href: "/compliance", label: "Compliance", icon: Scale },
+  { href: "/api-keys", label: "API Keys", icon: Key },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

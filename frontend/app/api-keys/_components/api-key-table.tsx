@@ -10,7 +10,7 @@
  * so the Clerk session token never has to be exposed to the client.
  */
 import { useState, useTransition } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -76,10 +76,17 @@ function formatDate(iso: string | null): string {
 
 export function ApiKeyTable({ initialKeys, canMint, canRevoke }: Props) {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [, startTransition] = useTransition();
 
   const [keys, setKeys] = useState<ApiKey[]>(initialKeys);
-  const [createOpen, setCreateOpen] = useState(false);
+  // Deep-link: /api-keys?create=1 opens the create dialog on mount so the
+  // first-run empty state on /dashboard (coming in E4) can jump straight
+  // into key creation. Gated on canMint so non-admins don't see a dialog
+  // they can't submit.
+  const [createOpen, setCreateOpen] = useState(
+    canMint && searchParams.get("create") === "1",
+  );
   const [newKeyName, setNewKeyName] = useState("");
   const [newKeyPerms, setNewKeyPerms] = useState<string[]>(["read", "write"]);
   const [createdKey, setCreatedKey] = useState<ApiKeyCreated | null>(null);
