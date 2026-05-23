@@ -14,7 +14,7 @@ export function RecentActionsTable() {
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between pb-4">
-        <CardTitle className="text-base">Recent Actions</CardTitle>
+        <CardTitle className="font-display text-xl font-normal">Recent Actions</CardTitle>
         <Link href="/actions" className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
           View all <ArrowRight className="h-3 w-3" />
         </Link>

@@ -7,22 +7,27 @@ import { cn } from "@/lib/utils";
 /**
  * Dashboard topbar (post-E4).
  *
- * Chain-status pill on the left (unchanged) + Clerk's OrganizationSwitcher
- * and UserButton on the right. UserButton owns sign-out; there's no more
+ * Chain-status pill on the left + Clerk's OrganizationSwitcher and
+ * UserButton on the right. UserButton owns sign-out; there's no more
  * legacy localStorage to clear, so the bespoke Logout button is gone.
+ *
+ * Status dot colours come from the warm-paper status tokens
+ * (`--olive` / `--brick`) defined under `.dashboard` in globals.css.
  */
 export function Topbar() {
   const { data: chainStatus } = useChainVerification();
 
   return (
-    <header className="fixed left-56 right-0 top-0 z-20 flex h-14 items-center justify-between border-b border-border bg-card/80 px-6 backdrop-blur-sm">
+    <header className="fixed left-56 right-0 top-0 z-20 flex h-14 items-center justify-between border-b border-border bg-background px-6">
       <div className="flex items-center gap-3">
         {chainStatus && (
           <div className="flex items-center gap-2">
             <span
               className={cn(
                 "h-2.5 w-2.5 rounded-full",
-                chainStatus.is_valid ? "bg-emerald-400" : "bg-red-400 animate-pulse",
+                chainStatus.is_valid
+                  ? "bg-[color:var(--olive)]"
+                  : "bg-[color:var(--brick)] animate-pulse",
               )}
             />
             <span className="text-xs text-muted-foreground">
@@ -32,6 +37,10 @@ export function Topbar() {
         )}
       </div>
       <div className="flex items-center gap-3">
+        {/* Clerk components inherit prefers-color-scheme; OS dark mode +
+            .dashboard's color-scheme: light combine to render them light.
+            A real appearance.variables map to brand them warm-paper is a
+            follow-up PR. */}
         <OrganizationSwitcher
           hidePersonal
           afterCreateOrganizationUrl="/dashboard"
