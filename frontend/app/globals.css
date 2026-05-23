@@ -1,15 +1,216 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400;1,6..72,500&display=swap");
+/*
+ * Vera — globals.css
+ *
+ * v1 is light-mode only. Dark-mode tokens and the .dark selector have been
+ * removed entirely (Phase 0 Day 1). All surfaces — marketing landing,
+ * dashboard, login — render on warm paper. The dashboard tightens spacing
+ * and swaps a few tokens via the `.dashboard` scope wrapper.
+ *
+ * Font loading: Petrona + Inter (the new system per dashboard-design-system.md)
+ * alongside Newsreader + Inter Tight (kept for backward compat — landing
+ * components still reference them directly in a couple of places; will be
+ * dropped once those references migrate in a later Phase 0 stream).
+ */
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Inter+Tight:wght@400;500;600;700;800&family=Petrona:ital,wght@0,400;0,500;1,400;1,500&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400;1,6..72,500&display=swap");
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
-@custom-variant dark (&:is(.dark *));
+/* =========================================================================
+   Root tokens — shared foundation (marketing + dashboard)
+   ========================================================================= */
+:root {
+  /* Tell the browser to render form controls + scrollbars in light mode
+     regardless of OS preference. Belt-and-suspenders alongside removing
+     the .dark selector. */
+  color-scheme: light;
 
+  /* Paper / ink — warm cream surface, inky body text */
+  --paper: #f3efe7;
+  --paper-2: #ebe6db;
+  --paper-3: #ddd6c5;
+  --ink: #15140f;
+  --ink-2: rgba(21, 20, 15, 0.66);
+  --ink-3: rgba(21, 20, 15, 0.42);
+  --ink-4: rgba(21, 20, 15, 0.16);
+  --ink-5: rgba(21, 20, 15, 0.08);
+
+  /* Status — marketing palette (more saturated than dashboard) */
+  --emerald: #0a7a4f;
+  --emerald-ink: #064a30;
+  --emerald-soft: #d3e8dc;
+  --emerald-paper: #e8f1ea;
+
+  --amber: #9a5d12;
+  --amber-ink: #5e3905;
+  --amber-soft: #ecd9b1;
+  --amber-paper: #f3e7c8;
+
+  --red: #a82a1d;
+  --red-soft: #ecccc4;
+
+  /* Fonts — new system: Inter for sans, Petrona for serif, JetBrains Mono.
+     Inter Tight and Newsreader are listed as fallbacks for the few landing
+     components that still hardcode them; safe to remove from the fallback
+     chain once those components migrate. */
+  --sans: "Inter", "Inter Tight", system-ui, sans-serif;
+  --serif: "Petrona", "Newsreader", "Iowan Old Style", Georgia, serif;
+  --mono: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+
+  /* Motion */
+  --ease: cubic-bezier(.2, .7, .2, 1);
+
+  /* Shadow — marketing scale (large, soft) */
+  --shadow-1: 0 1px 2px rgba(21,20,15,.04), 0 1px 1px rgba(21,20,15,.03);
+  --shadow-2: 0 2px 6px rgba(21,20,15,.05), 0 8px 24px rgba(21,20,15,.06);
+  --shadow-3: 0 4px 12px rgba(21,20,15,.08), 0 24px 48px rgba(21,20,15,.10);
+  --shadow-glow-em: 0 0 0 1px rgba(10,122,79,.18), 0 24px 60px -16px rgba(10,122,79,.25);
+
+  /* Inverted "night" scale — used inside landing's dark CTA section only.
+     Not a dark theme, just an inverse colour band. */
+  --night: #0e0d0a;
+  --night-2: #16140f;
+  --night-3: #211e17;
+  --night-edge: rgba(243,239,231,.08);
+  --night-edge-2: rgba(243,239,231,.16);
+  --night-text: #e9e3d4;
+  --night-text-2: rgba(233,227,212,.66);
+  --night-text-3: rgba(233,227,212,.42);
+
+  /* shadcn-compatible roles — remapped to warm-paper tokens so primitives
+     (Button, Input, Card, etc.) inherit the new palette without code changes.
+     Kept so that any utility class like bg-background / text-foreground
+     still resolves to a sensible warm-paper value during the transition. */
+  --radius: 0.5rem;
+  --background: var(--paper);
+  --foreground: var(--ink);
+  --card: var(--paper);
+  --card-foreground: var(--ink);
+  --popover: var(--paper);
+  --popover-foreground: var(--ink);
+  --primary: var(--ink);
+  --primary-foreground: var(--paper);
+  --secondary: var(--paper-2);
+  --secondary-foreground: var(--ink);
+  --muted: var(--paper-2);
+  --muted-foreground: var(--ink-2);
+  --accent: var(--paper-2);
+  --accent-foreground: var(--ink);
+  --destructive: var(--red);
+  --border: var(--ink-4);
+  --input: var(--ink-4);
+  --ring: var(--ink);
+  --chart-1: var(--emerald);
+  --chart-2: var(--amber);
+  --chart-3: var(--red);
+  --chart-4: var(--ink-2);
+  --chart-5: var(--ink-3);
+  --sidebar: var(--paper-2);
+  --sidebar-foreground: var(--ink);
+  --sidebar-primary: var(--ink);
+  --sidebar-primary-foreground: var(--paper);
+  --sidebar-accent: var(--paper-3);
+  --sidebar-accent-foreground: var(--ink);
+  --sidebar-border: var(--ink-4);
+  --sidebar-ring: var(--ink);
+}
+
+/* =========================================================================
+   Dashboard scope — denser tokens + operational status palette
+   Applied via <div className="dashboard"> in app/(dashboard)/layout.tsx.
+   ========================================================================= */
+.dashboard {
+  /* Paper / ink — dashboard surface uses a slightly different warm cream
+     per dashboard-design-system.md §Foundational tokens */
+  --paper: #FEFAF3;
+  --paper-2: #F5EFE3;
+  --paper-3: #EDE5D2;
+  --ink: #1F1610;
+  --ink-2: #57514D;
+  --ink-3: rgba(31, 22, 16, 0.45);
+  --ink-4: rgba(31, 22, 16, 0.14);
+
+  /* Status — dashboard palette (oxidised, operational; denser than landing) */
+  --status-ok: #3E5C3B;
+  --status-ok-bg: #DDE5D5;
+  --status-warn: #9C6A1D;
+  --status-warn-bg: #F4E3C9;
+  --status-error: #7A2E1F;
+  --status-error-bg: #F2D5CC;
+  --status-neutral: var(--ink-3);
+
+  /* Collaboration avatars (one per user, hashed) */
+  --avatar-blue: #4A7BB7;
+  --avatar-orange: #C97C3A;
+  --avatar-olive: #6B7A47;
+  --avatar-rust: #A85D3E;
+  --avatar-slate: #5C6A75;
+  --avatar-ink: #1F1610;
+
+  /* Serif: Petrona for page titles (no Newsreader fallback inside dashboard) */
+  --serif: "Petrona", Georgia, serif;
+
+  /* Radius scale — dashboard-specific (denser than landing) */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+
+  /* Shadow scale — dashboard (tighter) */
+  --shadow-1: 0 1px 2px rgba(31,22,16,0.06), 0 1px 1px rgba(31,22,16,0.04);
+  --shadow-2: 0 12px 32px rgba(31,22,16,0.08), 0 2px 6px rgba(31,22,16,0.05);
+
+  /* Spacing scale — 8px base, denser than marketing */
+  --space-2xs: 4px;
+  --space-xs: 8px;
+  --space-sm: 12px;
+  --space-md: 16px;
+  --space-lg: 20px;
+  --space-xl: 24px;
+  --space-2xl: 32px;
+  --space-3xl: 48px;
+  --space-4xl: 64px;
+
+  /* Re-bind shadcn-compatible roles inside the dashboard so primitives
+     pick up the dashboard's warm-cream surface automatically. */
+  --background: var(--paper);
+  --foreground: var(--ink);
+  --card: var(--paper);
+  --card-foreground: var(--ink);
+  --popover: var(--paper);
+  --popover-foreground: var(--ink);
+  --primary: var(--ink);
+  --primary-foreground: var(--paper);
+  --secondary: var(--paper-2);
+  --secondary-foreground: var(--ink);
+  --muted: var(--paper-2);
+  --muted-foreground: var(--ink-2);
+  --accent: var(--paper-2);
+  --accent-foreground: var(--ink);
+  --destructive: var(--status-error);
+  --border: var(--ink-4);
+  --input: var(--ink-4);
+  --ring: var(--ink);
+  --sidebar: var(--paper-2);
+  --sidebar-foreground: var(--ink);
+  --sidebar-primary: var(--ink);
+  --sidebar-primary-foreground: var(--paper);
+  --sidebar-accent: var(--paper-3);
+  --sidebar-accent-foreground: var(--ink);
+  --sidebar-border: var(--ink-4);
+  --sidebar-ring: var(--ink);
+}
+
+/* =========================================================================
+   Tailwind 4 @theme inline — exposes design tokens as utility classes
+   (bg-background, text-foreground, border-border, etc.).
+   ========================================================================= */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--sans);
+  --font-serif: var(--serif);
+  --font-mono: var(--mono);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -48,77 +249,6 @@
   --radius-4xl: calc(var(--radius) + 16px);
 }
 
-/* Light mode — slate + emerald */
-:root {
-  --radius: 0.5rem;
-  --background: oklch(0.99 0.004 258);
-  --foreground: oklch(0.13 0.018 258);
-  --card: oklch(0.99 0.004 258);
-  --card-foreground: oklch(0.13 0.018 258);
-  --popover: oklch(0.99 0.004 258);
-  --popover-foreground: oklch(0.13 0.018 258);
-  --primary: oklch(0.48 0.18 162);
-  --primary-foreground: oklch(0.99 0 0);
-  --secondary: oklch(0.94 0.006 258);
-  --secondary-foreground: oklch(0.13 0.018 258);
-  --muted: oklch(0.94 0.006 258);
-  --muted-foreground: oklch(0.50 0.012 258);
-  --accent: oklch(0.94 0.006 258);
-  --accent-foreground: oklch(0.13 0.018 258);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.88 0.010 258);
-  --input: oklch(0.88 0.010 258);
-  --ring: oklch(0.48 0.18 162);
-  --chart-1: oklch(0.48 0.18 162);
-  --chart-2: oklch(0.55 0.17 195);
-  --chart-3: oklch(0.62 0.17 85);
-  --chart-4: oklch(0.52 0.20 285);
-  --chart-5: oklch(0.55 0.22 20);
-  --sidebar: oklch(0.96 0.006 258);
-  --sidebar-foreground: oklch(0.13 0.018 258);
-  --sidebar-primary: oklch(0.48 0.18 162);
-  --sidebar-primary-foreground: oklch(0.99 0 0);
-  --sidebar-accent: oklch(0.91 0.008 258);
-  --sidebar-accent-foreground: oklch(0.13 0.018 258);
-  --sidebar-border: oklch(0.88 0.010 258);
-  --sidebar-ring: oklch(0.48 0.18 162);
-}
-
-/* Dark mode — midnight slate + emerald */
-.dark {
-  --background: oklch(0.11 0.018 258);
-  --foreground: oklch(0.96 0 0);
-  --card: oklch(0.17 0.014 258);
-  --card-foreground: oklch(0.96 0 0);
-  --popover: oklch(0.17 0.014 258);
-  --popover-foreground: oklch(0.96 0 0);
-  --primary: oklch(0.70 0.165 162);
-  --primary-foreground: oklch(0.13 0.025 162);
-  --secondary: oklch(0.22 0.012 258);
-  --secondary-foreground: oklch(0.96 0 0);
-  --muted: oklch(0.22 0.012 258);
-  --muted-foreground: oklch(0.58 0.010 258);
-  --accent: oklch(0.22 0.012 258);
-  --accent-foreground: oklch(0.96 0 0);
-  --destructive: oklch(0.65 0.22 25);
-  --border: oklch(1 0 0 / 9%);
-  --input: oklch(1 0 0 / 13%);
-  --ring: oklch(0.70 0.165 162);
-  --chart-1: oklch(0.70 0.165 162);
-  --chart-2: oklch(0.65 0.17 195);
-  --chart-3: oklch(0.78 0.17 85);
-  --chart-4: oklch(0.62 0.22 285);
-  --chart-5: oklch(0.65 0.22 20);
-  --sidebar: oklch(0.14 0.016 258);
-  --sidebar-foreground: oklch(0.96 0 0);
-  --sidebar-primary: oklch(0.70 0.165 162);
-  --sidebar-primary-foreground: oklch(0.13 0.025 162);
-  --sidebar-accent: oklch(0.22 0.012 258);
-  --sidebar-accent-foreground: oklch(0.96 0 0);
-  --sidebar-border: oklch(1 0 0 / 9%);
-  --sidebar-ring: oklch(0.70 0.165 162);
-}
-
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -126,51 +256,6 @@
   body {
     @apply bg-background text-foreground;
   }
-}
-
-/* Vera landing — warm paper design tokens (additive; dashboard dark theme above is untouched) */
-:root {
-  --paper: #f3efe7;
-  --paper-2: #ebe6db;
-  --paper-3: #ddd6c5;
-  --ink: #15140f;
-  --ink-2: rgba(21, 20, 15, 0.66);
-  --ink-3: rgba(21, 20, 15, 0.42);
-  --ink-4: rgba(21, 20, 15, 0.16);
-  --ink-5: rgba(21, 20, 15, 0.08);
-
-  --emerald: #0a7a4f;
-  --emerald-ink: #064a30;
-  --emerald-soft: #d3e8dc;
-  --emerald-paper: #e8f1ea;
-
-  --amber: #9a5d12;
-  --amber-ink: #5e3905;
-  --amber-soft: #ecd9b1;
-  --amber-paper: #f3e7c8;
-
-  --red: #a82a1d;
-  --red-soft: #ecccc4;
-
-  --sans: "Inter Tight", system-ui, sans-serif;
-  --serif: "Newsreader", "Iowan Old Style", Georgia, serif;
-  --mono: "JetBrains Mono", "SF Mono", ui-monospace, monospace;
-
-  --ease: cubic-bezier(.2, .7, .2, 1);
-
-  --shadow-1: 0 1px 2px rgba(21,20,15,.04), 0 1px 1px rgba(21,20,15,.03);
-  --shadow-2: 0 2px 6px rgba(21,20,15,.05), 0 8px 24px rgba(21,20,15,.06);
-  --shadow-3: 0 4px 12px rgba(21,20,15,.08), 0 24px 48px rgba(21,20,15,.10);
-  --shadow-glow-em: 0 0 0 1px rgba(10,122,79,.18), 0 24px 60px -16px rgba(10,122,79,.25);
-
-  --night: #0e0d0a;
-  --night-2: #16140f;
-  --night-3: #211e17;
-  --night-edge: rgba(243,239,231,.08);
-  --night-edge-2: rgba(243,239,231,.16);
-  --night-text: #e9e3d4;
-  --night-text-2: rgba(233,227,212,.66);
-  --night-text-3: rgba(233,227,212,.42);
 }
 
 .imgslot {
