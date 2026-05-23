@@ -38,12 +38,19 @@ class BAAAgreementResponse(BaseModel):
 
 
 class BAAScopeCreate(BaseModel):
-    """Scope payload for a BAA — Codex E2 requires this be machine-readable."""
+    """Scope payload for a BAA — Codex E2 requires this be machine-readable.
+
+    ``is_unrestricted=True`` makes the two list columns advisory: the BAA
+    covers everything. Defaults to False so new BAAs get the strict
+    enumerated semantics; PR 4/5 will backfill historical unrestricted
+    BAAs explicitly.
+    """
 
     baa_agreement_id: str = Field(..., min_length=1, max_length=36)
     covered_services: list[str] = Field(..., min_length=1)
     covered_agent_types: list[str] = Field(..., min_length=1)
     granted_at: datetime
+    is_unrestricted: bool = False
 
 
 class BAAScopeResponse(BaseModel):
@@ -51,6 +58,7 @@ class BAAScopeResponse(BaseModel):
     baa_agreement_id: str
     covered_services: list[str]
     covered_agent_types: list[str]
+    is_unrestricted: bool = False
     granted_at: datetime
     created_at: datetime
 

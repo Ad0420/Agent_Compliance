@@ -35,6 +35,14 @@ class BAAAgreement(Base):
             "status IN ('draft', 'active', 'expired', 'terminated')",
             name="ck_baa_status",
         ),
+        # Reject ops-typo BAAs where ``effective_at`` is after ``expires_at``.
+        # Both NULL on draft is allowed (constraint short-circuits to TRUE);
+        # a partial spec (one side NULL) is also allowed.
+        CheckConstraint(
+            "effective_at IS NULL OR expires_at IS NULL "
+            "OR effective_at <= expires_at",
+            name="ck_baa_temporal_order",
+        ),
         Index("idx_baa_customer_status", "customer_id", "status"),
     )
 
@@ -71,8 +79,14 @@ class BAAAgreement(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
+    # Python-side ``onupdate`` matches the ChainState / Customer pattern so
+    # ``updated_at`` tracks status / signed_at changes (otherwise it freezes
+    # at INSERT).
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
     # ── Relationships ─────────────────────────────────────────

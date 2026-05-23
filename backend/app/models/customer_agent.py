@@ -25,7 +25,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from .base import Base
 
@@ -91,3 +91,18 @@ class CustomerAgent(Base):
         "Customer", back_populates="agents"
     )
     agent: Mapped[Optional["Agent"]] = relationship("Agent")
+
+    @validates("agent_type")
+    def _normalize_agent_type(self, _key: str, value: Optional[str]) -> Optional[str]:
+        """Normalize ``agent_type`` to lowercased + stripped form.
+
+        Without this, ``"scribe"``, ``"Scribe"``, and ``"scribe "`` all
+        bypass the ``uq_customer_agent_type`` unique constraint and produce
+        three rows for the same logical agent type. Codex E1 says
+        ``agent_type`` is the historical stamp — normalizing it at the
+        ORM boundary preserves the stamp's identity while letting callers
+        be sloppy with casing/whitespace.
+        """
+        if value is None:
+            return value
+        return value.strip().lower()

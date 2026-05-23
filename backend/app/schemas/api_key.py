@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 VALID_PERMISSIONS = {"read", "write", "admin"}
@@ -7,13 +7,19 @@ VALID_KINDS = ("test", "live")
 
 
 class APIKeyCreate(BaseModel):
+    """Create payload for an API key.
+
+    Phase 1 PR 1 does NOT accept ``kind`` on the create path. The DB
+    column defaults to ``test`` (via ``APIKey.kind`` server_default) and
+    PR 4 will re-introduce explicit ``kind`` here together with BAA-gating
+    in ``require_permission``. Pre-fix this schema accepted ``kind`` but
+    the route silently dropped it — leaving callers with the false
+    impression that they were minting live keys.
+    """
+
     name: str = Field(..., min_length=1, max_length=200)
     permissions: list[str] = Field(default_factory=lambda: ["read", "write"])
     expires_at: Optional[datetime] = None
-    # Phase 1 PR 1: ``test`` = sandbox / al_test_* prefix; ``live`` = production
-    # / al_live_* prefix. BAA-gating on live keys lands in PR 4; here the
-    # schema accepts both values, defaulting to ``test``.
-    kind: Literal["test", "live"] = Field(default="test")
 
     @field_validator("permissions")
     @classmethod

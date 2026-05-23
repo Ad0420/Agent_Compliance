@@ -15,7 +15,9 @@ from pydantic import BaseModel, Field, field_validator
 _TENANT_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 CustomerStatus = Literal["pending_setup", "active", "suspended", "archived"]
-BAAStatus = Literal["missing", "pending", "active", "expired"]
+# ``terminated`` was added in Phase 1 PR 1 to distinguish a rescinded BAA
+# from one that simply expired. Matches the model + migration CHECK.
+BAAStatus = Literal["missing", "pending", "active", "expired", "terminated"]
 
 
 class CustomerCreate(BaseModel):

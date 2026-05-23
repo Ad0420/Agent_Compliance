@@ -39,7 +39,10 @@ class Customer(Base):
             name="ck_customer_status",
         ),
         CheckConstraint(
-            "baa_status IN ('missing', 'pending', 'active', 'expired')",
+            # ``terminated`` distinguishes a rescinded BAA from one that
+            # merely expired (legal escalation path). Added in Phase 1 PR 1
+            # alongside the migration's matching CHECK update.
+            "baa_status IN ('missing', 'pending', 'active', 'expired', 'terminated')",
             name="ck_customer_baa_status",
         ),
         Index("idx_customer_org_status", "org_id", "status"),
@@ -75,8 +78,15 @@ class Customer(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
+    # ``onupdate=func.now()`` is a Python-side hook (no DB trigger needed),
+    # so the column already exists in the migration. Matches the pattern
+    # in ``chain_state.ChainState`` — without it, ``updated_at`` is frozen
+    # at INSERT time and breaks change tracking for status / baa_status.
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime, nullable=False, server_default=func.now()
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
     # ── Relationships ─────────────────────────────────────────

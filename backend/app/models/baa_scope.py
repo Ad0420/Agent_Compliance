@@ -5,8 +5,15 @@ can be scope-aware (i.e. "is this action_class allowed under this BAA?",
 "is this agent_type covered?"). Without explicit scope, gate checks
 would have to fail-open or fail-closed uniformly.
 
-Legacy BAAs (none exist today; this is forward-looking) backfill as
-broad scope — both lists wildcard-equivalent or "all known types".
+When ``is_unrestricted=True``, ``covered_services`` and
+``covered_agent_types`` are advisory only — the BAA covers everything.
+When ``False`` (the default for new BAAs), the lists are authoritative
+and Phase 2 gate checks reject anything not enumerated.
+
+Legacy BAAs (none exist today; this is forward-looking) will backfill
+as ``is_unrestricted=True`` once PR 4/5 codifies historical scope. The
+wildcard convention is explicit on a column rather than encoded as a
+sentinel like ``['*']`` so SQL queries can filter on it directly.
 
 Multiple BAAScope rows MAY exist per BAA (e.g. an addendum extends the
 covered_agent_types list); the resolver picks the most recent applicable
@@ -19,7 +26,8 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, JSON, String, func
+import sqlalchemy as sa
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, JSON, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -43,6 +51,14 @@ class BAAScope(Base):
     # List of agent_types this BAA covers, e.g. ["scribe", "receptionist"].
     # Maps to CustomerAgent.agent_type strings.
     covered_agent_types: Mapped[list] = mapped_column(JSON, nullable=False)
+    # Explicit wildcard flag (Phase 1 PR 1). When True the two list
+    # columns are advisory; gate checks accept any action_class / agent_type.
+    is_unrestricted: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=sa.text("0"),
+        default=False,
+    )
     granted_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
