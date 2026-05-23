@@ -76,15 +76,18 @@ export function WizardProgress({
           );
 
           return (
-            <li key={i} className="inline-flex">
+            <li key={i} className="relative inline-flex size-2 items-center justify-center">
               {isClickable ? (
+                // Visible dot stays at 8px; an absolutely positioned 36px
+                // transparent hit box centred on the dot satisfies WCAG 2.5.8
+                // AA (24×24 minimum) without changing the row's visual layout.
                 <button
                   type="button"
                   onClick={() => onStepClick?.(i)}
                   aria-label={`Go back to step ${i + 1}`}
                   aria-current={isCurrent ? "step" : undefined}
                   className={cn(
-                    "inline-flex size-5 items-center justify-center rounded-full",
+                    "absolute left-1/2 top-1/2 inline-flex size-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-transparent",
                     "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2",
                     "focus-visible:outline-[color:var(--ink)]",
                   )}
@@ -94,7 +97,7 @@ export function WizardProgress({
               ) : (
                 <span
                   aria-current={isCurrent ? "step" : undefined}
-                  className="inline-flex size-5 items-center justify-center"
+                  className="inline-flex size-2 items-center justify-center"
                 >
                   {dot}
                 </span>
