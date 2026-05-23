@@ -33,9 +33,9 @@ export function ChainStatusCard() {
 
   if (error || !data) {
     return (
-      <Card className="border-[var(--amber)]/30">
+      <Card className="border-[color:var(--amber)]/30">
         <CardContent className="flex items-center gap-4 p-6">
-          <ShieldAlert className="h-8 w-8 text-[var(--amber)]" />
+          <ShieldAlert className="h-8 w-8 text-[color:var(--amber)]" />
           <div>
             <p className="text-sm font-medium">Unable to verify chain</p>
             <p className="text-xs text-muted-foreground">Could not connect to verification endpoint</p>
@@ -46,22 +46,22 @@ export function ChainStatusCard() {
   }
 
   return (
-    <Card className={cn("border", data.is_valid ? "border-[var(--olive)]/30" : "border-[var(--brick)]/50")}>
+    <Card className={cn("border", data.is_valid ? "border-[color:var(--olive)]/30" : "border-[color:var(--brick)]/50")}>
       <CardContent className="flex items-center gap-4 p-6">
         {data.is_valid ? (
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--olive-bg)]">
-            <ShieldCheck className="h-7 w-7 text-[var(--olive)]" />
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[color:var(--olive-bg)]">
+            <ShieldCheck className="h-7 w-7 text-[color:var(--olive)]" />
           </div>
         ) : (
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--brick-bg)]">
-            <ShieldAlert className="h-7 w-7 text-[var(--brick)] animate-pulse" />
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[color:var(--brick-bg)]">
+            <ShieldAlert className="h-7 w-7 text-[color:var(--brick)] animate-pulse" />
           </div>
         )}
         <div>
           <p
             className={cn(
-              "font-display text-lg",
-              data.is_valid ? "text-[var(--olive)]" : "text-[var(--brick)]",
+              "text-base font-medium",
+              data.is_valid ? "text-[color:var(--olive)]" : "text-[color:var(--brick)]",
             )}
           >
             {data.is_valid ? "Chain Integrity Verified" : `CHAIN BROKEN at sequence ${data.first_invalid_sequence}`}

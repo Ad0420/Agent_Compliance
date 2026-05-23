@@ -3,7 +3,14 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
-@custom-variant dark (&:is(.dark *));
+/* The `dark` variant matches every descendant of `<html class="dark">`,
+   EXCEPT inside `.dashboard` — the dashboard runs warm-paper light tokens
+   even though the root element still carries the legacy `dark` class
+   (kept for the marketing/landing surface). Without the `:not(.dashboard *)`
+   exclusion, shadcn primitives (Input, Button, Tabs, Badge, Select) would
+   still fire their `dark:` utilities (e.g., `dark:bg-input/30` on inputs)
+   on top of warm-paper tokens, producing near-invisible widgets. */
+@custom-variant dark (&:is(.dark *):not(.dashboard *));
 
 @theme inline {
   --color-background: var(--background);
@@ -133,17 +140,26 @@
    `@theme inline` above) to a warm-paper equivalent, *plus* exposing
    raw warm-paper tokens (`--paper`, `--ink`, `--olive`, `--amber`,
    `--brick`, etc.) for components that want to reference them
-   directly via `text-[var(--olive)]` / `bg-[var(--paper-2)]`.
+   directly via `text-[color:var(--olive)]` / `bg-[color:var(--paper-2)]`
+   (the `color:` cast is required by Tailwind v4 for `var(...)` so the
+   `/<opacity>` modifier composes correctly).
 
    `color-scheme: light` is forced so OS dark mode + Chrome's form
    widget heuristics don't invert form controls inside the dashboard
    (per Codex D5). */
 .dashboard {
+  /* NOTE: several raw warm-paper tokens (--paper, --ink, --ink-2..5, --amber,
+     --shadow-1, --shadow-2, --radius) are also defined at :root for the
+     marketing/landing surface with DIFFERENT values. The `.dashboard` scope
+     below shadows them. Future refactor: rename to --ds-* prefix to remove
+     the collision entirely. Tracked as a follow-up. */
   color-scheme: light;
 
   /* Raw warm-paper tokens (per dashboard-design-system.md §Implementation
-     notes). Use these directly via `bg-[var(--paper-2)]`,
-     `text-[var(--ink-2)]`, `border-[var(--ink-4)]`, etc. */
+     notes). Use these directly via `bg-[color:var(--paper-2)]`,
+     `text-[color:var(--ink-2)]`, `border-[color:var(--ink-4)]`, etc.
+     Tailwind v4 requires the explicit `color:` cast for `var(...)` in
+     color utilities so the `/<opacity>` modifier composes correctly. */
   --paper: #fefaf3;
   --paper-2: #f5efe3;
   --paper-3: #ede5d2;
@@ -236,7 +252,9 @@
    dashboard scope and a system serif fallback elsewhere. */
 .font-display {
   font-family: var(--display, "Petrona", "Iowan Old Style", Georgia, serif);
-  font-weight: 400; /* Petrona looks best at 400 for display sizes */
+  /* Weight is intentionally not hardcoded — consumers pick via Tailwind
+     utilities (`font-normal`, `font-medium`, etc.). Petrona reads best
+     at 400 for editorial display sizes; let the call site assert it. */
 }
 
 @layer base {
