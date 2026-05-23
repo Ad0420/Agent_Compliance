@@ -31,6 +31,11 @@ const apiOrigin = (() => {
   }
 })();
 
+// Google Fonts is loaded via @import in `app/globals.css` (Petrona,
+// Inter Tight, Newsreader, JetBrains Mono). The stylesheet itself comes
+// from fonts.googleapis.com and the font files from fonts.gstatic.com,
+// so both origins are allowlisted below — narrowly, only what's needed.
+// Migrating to next/font/google to self-host is tracked as a follow-up.
 const cspDirectives = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.clerk.accounts.dev https://*.clerk.com https://challenges.cloudflare.com",
@@ -39,8 +44,8 @@ const cspDirectives = [
   `connect-src 'self' ${apiOrigin} https://*.clerk.accounts.dev https://*.clerk.com https://api.clerk.com https://clerk-telemetry.com`,
   "img-src 'self' data: https://*.clerk.com https://*.clerk.accounts.dev https://img.clerk.com",
   "worker-src 'self' blob:",
-  "style-src 'self' 'unsafe-inline'",
-  "font-src 'self' data:",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' data: https://fonts.gstatic.com",
 ];
 
 const securityHeaders = [
