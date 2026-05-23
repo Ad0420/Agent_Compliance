@@ -37,7 +37,10 @@ export function Topbar() {
           afterCreateOrganizationUrl="/dashboard"
           afterSelectOrganizationUrl="/dashboard"
         />
-        <UserButton afterSignOutUrl="/login" />
+        {/* Sign-out redirect target comes from NEXT_PUBLIC_CLERK_SIGN_IN_URL
+            (=/login). In Clerk v7 UserButton doesn't take a per-instance
+            afterSignOutUrl prop; the provider-level fallback handles it. */}
+        <UserButton />
       </div>
     </header>
   );
