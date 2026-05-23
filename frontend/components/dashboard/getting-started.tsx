@@ -18,15 +18,15 @@ function CodeBlock({ code }: { code: string }) {
   };
 
   return (
-    <div className="relative rounded-lg bg-zinc-950 border border-zinc-800">
+    <div className="relative rounded-lg border border-[color:var(--ink-4)] bg-[color:var(--paper-3)]">
       <button
         onClick={handleCopy}
-        className="absolute right-3 top-3 rounded p-1.5 text-zinc-500 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+        className="absolute right-3 top-3 rounded p-1.5 text-[color:var(--ink-3)] transition-colors hover:bg-[color:var(--ink-5)] hover:text-[color:var(--ink)]"
         title="Copy"
       >
-        {copied ? <Check className="h-3.5 w-3.5 text-green-400" /> : <Copy className="h-3.5 w-3.5" />}
+        {copied ? <Check className="h-3.5 w-3.5 text-[color:var(--olive)]" /> : <Copy className="h-3.5 w-3.5" />}
       </button>
-      <pre className="overflow-x-auto p-4 pr-12 text-xs leading-relaxed text-zinc-300 font-mono whitespace-pre">
+      <pre className="overflow-x-auto whitespace-pre p-4 pr-12 font-mono text-xs leading-relaxed text-[color:var(--ink)]">
         {code}
       </pre>
     </div>
@@ -69,10 +69,10 @@ export function GettingStarted() {
   const [tab, setTab] = useState<Tab>("http");
 
   return (
-    <Card className="border-emerald-500/20 bg-emerald-500/5">
+    <Card className="border-[color:var(--olive)]/20 bg-[color:var(--olive-bg)]/30">
       <CardHeader className="pb-3">
         <div className="flex items-center gap-2">
-          <Zap className="h-4 w-4 text-emerald-400" />
+          <Zap className="h-4 w-4 text-[color:var(--olive)]" />
           <CardTitle className="text-base">Send your first action</CardTitle>
         </div>
         <p className="text-sm text-muted-foreground">
@@ -116,7 +116,7 @@ export function GettingStarted() {
         <p className="text-xs text-muted-foreground">
           Replace <code className="font-mono">YOUR_API_KEY</code> with the key you minted on the
           {" "}
-          <Link href="/api-keys" className="text-emerald-400 hover:text-emerald-300 underline underline-offset-4">
+          <Link href="/api-keys" className="text-[color:var(--olive)] underline underline-offset-4 hover:opacity-80">
             API Keys
           </Link>
           {" "}page. Once you run this, refresh to see your action in the table.

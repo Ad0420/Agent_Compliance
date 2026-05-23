@@ -41,34 +41,37 @@ export function ActionVolumeChart() {
             <AreaChart data={chartData}>
               <defs>
                 <linearGradient id="colorCount" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3} />
-                  <stop offset="95%" stopColor="#3b82f6" stopOpacity={0} />
+                  <stop offset="5%" stopColor="var(--olive)" stopOpacity={0.35} />
+                  <stop offset="95%" stopColor="var(--olive)" stopOpacity={0} />
                 </linearGradient>
               </defs>
               <XAxis
                 dataKey="date"
-                tick={{ fontSize: 11, fill: "#888" }}
+                tick={{ fontSize: 11, fill: "var(--ink-2)" }}
                 axisLine={false}
                 tickLine={false}
               />
               <YAxis
-                tick={{ fontSize: 11, fill: "#888" }}
+                tick={{ fontSize: 11, fill: "var(--ink-2)" }}
                 axisLine={false}
                 tickLine={false}
                 allowDecimals={false}
               />
               <Tooltip
                 contentStyle={{
-                  backgroundColor: "#1a1a1a",
-                  border: "1px solid #333",
+                  backgroundColor: "var(--paper-2)",
+                  border: "1px solid var(--ink-4)",
                   borderRadius: "8px",
                   fontSize: "12px",
+                  color: "var(--ink)",
                 }}
+                labelStyle={{ color: "var(--ink)" }}
+                itemStyle={{ color: "var(--ink-2)" }}
               />
               <Area
                 type="monotone"
                 dataKey="count"
-                stroke="#3b82f6"
+                stroke="var(--olive)"
                 fill="url(#colorCount)"
                 strokeWidth={2}
               />
