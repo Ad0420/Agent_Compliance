@@ -1,0 +1,37 @@
+name: frontend-copy-check
+
+# Enforces the brand voice & banned-vocabulary rules from CLAUDE.md and the
+# dashboard-design-system / landing-design specs. Runs on every PR; required
+# for merge once the branch protection rule is updated.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: frontend-copy-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend-copy-check:
+    name: copy violations
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run copy-violation check
+        run: python scripts/check_copy_violations.py
+
+      - name: Run copy-violation unit tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pytest scripts/test_check_copy_violations.py -v
