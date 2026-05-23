@@ -9,15 +9,14 @@
  * (rectangular pill, not full pill), uppercase 11px Inter 500 with 0.04em
  * tracking, text-only (no icon).
  *
- * Variant -> token table:
+ * Variant -> token table (per `dashboard-design-system.md` §Severity badge,
+ * four-tier table):
  *   HIGH   -> brick-bg / brick
  *   MEDIUM -> amber-bg / amber
  *   LOW    -> olive-bg / olive
- *   INFO   -> paper-3 / ink-2   (added for spec completeness; design-system
- *            §Severity badge defines three levels but the Recommendation
- *            card + Compliance insights spec both reference an INFO-tier
- *            for non-actionable notes — using the neutral `ink-2` pair so
- *            it never reads as a status colour.)
+ *   INFO   -> paper-3 / ink-2   (non-actionable / informational — Compliance
+ *            insights, RecommendationCard non-blocking findings. The neutral
+ *            `paper-3` / `ink-2` pair is intentionally not a status colour.)
  */
 
 import * as React from "react";

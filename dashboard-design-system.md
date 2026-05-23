@@ -475,13 +475,14 @@ Contract Review surface for AI-suggested fixes.
 
 ### Severity badge
 
-A small pill used to mark issue severity. Three variants:
+A small pill used to mark issue severity. Four variants:
 
 | Severity | Bg / fg | Use |
 |---|---|---|
 | HIGH | `#F2D5CC` / `#7A2E1F` | Critical violation, expired BAA, prohibited use detected |
 | MEDIUM | `#F4E3C9` / `#9C6A1D` | Stale artifact, missing recommended notice, reviewer time below threshold |
 | LOW | `#DDE5D5` / `#3E5C3B` | Minor drift, optional improvement |
+| INFO | `var(--paper-3)` / `var(--ink-2)` | Non-actionable / informational (Compliance insights, RecommendationCard non-blocking findings). Renders with `--paper-3` background, `--ink-2` text — visually distinct from status colours. |
 
 **Anatomy:**
 - Height: 22px
