@@ -19,7 +19,7 @@ async def verify_chain_endpoint(
     start_seq: Optional[int] = Query(default=None),
     end_seq: Optional[int] = Query(default=None),
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("read")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
 ):
     org_id, _ = auth
     result = await verify_chain(session, org_id, start_seq, end_seq)
@@ -45,7 +45,7 @@ async def verify_chain_endpoint(
 async def verify_record_endpoint(
     record_id: str,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("read")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
 ):
     org_id, _ = auth
     return await verify_single_record(session, org_id, record_id)

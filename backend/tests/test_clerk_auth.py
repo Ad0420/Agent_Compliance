@@ -282,15 +282,19 @@ async def test_dashboard_me_rejects_expired_token(async_client, keypair, patched
 
 
 @pytest.mark.asyncio
-async def test_existing_v1_actions_route_still_uses_api_key(
+async def test_v1_actions_route_still_accepts_api_keys_after_e4(
     async_client, org_and_key, keypair, patched_jwks
 ):
-    """Sanity: existing API-key-auth routes are NOT affected by the Clerk
-    middleware. A Clerk JWT is rejected at /v1/actions; an API key works.
+    """E4 made /v1/* dual-auth (API key OR Clerk JWT). The SDK keeps using
+    API keys; this test locks in that the legacy path still works. A Clerk
+    JWT without an active org context returns 400 (NOT 401) per the
+    require_clerk_role convention.
     """
     _, raw_key, _ = org_and_key
 
-    # Clerk JWT should NOT authenticate against API-key route.
+    # Clerk JWT without org_id claim → 400, not 401. The frontend uses this
+    # distinction to differentiate "user-fixable, pick an org" from
+    # "session invalid, re-auth".
     clerk_token = _sign(keypair["primary_priv"])
     resp_jwt = await async_client.post(
         "/v1/actions",
@@ -302,8 +306,8 @@ async def test_existing_v1_actions_route_still_uses_api_key(
         },
         headers={"Authorization": f"Bearer {clerk_token}"},
     )
-    assert resp_jwt.status_code == 401, (
-        "API-key route must reject Clerk JWTs; got "
+    assert resp_jwt.status_code == 400, (
+        "Clerk JWT without org_id must return 400; got "
         f"{resp_jwt.status_code}: {resp_jwt.text}"
     )
 
@@ -744,6 +748,176 @@ async def test_user_kicked_from_org_revokes_access_within_freshness_window(
     gone = await db_session.execute(
         select(OrgMembership).where(
             OrgMembership.clerk_user_id == "user_kicked"
+        )
+    )
+    assert gone.scalar_one_or_none() is None
+
+
+# ── Dual-auth on /v1/* (Workstream E4) ────────────────────────────────────────
+# These exercise `require_permission` going down the Clerk branch. The /v1/*
+# routes were originally API-key-only; E4 lets the dashboard authenticate the
+# same routes with a Clerk session token. The legacy API-key branch is covered
+# by the existing /v1/* tests in test_api.py.
+
+
+@pytest.mark.asyncio
+async def test_clerk_session_passes_v1_require_permission(
+    async_client, db_session, keypair, patched_jwks, monkeypatch
+):
+    """A valid Clerk JWT with a backend membership must pass require_permission
+    on legacy /v1/* endpoints. Without this, the dashboard cuts over to Clerk
+    auth but every dashboard read returns 401.
+    """
+    from app.models import ChainState, Organization, OrgMembership
+    from app.middleware import clerk_auth
+
+    org = Organization(name="dual-auth-org", clerk_org_id="org_dual")
+    db_session.add(org)
+    await db_session.flush()
+    db_session.add(ChainState(org_id=org.id))
+    db_session.add(
+        OrgMembership(
+            org_id=org.id,
+            clerk_user_id="user_dual",
+            clerk_org_id="org_dual",
+            role="developer",  # gets read + write but not admin
+            updated_at=dt.datetime.utcnow(),
+        )
+    )
+    await db_session.commit()
+
+    # Fresh membership → freshness check skipped → no Clerk REST call.
+    monkeypatch.setattr(settings, "clerk_secret_key", "sk_test_fake")
+    monkeypatch.setattr(settings, "membership_freshness_seconds", 300)
+
+    async def _explode(**_kwargs):
+        raise AssertionError("Clerk fetch should not have been called")
+
+    monkeypatch.setattr(
+        clerk_auth, "_fetch_clerk_membership_role", _explode
+    )
+
+    import jwt as _jwt
+
+    iat = int(time.time())
+    token = _jwt.encode(
+        {
+            "sub": "user_dual",
+            "iss": _TEST_ISSUER,
+            "iat": iat,
+            "exp": iat + 300,
+            "org_id": "org_dual",
+        },
+        keypair["primary_priv"],
+        algorithm="RS256",
+        headers={"kid": _TEST_KID},
+    )
+
+    # /v1/agents requires "read" permission. Developer role grants it.
+    resp = await async_client.get(
+        "/v1/agents",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_clerk_session_missing_org_returns_400(
+    async_client, keypair, patched_jwks
+):
+    """A Clerk JWT without an org_id claim must return 400, not 401. Matches
+    the convention in require_clerk_role and lets the frontend distinguish
+    'user-fixable, pick an org' from 'session invalid, re-auth'.
+    """
+    import jwt as _jwt
+
+    iat = int(time.time())
+    token = _jwt.encode(
+        {
+            "sub": "user_no_org",
+            "iss": _TEST_ISSUER,
+            "iat": iat,
+            "exp": iat + 300,
+            # No org_id claim.
+        },
+        keypair["primary_priv"],
+        algorithm="RS256",
+        headers={"kid": _TEST_KID},
+    )
+
+    resp = await async_client.get(
+        "/v1/agents",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 400
+    assert "organization" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_clerk_session_kicked_user_loses_v1_access(
+    async_client, db_session, keypair, patched_jwks, monkeypatch
+):
+    """If Clerk reports the user is no longer a member, the cached row is
+    deleted and the request 401s — even on /v1/* (not just /v1/dashboard/*).
+    Closes the gap that PR #164's audit identified, on the dual-auth path.
+    """
+    from app.models import ChainState, Organization, OrgMembership
+    from app.middleware import clerk_auth
+
+    org = Organization(name="kicked-org-v1", clerk_org_id="org_kicked_v1")
+    db_session.add(org)
+    await db_session.flush()
+    db_session.add(ChainState(org_id=org.id))
+    stale_at = dt.datetime.utcnow() - dt.timedelta(minutes=10)
+    db_session.add(
+        OrgMembership(
+            org_id=org.id,
+            clerk_user_id="user_kicked_v1",
+            clerk_org_id="org_kicked_v1",
+            role="admin",
+            updated_at=stale_at,
+        )
+    )
+    await db_session.commit()
+
+    monkeypatch.setattr(settings, "clerk_secret_key", "sk_test_fake")
+    monkeypatch.setattr(settings, "membership_freshness_seconds", 60)
+
+    # Clerk reports the user is no longer in the org.
+    async def _fake_fetch(*, clerk_user_id, clerk_org_id):
+        return None
+
+    monkeypatch.setattr(
+        clerk_auth, "_fetch_clerk_membership_role", _fake_fetch
+    )
+
+    import jwt as _jwt
+
+    iat = int(time.time())
+    token = _jwt.encode(
+        {
+            "sub": "user_kicked_v1",
+            "iss": _TEST_ISSUER,
+            "iat": iat,
+            "exp": iat + 300,
+            "org_id": "org_kicked_v1",
+        },
+        keypair["primary_priv"],
+        algorithm="RS256",
+        headers={"kid": _TEST_KID},
+    )
+
+    resp = await async_client.get(
+        "/v1/agents",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 401
+
+    # Local membership was deleted by the freshness re-check.
+    db_session.expire_all()
+    gone = await db_session.execute(
+        select(OrgMembership).where(
+            OrgMembership.clerk_user_id == "user_kicked_v1"
         )
     )
     assert gone.scalar_one_or_none() is None

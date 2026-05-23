@@ -275,7 +275,7 @@ async def _run_with_idempotency(
 async def create_action(
     data: ActionRecordCreate,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("write")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("write")),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     org_id, _ = auth
@@ -296,7 +296,7 @@ async def create_action(
 async def create_action_batch(
     data: ActionRecordBatchCreate,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("write")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("write")),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     org_id, _ = auth
@@ -331,7 +331,7 @@ async def list_actions(
     limit: int = Query(default=50, le=200),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("read")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
 ):
     org_id, _ = auth
 
@@ -385,7 +385,7 @@ async def list_actions(
 async def get_action(
     record_id: str,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("read")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
 ):
     org_id, _ = auth
     result = await session.execute(

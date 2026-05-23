@@ -22,7 +22,7 @@ async def export_csv(
     result: Optional[str] = Query(default=None),
     limit: int = Query(default=5000, le=10_000, ge=1),
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("read")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
 ):
     """Stream action records as CSV. Respects the same filters as GET /v1/actions."""
     org_id, _ = auth
@@ -51,7 +51,7 @@ async def export_pdf(
     action_type: Optional[str] = Query(default=None),
     result: Optional[str] = Query(default=None),
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey] = Depends(require_permission("read")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
 ):
     """Generate a compliance audit PDF. Includes chain status, checkpoints, and records.
     Capped at 5000 records to keep the PDF readable."""

@@ -310,32 +310,77 @@ _CLERK_ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
 }
 
 
+class _NoActiveOrgError(Exception):
+    """Clerk JWT verified but the session has no active org context."""
+
+
 async def _authenticate_clerk_session(
     session: AsyncSession, raw_token: str
 ) -> tuple[str, frozenset[str]] | None:
     """Verify a Clerk JWT and resolve to (org_id, effective_permissions).
 
-    Returns None if verification fails, no active org context, or no backend
-    membership for the (clerk_user_id, clerk_org_id) pair. The caller decides
-    whether None means 401 (no other auth method to try) or "fall through".
+    Returns None if verification fails or the user has no backend membership
+    (caller raises generic 401). Raises ``_NoActiveOrgError`` if the JWT is
+    valid but lacks an ``org_id`` claim, so the caller can map that to a
+    400 to match the convention used in ``middleware/clerk_auth.py``.
+
+    Defense-in-depth (matches ``middleware/clerk_auth.py:require_clerk_role``):
+    when the cached ``OrgMembership`` row is older than
+    ``settings.membership_freshness_seconds``, re-check the user's role
+    against Clerk's REST API. Closes the "stale admin" / "still-valid JWT
+    after kick" gap (PR #164 audit, CRITICAL #5 + #6) on the dual-auth
+    /v1/* path too.
     """
+    # Import lazily to avoid a circular import — middleware/clerk_auth.py
+    # imports from services.auth, so we resolve maybe_refresh_membership
+    # at call time rather than at module load.
+    from ..middleware.clerk_auth import maybe_refresh_membership
+
     try:
         claims = await verify_clerk_jwt(raw_token)
     except HTTPException:
+        logger.info("Clerk session rejected: JWT verification failed")
         return None
     clerk_user_id = claims.get("sub")
     clerk_org_id = claims.get("org_id")
-    if not clerk_user_id or not clerk_org_id:
+    if not clerk_user_id:
+        logger.info("Clerk session rejected: JWT missing 'sub' claim")
         return None
+    if not clerk_org_id:
+        logger.info(
+            "Clerk session rejected: no active organization (user=%s)",
+            clerk_user_id,
+        )
+        raise _NoActiveOrgError()
     membership = await get_membership_for_clerk_user(
         session,
         clerk_user_id=clerk_user_id,
         clerk_org_id=clerk_org_id,
     )
     if membership is None:
+        logger.info(
+            "Clerk session rejected: no backend membership (user=%s org=%s)",
+            clerk_user_id,
+            clerk_org_id,
+        )
         return None
-    perms = _CLERK_ROLE_PERMISSIONS.get(membership.role, frozenset())
-    return membership.org_id, perms
+    refreshed = await maybe_refresh_membership(
+        session,
+        membership,
+        clerk_user_id=clerk_user_id,
+        clerk_org_id=clerk_org_id,
+    )
+    if refreshed is None:
+        # Clerk reports the user was kicked from the org. Treat as
+        # no-membership; caller raises 401 (generic to avoid info leak).
+        logger.info(
+            "Clerk session rejected: membership revoked upstream (user=%s org=%s)",
+            clerk_user_id,
+            clerk_org_id,
+        )
+        return None
+    perms = _CLERK_ROLE_PERMISSIONS.get(refreshed.role, frozenset())
+    return refreshed.org_id, perms
 
 
 def require_permission(permission: str):
@@ -370,7 +415,16 @@ def require_permission(permission: str):
                 )
             return api_key.org_id, api_key
 
-        clerk_result = await _authenticate_clerk_session(session, raw)
+        try:
+            clerk_result = await _authenticate_clerk_session(session, raw)
+        except _NoActiveOrgError:
+            # Match the 400 convention in middleware/clerk_auth.py:323 so
+            # frontends can distinguish "user-fixable, pick an org" from
+            # "session invalid, re-auth".
+            raise HTTPException(
+                status_code=400,
+                detail="No active organization in Clerk session",
+            )
         if clerk_result is None:
             raise HTTPException(
                 status_code=401, detail="Invalid or expired session"
