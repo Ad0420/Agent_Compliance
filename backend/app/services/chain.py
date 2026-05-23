@@ -94,6 +94,15 @@ def _create_record(
         action_timestamp=action_timestamp,
         target_system=data.target_system,
         target_resource=data.target_resource,
+        # ── Phase 1 PR 1: promoted columns ──
+        # These three were previously stored inside ``metadata_`` and silently
+        # dropped here, leaving the new indexed columns NULL even when the
+        # SDK supplied values. The hash is computed over these fields
+        # (see HASHABLE_FIELDS), so wiring them through is required for
+        # both query indexing AND hash correctness.
+        tenant_id=data.tenant_id,
+        domain=data.domain,
+        action_class=data.action_class,
         authorized_by=data.authorized_by,
         authorization_scope=data.authorization_scope,
         delegation_chain=data.delegation_chain,

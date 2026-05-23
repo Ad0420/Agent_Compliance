@@ -164,6 +164,12 @@ def _record_to_response(record: ActionRecord) -> ActionRecordResponse:
         action_timestamp=record.action_timestamp,
         target_system=record.target_system,
         target_resource=record.target_resource,
+        # Phase 1 PR 1: surface promoted columns to API consumers so the
+        # SDK round-trip + dashboard scoping work without needing to
+        # re-derive these from metadata_.
+        tenant_id=record.tenant_id,
+        domain=record.domain,
+        action_class=record.action_class,
         authorized_by=record.authorized_by,
         authorization_scope=record.authorization_scope,
         delegation_chain=record.delegation_chain or [],
