@@ -131,6 +131,14 @@ export interface AttestationCheckboxProps {
    */
   context?: React.ReactNode;
   disabled?: boolean;
+  /**
+   * Apply an error state — intensifies the brick banner (full-strength
+   * border, brick text colour, brick left-border accent) and forwards
+   * `error` to the underlying `<Checkbox>` so the square gets a brick
+   * border. Use this after a failed submit attempt where the attestation
+   * was required but unchecked.
+   */
+  error?: boolean;
   className?: string;
   id?: string;
 }
@@ -150,15 +158,23 @@ export function AttestationCheckbox({
   attestation,
   context,
   disabled,
+  error,
   className,
   id,
 }: AttestationCheckboxProps) {
   return (
     <div
       data-slot="attestation-checkbox"
+      data-error={error || undefined}
       className={cn(
         "rounded-[10px] border-2 p-4",
-        "border-[color:var(--brick)]/40 bg-[color:var(--brick-bg)]/30",
+        // Default banner: subtle brick border + tinted brick background.
+        // Error banner: full-strength brick border + a 4px brick left-border
+        // accent so the failed-submit context is unmistakable even when the
+        // checkbox square itself is the only other indicator.
+        error
+          ? "border-[color:var(--brick)] border-l-4 bg-[color:var(--brick-bg)]/60"
+          : "border-[color:var(--brick)]/40 bg-[color:var(--brick-bg)]/30",
         className,
       )}
     >
@@ -167,8 +183,16 @@ export function AttestationCheckbox({
         checked={checked}
         onChange={(e) => onChange((e.target as HTMLInputElement).checked)}
         disabled={disabled}
+        error={error}
         label={
-          <span className="font-medium text-[color:var(--ink)]">
+          <span
+            className={cn(
+              "font-medium",
+              error
+                ? "text-[color:var(--brick)]"
+                : "text-[color:var(--ink)]",
+            )}
+          >
             {attestation}
           </span>
         }

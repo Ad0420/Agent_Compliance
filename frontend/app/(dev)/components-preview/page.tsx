@@ -298,6 +298,21 @@ export default function ComponentsPreviewPage() {
               />
             </div>
           </Row>
+          <Row label="Attestation (error)">
+            <div className="w-full max-w-2xl">
+              {/* Renders the brick banner intensified — full-strength border,
+                  4px brick left-border accent, brick label colour, brick
+                  checkbox border — to simulate a failed-submit state where
+                  attestation is required but unchecked. */}
+              <AttestationCheckbox
+                checked={false}
+                onChange={() => {}}
+                error
+                attestation="I am authorised to attest that the compliance posture below accurately reflects this deployment as of today's date."
+                context="You must attest before generating the audit PDF."
+              />
+            </div>
+          </Row>
         </Section>
 
         <Section
