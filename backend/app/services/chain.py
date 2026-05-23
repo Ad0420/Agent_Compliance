@@ -42,7 +42,16 @@ def _is_sqlite(session: AsyncSession) -> bool:
 async def _get_or_create_agent(
     session: AsyncSession, org_id: str, agent_name: str, agent_version: str | None
 ) -> str:
-    """Return the agent ID for (org_id, agent_name), creating the agent if it doesn't exist."""
+    """Return the agent ID for (org_id, agent_name), creating the agent if it doesn't exist.
+
+    NOTE (pre-existing bug discovered in PR #195 review): the IntegrityError
+    handler previously called ``session.rollback()``, which discards the
+    ENTIRE outer transaction — including any other pending writes (e.g. the
+    in-flight ActionRecord and chain_state advance in
+    ``build_and_insert_record``). The new ``begin_nested()`` SAVEPOINT
+    confines the rollback to just the failed Agent insert so the outer
+    transaction is preserved.
+    """
     result = await session.execute(
         select(Agent).where(Agent.org_id == org_id, Agent.name == agent_name)
     )
@@ -50,12 +59,16 @@ async def _get_or_create_agent(
     if agent is not None:
         return agent.id
 
-    agent = Agent(org_id=org_id, name=agent_name)
-    session.add(agent)
     try:
-        await session.flush()
+        async with session.begin_nested():
+            agent = Agent(org_id=org_id, name=agent_name)
+            session.add(agent)
+            # SAVEPOINT auto-flushes at exit; flush explicitly so a unique
+            # violation surfaces inside the nested block, not after.
+            await session.flush()
     except IntegrityError:
-        await session.rollback()
+        # SAVEPOINT rolled back; outer transaction intact. Re-read the
+        # row the concurrent writer inserted.
         result = await session.execute(
             select(Agent).where(Agent.org_id == org_id, Agent.name == agent_name)
         )
@@ -217,22 +230,27 @@ async def _auto_discover_customer_and_agent(
                 other_org,
             )
 
-        customer = Customer(
-            org_id=org_id,
-            tenant_id=tenant_id,
-            display_name=tenant_id,
-            status="pending_setup",
-            baa_status="missing",
-            first_seen_at=now,
-            last_seen_at=now,
-        )
-        session.add(customer)
         try:
-            await session.flush()
+            async with session.begin_nested():
+                customer = Customer(
+                    org_id=org_id,
+                    tenant_id=tenant_id,
+                    display_name=tenant_id,
+                    status="pending_setup",
+                    baa_status="missing",
+                    first_seen_at=now,
+                    last_seen_at=now,
+                )
+                session.add(customer)
+                # Force the INSERT to hit the DB inside the SAVEPOINT so
+                # any unique-constraint violation rolls back ONLY the
+                # nested transaction, not the outer one (which holds the
+                # pending ActionRecord + chain_state advance).
+                await session.flush()
         except IntegrityError:
             # Concurrent insert (same tenant under same org) won the
-            # race — re-read so we work with the surviving row.
-            await session.rollback()
+            # race — SAVEPOINT auto-rolled back, outer txn intact.
+            # Re-read so we work with the surviving row.
             again = await session.execute(
                 select(Customer).where(
                     Customer.org_id == org_id,
@@ -262,21 +280,23 @@ async def _auto_discover_customer_and_agent(
     )
     ca = ca_existing.scalar_one_or_none()
     if ca is None:
-        ca = CustomerAgent(
-            customer_id=customer.id,
-            agent_id=agent_id,
-            agent_type=agent_type,
-            first_seen_at=now,
-            last_seen_at=now,
-            source="auto_discovered",
-            confidence="high",
-            status="active",
-        )
-        session.add(ca)
         try:
-            await session.flush()
+            async with session.begin_nested():
+                ca = CustomerAgent(
+                    customer_id=customer.id,
+                    agent_id=agent_id,
+                    agent_type=agent_type,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                    source="auto_discovered",
+                    confidence="high",
+                    status="active",
+                )
+                session.add(ca)
+                await session.flush()
         except IntegrityError:
-            await session.rollback()
+            # SAVEPOINT rolled back; outer txn (chain + ActionRecord)
+            # preserved. Re-read the row the concurrent writer inserted.
             again = await session.execute(
                 select(CustomerAgent).where(
                     CustomerAgent.customer_id == customer.id,

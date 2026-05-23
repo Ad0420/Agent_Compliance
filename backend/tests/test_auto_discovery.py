@@ -339,6 +339,127 @@ async def test_cross_org_tenant_id_collision_logs_warning(
 
 
 @pytest.mark.asyncio
+async def test_auto_discover_customer_integrity_error_preserves_action_record(
+    org_and_key, db_session, monkeypatch
+):
+    """Regression test for PR #195 review — silent ActionRecord loss.
+
+    Before the fix, the Customer IntegrityError handler called
+    ``session.rollback()``, which blew away the entire outer transaction
+    (chain_state SELECT FOR UPDATE row, Agent row, AND the freshly-added
+    ActionRecord). Execution continued, the chain advanced, and the
+    final commit landed ONLY the chain-state advance + touched
+    Customer's last_seen_at — the ActionRecord was silently lost.
+
+    After the fix (begin_nested SAVEPOINT), the IntegrityError rolls
+    back ONLY the failed Customer insert; the outer transaction
+    (including the ActionRecord) is preserved.
+
+    We simulate the race by inserting the colliding Customer row before
+    calling build_and_insert_record. The auto-discovery's INSERT then
+    hits a unique-violation on (org_id, tenant_id), the SAVEPOINT rolls
+    back, the handler re-reads the existing row, and the ActionRecord
+    still commits.
+    """
+    from sqlalchemy import select as _select
+    from app.models import ActionRecord
+    from app.schemas.action import ActionRecordCreate
+    from app.services.chain import build_and_insert_record
+
+    org, _, _ = org_and_key
+
+    # Pre-insert the Customer that will collide with auto-discovery.
+    pre_existing = Customer(
+        org_id=org.id,
+        tenant_id="collision_tenant",
+        display_name="operator_set_name",  # operator already renamed it
+        status="active",
+        baa_status="active",
+    )
+    db_session.add(pre_existing)
+    await db_session.commit()
+
+    # The trick: force the auto-discovery to BELIEVE no Customer exists,
+    # then collide at flush time. We monkeypatch the initial SELECT inside
+    # _auto_discover_customer_and_agent to return None on first call.
+    import app.services.chain as chain_mod
+
+    original_execute = db_session.execute
+    call_state = {"customer_select_seen": False}
+
+    async def patched_execute(stmt, *args, **kwargs):
+        # Detect the SELECT Customer WHERE org_id=? AND tenant_id=? at
+        # the top of _auto_discover_customer_and_agent and lie about it
+        # ONCE — the IntegrityError handler's re-read SELECT must still
+        # see the real row.
+        try:
+            stmt_str = str(stmt)
+        except Exception:
+            stmt_str = ""
+        if (
+            not call_state["customer_select_seen"]
+            and "FROM customers" in stmt_str
+            and "tenant_id" in stmt_str
+            and "org_id" in stmt_str
+        ):
+            call_state["customer_select_seen"] = True
+
+            class _EmptyResult:
+                def scalar_one_or_none(self):
+                    return None
+
+                def scalar_one(self):  # pragma: no cover
+                    raise AssertionError("unreachable")
+
+                def scalars(self):
+                    class _S:
+                        def all(self):
+                            return []
+
+                    return _S()
+
+            return _EmptyResult()
+        return await original_execute(stmt, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "execute", patched_execute)
+
+    payload = ActionRecordCreate(
+        action_name="x",
+        agent_name="scribe-agent",
+        result="success",
+        tenant_id="collision_tenant",
+        action_class="chart_entry",
+    )
+
+    record = await build_and_insert_record(db_session, org.id, payload)
+    assert record is not None
+    assert record.tenant_id == "collision_tenant"
+
+    # Lift the patch — verify the ActionRecord actually landed.
+    monkeypatch.setattr(db_session, "execute", original_execute)
+
+    stored = (
+        await db_session.execute(
+            _select(ActionRecord).where(ActionRecord.id == record.id)
+        )
+    ).scalar_one_or_none()
+    assert stored is not None, (
+        "ActionRecord was silently lost when Customer IntegrityError "
+        "handler ran — begin_nested() SAVEPOINT regression."
+    )
+    assert stored.tenant_id == "collision_tenant"
+
+    # The pre-existing Customer's display_name must NOT have been
+    # rewritten — auto-discovery only touches last_seen_at on existing rows.
+    existing = (
+        await db_session.execute(
+            _select(Customer).where(Customer.tenant_id == "collision_tenant")
+        )
+    ).scalar_one()
+    assert existing.display_name == "operator_set_name"
+
+
+@pytest.mark.asyncio
 async def test_no_tenant_id_no_auto_discovery(
     async_client, org_and_key, db_session
 ):

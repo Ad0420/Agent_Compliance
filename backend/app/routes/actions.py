@@ -16,6 +16,7 @@ from ..schemas.action import (
     ActionRecordResponse,
     ActionRecordBatchCreate,
     ActionRecordListResponse,
+    _detect_phi_shape,
 )
 from ..services.auth import require_permission
 from ..services.chain import build_and_insert_record, build_and_insert_batch
@@ -52,6 +53,37 @@ def _validate_idempotency_key(key: str) -> None:
             status_code=400,
             detail="Idempotency-Key must be 1-64 ASCII characters",
         )
+
+
+# TODO(PR 5): replace with full heuristic from policy_engine.
+# Until PR 5 lands the full kind-aware (live key blocks, test key warns)
+# heuristic, the schema's base regex would still let DOB / SSN shapes
+# slip through (``john_doe_19720314`` matches ``^[A-Za-z0-9_-]+$``). On
+# first action, auto-discovery sets ``display_name=tenant_id`` which
+# surfaces that shape in the AI Coverage Matrix. We reject obvious
+# shapes uniformly (kind-aware behavior lands with PR 4 + PR 5).
+def _reject_phi_shape_in_tenant_id(tenant_id: Optional[str]) -> None:
+    """Raise 422 with code='phi_shape_in_tenant_id' if shape looks PHI-y.
+
+    Forward-compat: emits the same error code PR 5 will use, so SDK +
+    dashboard error handling does not need to change when the full
+    heuristic ships.
+    """
+    if not tenant_id:
+        return
+    if not _detect_phi_shape(tenant_id):
+        return
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "code": "phi_shape_in_tenant_id",
+            "message": (
+                "tenant_id contains a PHI-like shape; use an opaque "
+                "identifier instead. See "
+                "docs.usevera.xyz/customers/tenant-id-guidance."
+            ),
+        },
+    )
 
 
 def _request_hash(payload: dict) -> str:
@@ -286,6 +318,9 @@ async def create_action(
 ):
     org_id, _ = auth
 
+    # Bridge guard until PR 5 lands the full PHI heuristic.
+    _reject_phi_shape_in_tenant_id(data.tenant_id)
+
     async def do_work() -> dict:
         return await _create_action_impl(session, org_id, data)
 
@@ -306,6 +341,12 @@ async def create_action_batch(
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
     org_id, _ = auth
+
+    # Bridge guard until PR 5 lands the full PHI heuristic. Check every
+    # record's tenant_id — any single PHI-shaped value rejects the whole
+    # batch (the batch is atomic anyway; partial acceptance would lie).
+    for record in data.records:
+        _reject_phi_shape_in_tenant_id(record.tenant_id)
 
     async def do_work() -> list[dict]:
         return await _create_batch_impl(session, org_id, data)
