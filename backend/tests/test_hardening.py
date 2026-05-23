@@ -549,13 +549,17 @@ async def test_read_key_cannot_write(async_client, org_and_key, db_session):
 
 @pytest.mark.asyncio
 async def test_read_key_cannot_admin(async_client, org_and_key, db_session):
-    """A read-only API key must be rejected on admin endpoints."""
+    """A read-only API key must be rejected on admin endpoints.
+
+    Was originally pointed at POST /v1/api-keys; that route was removed in
+    the E4 cleanup. Repointed at POST /v1/verify/checkpoints, which is also
+    `require_permission("admin")` and takes no body.
+    """
     org, _, _ = org_and_key
     raw_key, _ = await generate_api_key(db_session, org.id, "reader2", ["read"])
 
     resp = await async_client.post(
-        "/v1/api-keys",
-        json={"name": "sneaky", "permissions": ["read", "write", "admin"]},
+        "/v1/verify/checkpoints",
         headers={"Authorization": f"Bearer {raw_key}"},
     )
     assert resp.status_code == 403
@@ -563,13 +567,13 @@ async def test_read_key_cannot_admin(async_client, org_and_key, db_session):
 
 @pytest.mark.asyncio
 async def test_write_key_cannot_admin(async_client, org_and_key, db_session):
-    """A write-only API key must be rejected on admin endpoints."""
+    """A write-only API key must be rejected on admin endpoints. See
+    test_read_key_cannot_admin above for the route migration note."""
     org, _, _ = org_and_key
     raw_key, _ = await generate_api_key(db_session, org.id, "writer", ["read", "write"])
 
     resp = await async_client.post(
-        "/v1/api-keys",
-        json={"name": "sneaky", "permissions": ["admin"]},
+        "/v1/verify/checkpoints",
         headers={"Authorization": f"Bearer {raw_key}"},
     )
     assert resp.status_code == 403
@@ -722,20 +726,10 @@ async def test_key_without_expiry_never_expires(async_client, org_and_key, db_se
     assert resp.status_code == 200
 
 
-@pytest.mark.asyncio
-async def test_create_api_key_with_expires_at(async_client, org_and_key):
-    """Creating a key via the API endpoint with expires_at stores it correctly."""
-    _, raw_key, _ = org_and_key
-    future = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
-
-    resp = await async_client.post(
-        "/v1/api-keys",
-        json={"name": "expiring-key", "permissions": ["read"], "expires_at": future},
-        headers={"Authorization": f"Bearer {raw_key}"},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["expires_at"] is not None
+# test_create_api_key_with_expires_at was removed in the E4 cleanup along
+# with the POST /v1/api-keys route. The expires_at storage path is covered
+# by tests/test_dashboard_api_keys.py against /v1/dashboard/api-keys, which
+# uses the same `generate_api_key` service underneath.
 
 
 # ── data_subject_id filtering ──────────────────────────────

@@ -11,9 +11,6 @@ import type {
   Checkpoint,
   CheckpointVerifyAllResponse,
   Agent,
-  ApiKey,
-  ApiKeyCreateResponse,
-  ApiKeyCreateInput,
   Policy,
   PolicyListResponse,
   PolicyCreateInput,
@@ -142,18 +139,9 @@ export function updateAlertEmail(alert_email: string | null): Promise<Organizati
   });
 }
 
-// API Keys
-export function getApiKeys(): Promise<ApiKey[]> {
-  return request("/v1/api-keys");
-}
-
-export function createApiKeyRequest(input: ApiKeyCreateInput): Promise<ApiKeyCreateResponse> {
-  return request("/v1/api-keys", { method: "POST", body: JSON.stringify(input) });
-}
-
-export function revokeApiKey(id: string): Promise<{ detail: string }> {
-  return request(`/v1/api-keys/${id}`, { method: "DELETE" });
-}
+// API Keys are managed via the /api-keys page (Clerk-gated, calls
+// /v1/dashboard/api-keys through Next.js route handlers). The legacy
+// /v1/api-keys endpoints were removed post-E4 cleanup.
 
 // Policies
 export function getPolicies(is_active?: boolean): Promise<PolicyListResponse> {

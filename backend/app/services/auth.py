@@ -287,17 +287,6 @@ async def authenticate_request(
     return api_key
 
 
-async def get_current_org(
-    credentials: HTTPAuthorizationCredentials = Security(security),
-    session: AsyncSession = Depends(get_db),
-) -> tuple[str, APIKey]:
-    """FastAPI dependency: extract Bearer token, authenticate, return (org_id, api_key)."""
-    api_key = await authenticate_request(session, credentials.credentials)
-    if api_key is None:
-        raise HTTPException(status_code=401, detail="Invalid or revoked API key")
-    return api_key.org_id, api_key
-
-
 # Clerk role → effective backend permissions. The legacy API-key model stored
 # an explicit permissions list (["read"], ["read", "write"], ["read", "write",
 # "admin"]); Clerk sessions carry a role string instead. This table lets a
