@@ -11,10 +11,13 @@ specs. Examples of banned tokens: ``court-admissible``, ``court-ready``,
 ``score`` matches.
 
 Output: each violation as ``path:line:column: <token>: <message>`` to
-stderr. Exit 0 on clean input, 1 on any violations. A ``# copy-allow:
-<reason>`` comment on the same line (or the immediately preceding line)
-suppresses the violation; the reason is required and is surfaced in
-``--report-json`` output for auditability.
+stderr. Exit 0 on clean input, 1 on any violations. A ``copy-allow:
+<reason>`` marker that appears inside a comment (``#``, ``//``,
+``/* ... */`` or ``<!-- ... -->``) on the same line (or the immediately
+preceding line) suppresses the violation; the reason is required and is
+surfaced in ``--report-json`` output for auditability. The marker MUST
+be preceded by a comment introducer on the same line — string literals
+that contain the text ``copy-allow:`` do NOT suppress.
 
 Stdlib-only (Python 3.10+). No external deps.
 """
@@ -164,10 +167,53 @@ SCANNED_EXTENSIONS = {
     ".md",
     ".mdx",
     ".html",
-    ".json",
+    # ``.json`` is intentionally excluded: JSON has no comment syntax, so a
+    # legitimate i18n string table containing words like "Hospital" or
+    # "score" would have no escape hatch (the ``copy-allow:`` marker
+    # requires a comment introducer). User-facing copy lives in the .tsx /
+    # .ts / .md surfaces above.
 }
 
 ALLOW_TOKEN = "copy-allow:"
+
+# The suppression marker MUST be introduced by a comment character on the
+# same line. This prevents string literals such as
+# ``const sneaky = "court-admissible // copy-allow: x"`` from silently
+# disabling rules. Comment styles covered: ``#`` (Python/shell/yaml),
+# ``//`` (JS/TS), ``/*`` (block comment start), and ``<!--`` (HTML/MDX).
+#
+# We additionally verify (in ``_allow_reason_from_line``) that the comment
+# introducer is not itself sitting inside an open string literal — the
+# regex alone can't tell ``"// copy-allow:"`` (inside a quoted string)
+# from a real trailing comment.
+ALLOW_RE = re.compile(
+    r"(?P<intro>#|//|/\*|<!--)\s*copy-allow:\s*(?P<reason>.*)"
+)
+
+
+def _intro_is_inside_string(line: str, intro_pos: int) -> bool:
+    """True if the character at ``intro_pos`` sits inside an open string
+    literal. We scan left-to-right and toggle quote state on unescaped
+    ``"``, ``'``, or backtick. Naive but sufficient for catching the
+    common bypass: ``const sneaky = "court-admissible // copy-allow: x"``.
+    """
+
+    in_quote: str | None = None
+    i = 0
+    while i < intro_pos:
+        ch = line[i]
+        if in_quote is None:
+            if ch in ('"', "'", "`"):
+                in_quote = ch
+        else:
+            if ch == "\\":
+                # Skip the escaped character.
+                i += 2
+                continue
+            if ch == in_quote:
+                in_quote = None
+        i += 1
+    return in_quote is not None
 
 
 @dataclass
@@ -227,19 +273,26 @@ def iter_target_files(
 
 
 def _allow_reason_from_line(line: str) -> str | None:
-    """Return the reason string from a ``# copy-allow: <reason>`` comment,
-    or None if the line carries no such suppression marker. The marker may
-    appear inside any comment style (``#``, ``//``, ``/* */``, ``<!-- -->``)."""
+    """Return the reason string from a ``copy-allow: <reason>`` suppression
+    marker, or None if the line carries no such marker. The marker MUST be
+    preceded by a comment introducer (``#``, ``//``, ``/*``, ``<!--``) on
+    the same line — bare string literals containing ``copy-allow:`` do
+    not count, because that bypass would silence every rule on a line
+    that just happens to mention the token (e.g. test fixtures, docs).
+    The comment introducer must also live outside any open string literal
+    on the line, defeating the ``"// copy-allow:"``-inside-a-string bypass.
+    """
 
-    idx = line.find(ALLOW_TOKEN)
-    if idx < 0:
-        return None
-    reason = line[idx + len(ALLOW_TOKEN):].strip()
-    # Trim common trailing comment-end tokens.
-    for trailing in ("*/", "-->", "//"):
-        if reason.endswith(trailing):
-            reason = reason[: -len(trailing)].strip()
-    return reason or ""  # empty string means "marker present but no reason"
+    for m in ALLOW_RE.finditer(line):
+        if _intro_is_inside_string(line, m.start("intro")):
+            continue
+        reason = m.group("reason").strip()
+        # Trim common trailing comment-end tokens.
+        for trailing in ("*/", "-->", "//"):
+            if reason.endswith(trailing):
+                reason = reason[: -len(trailing)].strip()
+        return reason or ""  # empty string means "marker present but no reason"
+    return None
 
 
 def scan_file(path: Path) -> list[Violation]:

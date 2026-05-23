@@ -130,6 +130,53 @@ def test_allow_without_reason_does_not_suppress(tmp_path: Path) -> None:
     assert any(v.rule_id == "court-admissible" for v in blocking)
 
 
+def test_string_literal_copy_allow_does_not_suppress(tmp_path: Path) -> None:
+    """A string literal that contains the substring ``copy-allow:`` must
+    NOT silence the rules on its line — only a real comment-prefixed
+    marker counts. Regression for the naive ``line.find("copy-allow:")``
+    bypass."""
+
+    write(
+        tmp_path,
+        "frontend/x.tsx",
+        'const sneaky = "court-admissible // copy-allow: bypass";\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"])
+    blocking = [v for v in violations if not v.allowed]
+    assert any(v.rule_id == "court-admissible" for v in blocking), (
+        "string-literal copy-allow: must not silence violations"
+    )
+
+
+def test_real_comment_copy_allow_still_suppresses(tmp_path: Path) -> None:
+    """Companion to the string-literal test: an honest ``// copy-allow:``
+    comment with a reason continues to suppress as before."""
+
+    write(
+        tmp_path,
+        "frontend/x.tsx",
+        '<p>court-admissible</p>  // copy-allow: legacy term in source quote\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"])
+    blocking = [v for v in violations if not v.allowed]
+    assert blocking == []
+    assert any(v.allowed and v.allow_reason for v in violations)
+
+
+def test_hash_comment_copy_allow_suppresses(tmp_path: Path) -> None:
+    """``#``-style comments (Python, shell, yaml) must also count as a
+    valid suppression introducer."""
+
+    write(
+        tmp_path,
+        "frontend/notes.md",
+        "court-admissible  # copy-allow: legitimate quoting in doc\n",
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"])
+    blocking = [v for v in violations if not v.allowed]
+    assert blocking == []
+
+
 # ---------------------------------------------------------------------------
 # Excluded directories / extensions
 # ---------------------------------------------------------------------------
