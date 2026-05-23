@@ -19,10 +19,10 @@ import { NextResponse } from "next/server";
 import { getClerkBackendToken } from "@/lib/auth-server";
 import { VeraApiError } from "@/lib/api-server";
 
+// Match lib/api-server.ts and lib/api-client.ts — one canonical env var
+// for the backend URL across the whole frontend.
 const API_BASE =
-  process.env.VERA_API_URL ??
-  process.env.NEXT_PUBLIC_API_BASE ??
-  "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export async function GET(req: Request) {
   const token = await getClerkBackendToken();
