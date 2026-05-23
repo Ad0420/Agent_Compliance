@@ -3,9 +3,20 @@ from typing import Optional
 from pydantic import BaseModel, Field, field_validator
 
 VALID_PERMISSIONS = {"read", "write", "admin"}
+VALID_KINDS = ("test", "live")
 
 
 class APIKeyCreate(BaseModel):
+    """Create payload for an API key.
+
+    Phase 1 PR 1 does NOT accept ``kind`` on the create path. The DB
+    column defaults to ``test`` (via ``APIKey.kind`` server_default) and
+    PR 4 will re-introduce explicit ``kind`` here together with BAA-gating
+    in ``require_permission``. Pre-fix this schema accepted ``kind`` but
+    the route silently dropped it — leaving callers with the false
+    impression that they were minting live keys.
+    """
+
     name: str = Field(..., min_length=1, max_length=200)
     permissions: list[str] = Field(default_factory=lambda: ["read", "write"])
     expires_at: Optional[datetime] = None
@@ -28,6 +39,7 @@ class APIKeyCreateResponse(BaseModel):
     raw_key: str
     key_prefix: str
     permissions: list[str]
+    kind: str = "test"
     created_at: datetime
     expires_at: Optional[datetime] = None
 
@@ -40,6 +52,7 @@ class APIKeyResponse(BaseModel):
     name: str
     key_prefix: str
     permissions: list[str]
+    kind: str = "test"
     created_at: datetime
     revoked_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None

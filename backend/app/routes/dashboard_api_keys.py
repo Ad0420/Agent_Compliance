@@ -52,6 +52,10 @@ async def list_api_keys(
             name=k.name,
             key_prefix=k.key_prefix,
             permissions=k.permissions,
+            # Surface the actual DB-stored kind rather than the schema
+            # default — once PR 4 lets callers mint live keys, the dashboard
+            # will need to distinguish them visually.
+            kind=k.kind,
             created_at=k.created_at,
             revoked_at=k.revoked_at,
             expires_at=k.expires_at,
@@ -88,6 +92,9 @@ async def create_api_key(
         raw_key=raw_key,
         key_prefix=api_key.key_prefix,
         permissions=api_key.permissions,
+        # Reflect the DB-assigned ``kind`` (always ``test`` in this PR;
+        # PR 4 adds a create-time input + BAA gate).
+        kind=api_key.kind,
         created_at=api_key.created_at,
         expires_at=api_key.expires_at,
     )

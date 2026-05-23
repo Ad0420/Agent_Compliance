@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Optional
 from sqlalchemy import (
     BigInteger, String, Integer, DateTime, Text, JSON,
-    ForeignKey, UniqueConstraint, func, CheckConstraint,
+    ForeignKey, Index, UniqueConstraint, func, CheckConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base
@@ -17,6 +17,12 @@ class ActionRecord(Base):
             "result IN ('success', 'failure', 'partial', 'pending', 'blocked')",
             name="ck_ar_result"
         ),
+        # Phase 1 PR 1: indexes for the promoted columns. Names match the
+        # migration ``l2f3g4h5i6j7`` so create_all + alembic upgrade paths
+        # produce the same on-disk shape.
+        Index("idx_ar_tenant_id", "tenant_id"),
+        Index("idx_ar_org_tenant_seq", "org_id", "tenant_id", "sequence_number"),
+        Index("idx_ar_action_class", "action_class"),
     )
 
     # ── Identity & Integrity ──────────────────────────────
@@ -59,6 +65,19 @@ class ActionRecord(Base):
     )
     target_system: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     target_resource: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # ── Phase 1 PR 1: promoted from metadata blob to indexed columns ──
+    # ``tenant_id`` = the customer-of-the-customer (e.g. Cleveland Clinic).
+    # Distinct from ``data_subject_id`` (= the patient under HIPAA Right of
+    # Access). The two coexist; do NOT conflate.
+    # ``domain`` = vertical bucket (``clinical_decision``, ``lending``,
+    # ``hiring``) used by pack selection.
+    # ``action_class`` = coarse semantic category (``chart_entry``,
+    # ``controlled_substance_order``) used by Phase 2 gates.
+    # All nullable for backwards compat with rows created before this PR.
+    tenant_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    domain: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    action_class: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     # ── Result ────────────────────────────────────────────
     result: Mapped[str] = mapped_column(String(20), nullable=False)

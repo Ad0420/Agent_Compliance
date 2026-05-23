@@ -15,6 +15,18 @@ from .checkpoint import (
     CheckpointListResponse,
     CheckpointVerifyAllResponse,
 )
+from .customer import (
+    CustomerCreate,
+    CustomerUpdate,
+    CustomerResponse,
+    CustomerListResponse,
+)
+from .baa import (
+    BAAAgreementCreate,
+    BAAAgreementResponse,
+    BAAScopeCreate,
+    BAAScopeResponse,
+)
 
 __all__ = [
     "ActionRecordCreate",
@@ -35,4 +47,12 @@ __all__ = [
     "CheckpointVerificationResult",
     "CheckpointListResponse",
     "CheckpointVerifyAllResponse",
+    "CustomerCreate",
+    "CustomerUpdate",
+    "CustomerResponse",
+    "CustomerListResponse",
+    "BAAAgreementCreate",
+    "BAAAgreementResponse",
+    "BAAScopeCreate",
+    "BAAScopeResponse",
 ]

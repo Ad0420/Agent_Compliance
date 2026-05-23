@@ -31,6 +31,10 @@ from app.models import (  # noqa: E402, F401 – side-effect: registers tables
     OrgMembership,
     ProcessedWebhookEvent,
     ComplianceReviewRecord,
+    Customer,
+    CustomerAgent,
+    BAAAgreement,
+    BAAScope,
 )
 
 config = context.config

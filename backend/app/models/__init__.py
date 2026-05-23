@@ -13,6 +13,10 @@ from .webhook_subscription import WebhookSubscription
 from .org_membership import OrgMembership, BACKEND_ROLES
 from .processed_webhook_event import ProcessedWebhookEvent
 from .compliance_review_record import ComplianceReviewRecord
+from .customer import Customer
+from .customer_agent import CustomerAgent
+from .baa_agreement import BAAAgreement
+from .baa_scope import BAAScope
 
 __all__ = [
     "Base",
@@ -31,4 +35,8 @@ __all__ = [
     "BACKEND_ROLES",
     "ProcessedWebhookEvent",
     "ComplianceReviewRecord",
+    "Customer",
+    "CustomerAgent",
+    "BAAAgreement",
+    "BAAScope",
 ]
