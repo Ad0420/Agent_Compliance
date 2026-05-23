@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { SignIn } from "@clerk/nextjs";
+import { SignIn, Show } from "@clerk/nextjs";
 import { useAuth } from "@/hooks/use-auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -104,12 +104,20 @@ export default function LoginPage() {
                 Or sign in with email (preview)
               </summary>
               <div className="mt-4 flex justify-center">
-                <SignIn
-                  path="/login"
-                  routing="path"
-                  signUpUrl="/register"
-                  forceRedirectUrl="/dashboard"
-                />
+                {/* Show-when-signed-out gate: <SignIn /> auto-redirects to
+                    forceRedirectUrl when a Clerk session already exists.
+                    /dashboard then bounces back to /login (no legacy API key
+                    in localStorage), causing an infinite loop. Until E4
+                    migrates the dashboard off the legacy API-key auth, only
+                    mount the widget when there's no Clerk session. */}
+                <Show when="signed-out">
+                  <SignIn
+                    path="/login"
+                    routing="path"
+                    signUpUrl="/register"
+                    forceRedirectUrl="/dashboard"
+                  />
+                </Show>
               </div>
             </details>
           </CardContent>
