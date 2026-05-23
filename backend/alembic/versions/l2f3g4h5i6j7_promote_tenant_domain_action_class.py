@@ -113,15 +113,20 @@ def upgrade() -> None:
     # untouched, so existing ``record_hash`` values remain valid (the
     # hash is computed over the blob's exact bytes).
     if dialect == "postgresql":
+        # NOTE: ``metadata`` is ``JSON`` (not ``JSONB``), so the ``?``
+        # key-existence operator is not available — it's JSONB-only. Use
+        # ``->> 'key' IS NOT NULL`` instead, which works on JSON. Returns
+        # NULL for JSON null literals too, which is the behaviour we want
+        # (don't backfill from explicit JSON nulls).
         op.execute(
             """
             UPDATE action_records
             SET tenant_id = COALESCE(tenant_id, metadata->>'tenant_id'),
                 domain = COALESCE(domain, metadata->>'domain'),
                 action_class = COALESCE(action_class, metadata->>'action_class')
-            WHERE metadata ? 'tenant_id'
-               OR metadata ? 'domain'
-               OR metadata ? 'action_class'
+            WHERE metadata->>'tenant_id' IS NOT NULL
+               OR metadata->>'domain' IS NOT NULL
+               OR metadata->>'action_class' IS NOT NULL
             """
         )
     elif dialect == "sqlite":
