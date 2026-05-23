@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { SignUp } from "@clerk/nextjs";
+import { SignUp, Show } from "@clerk/nextjs";
 import { useAuth } from "@/hooks/use-auth";
 import { registerOrg, type RegisterResult } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
@@ -195,12 +195,19 @@ export default function RegisterPage() {
                 Or sign up with email (preview)
               </summary>
               <div className="mt-4 flex justify-center">
-                <SignUp
-                  path="/register"
-                  routing="path"
-                  signInUrl="/login"
-                  forceRedirectUrl="/dashboard"
-                />
+                {/* Show-when-signed-out gate: same reason as /login —
+                    <SignUp /> auto-redirects to forceRedirectUrl when a
+                    session already exists, and /dashboard bounces back here
+                    without a legacy API key. See
+                    app/login/[[...sign-in]]/page.tsx. */}
+                <Show when="signed-out">
+                  <SignUp
+                    path="/register"
+                    routing="path"
+                    signInUrl="/login"
+                    forceRedirectUrl="/dashboard"
+                  />
+                </Show>
               </div>
             </details>
           </CardContent>
