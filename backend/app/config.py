@@ -92,18 +92,50 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _validate_clerk_config(self):
-        """If Clerk JWKS is configured, the issuer must also be set.
+        """Catch the Clerk env-var inconsistencies that produce silent 401s.
 
-        Otherwise we'd verify signatures but skip issuer validation, which
-        means a JWT signed by ANY Clerk instance (including someone else's)
-        would be accepted as long as the kid happens to match. Fail-fast
-        at startup beats silently failing open.
+        Three checks, all motivated by real failures:
+
+        1. JWKS without ISSUER → JWTs from ANY Clerk instance pass signature
+           verification as long as the kid matches. Hard fail.
+
+        2. JWKS host != ISSUER host → the deploy is misconfigured for *which*
+           Clerk instance it speaks to. The dashboard hands the backend tokens
+           issued by the instance whose pk_* the frontend uses; if the backend
+           verifies them against a different instance's JWKS, every request
+           401s with no useful server log. Hard fail.
+
+        3. AUTHORIZED_PARTIES unset in production → the backend will accept a
+           valid Clerk JWT issued for ANY frontend on the same Clerk instance,
+           not just our own. Soft warning (operators sometimes intentionally
+           unset this while debugging an `azp` mismatch; don't break startup).
         """
         if self.clerk_jwks_url and not self.clerk_issuer:
             raise ValueError(
                 "CLERK_ISSUER is required when CLERK_JWKS_URL is set. "
                 "Without an expected issuer, JWTs from any Clerk instance "
                 "would pass signature verification."
+            )
+        if self.clerk_jwks_url and self.clerk_issuer:
+            from urllib.parse import urlparse
+
+            jwks_host = urlparse(self.clerk_jwks_url).netloc
+            issuer_host = urlparse(self.clerk_issuer).netloc
+            if jwks_host and issuer_host and jwks_host != issuer_host:
+                raise ValueError(
+                    f"CLERK_JWKS_URL host ({jwks_host!r}) does not match "
+                    f"CLERK_ISSUER host ({issuer_host!r}). These must point "
+                    "at the same Clerk instance, or every JWT will 401."
+                )
+        if self.environment != "development" and not self.clerk_authorized_parties:
+            warnings.warn(
+                "CLERK_AUTHORIZED_PARTIES is unset in a non-development "
+                "environment. The backend will accept any valid Clerk JWT "
+                "issued by this instance, including ones issued for other "
+                "frontends on the same Clerk app. Set this to your dashboard "
+                "origin(s) — e.g. 'https://app.example.com'.",
+                UserWarning,
+                stacklevel=2,
             )
         return self
 
