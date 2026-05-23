@@ -93,7 +93,7 @@ export function EmptyState(props: EmptyStateProps) {
 const emptyStateCtaClasses = cn(
   "mt-2 inline-flex h-9 items-center gap-2 rounded-[10px] px-4",
   "bg-[color:var(--ink)] text-[14px] font-medium text-[color:var(--paper)]",
-  "transition-colors hover:bg-[color:#2A1D14]",
+  "transition-colors hover:bg-[color:var(--ink-hover)]",
   "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2",
   "focus-visible:outline-[color:var(--ink)]",
   "disabled:cursor-not-allowed disabled:opacity-50",
