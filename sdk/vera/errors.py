@@ -37,9 +37,67 @@ The catalog ships in two slices:
 
 from __future__ import annotations
 
+import re
+import warnings
 from typing import Any
 
 DOC_BASE = "https://docs.usevera.xyz/errors"
+
+# ---------------------------------------------------------------------------
+# Backward-compat: docs_url slug renames (Phase 1 PR 6).
+# ---------------------------------------------------------------------------
+#
+# Three transport-layer classes had their ``code`` (and therefore the
+# ``docs_url`` slug rendered into ``str(err)``) renamed to match the
+# 12-class catalog in ``docs/error-discipline.md``:
+#
+#   * VeraAuthError:    "auth"    -> "invalid_api_key"
+#   * VeraTimeoutError: "timeout" -> "gate_timeout_or_network"
+#   * VeraNetworkError: "network" -> "gate_timeout_or_network"
+#
+# Constructor signatures, ``except`` matching, and ``to_dict()`` field names
+# are unchanged — only the slug rendered into the URL substring changed. To
+# catch operators whose log-grep / alerting matched the old URL substrings,
+# the first ``str(err)`` call against a renamed class emits a one-shot
+# DeprecationWarning per renamed code per process.
+_DOCS_URL_RENAMES: dict[str, tuple[str, str]] = {
+    # new_code -> (old_code, class_name_for_message)
+    "invalid_api_key": ("auth", "VeraAuthError"),
+    "gate_timeout_or_network_timeout": ("timeout", "VeraTimeoutError"),
+    "gate_timeout_or_network_network": ("network", "VeraNetworkError"),
+}
+
+# Module-level dedupe — ensures the warning fires exactly once per renamed
+# class per process. Keyed by the renamed-class identifier (NOT the shared
+# new code) so VeraTimeoutError and VeraNetworkError each warn independently
+# even though they collapsed onto the same ``gate_timeout_or_network`` code.
+_warned_codes: set[str] = set()
+
+
+def _warn_docs_url_renamed_once(rename_key: str) -> None:
+    """Emit a one-shot DeprecationWarning for a renamed docs_url slug."""
+    if rename_key in _warned_codes:
+        return
+    if rename_key not in _DOCS_URL_RENAMES:
+        return
+    _warned_codes.add(rename_key)
+    old_code, class_name = _DOCS_URL_RENAMES[rename_key]
+    new_code = (
+        "invalid_api_key"
+        if rename_key == "invalid_api_key"
+        else "gate_timeout_or_network"
+    )
+    warnings.warn(
+        f"{class_name} docs_url changed: errors/{old_code} -> errors/{new_code}. "
+        "Update log-grep / alerting.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+
+
+def _reset_docs_url_rename_warnings() -> None:
+    """Reset the once-per-process dedupe set. Intended for tests."""
+    _warned_codes.clear()
 
 # Default ``fix_url`` for errors where the remediation surface hasn't been
 # built yet (per docs/error-discipline.md, ``null`` is not allowed — point at
@@ -162,6 +220,10 @@ class VeraAuthError(VeraError):
     )
     default_fix_url = "https://app.usevera.xyz/settings/api-keys"
 
+    def __str__(self) -> str:  # pragma: no cover — exercised by warn test
+        _warn_docs_url_renamed_once("invalid_api_key")
+        return super().__str__()
+
 
 class VeraRateLimitError(VeraError):
     """429: too many requests."""
@@ -201,6 +263,10 @@ class VeraTimeoutError(VeraError):
     )
     default_fix_url = "https://status.usevera.xyz"
 
+    def __str__(self) -> str:  # pragma: no cover — exercised by warn test
+        _warn_docs_url_renamed_once("gate_timeout_or_network_timeout")
+        return super().__str__()
+
 
 class VeraNetworkError(VeraError):
     """Network failure (DNS, TLS, connection refused, etc.)."""
@@ -213,6 +279,10 @@ class VeraNetworkError(VeraError):
         "Network-layer failure (DNS, TLS, connection refused, or response decode)."
     )
     default_fix_url = "https://status.usevera.xyz"
+
+    def __str__(self) -> str:  # pragma: no cover — exercised by warn test
+        _warn_docs_url_renamed_once("gate_timeout_or_network_network")
+        return super().__str__()
 
 
 class VeraValidationError(VeraError):
@@ -268,9 +338,9 @@ class PolicyBlock(VeraError):
         self,
         reason: str = "",
         citation: str = "",
+        *,
         fix_url: str | None = None,
         retryable: bool = False,
-        *,
         user_facing_reason: str | None = None,
         developer_reason: str | None = None,
         request_id: str | None = None,
@@ -461,6 +531,50 @@ TENANT_REASON_MALFORMED = "malformed"
 TENANT_REASON_PHI_SHAPE = "phi_shape_detected"
 
 
+# Defense-in-depth PHI-shape detector. The backend's classifier MAY disagree
+# with the SDK's (e.g. backend labels an SSN-shaped value ``tenant_malformed``
+# while the SDK would call it ``phi_shape_detected``). If we only redacted
+# on the explicit ``phi_shape_detected`` reason, a backend misclassification
+# would echo a bare SSN/DOB into ``provided_value`` and into structured logs.
+#
+# Lean toward false-positive (over-redact) — losing a diagnostic string is
+# vastly cheaper than logging PHI. Patterns are anchored to the FULL value
+# (full-match semantics via ``fullmatch``) so legitimate tenant IDs that
+# merely *contain* digits aren't redacted.
+_PHI_SHAPE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\d{3}-\d{2}-\d{4}"),          # SSN with dashes
+    re.compile(r"\d{9}"),                       # SSN without dashes
+    re.compile(r"\d{4}-\d{2}-\d{2}"),          # ISO date (DOB)
+    re.compile(r"\d{2}/\d{2}/\d{4}"),          # US date (DOB)
+    re.compile(r"\d{2}-\d{2}-\d{4}"),          # alt date (DOB)
+    re.compile(r"\d{1,2}/\d{1,2}/\d{2,4}"),    # loose US date
+    # name + number combos ("John Smith 1985-03-12", "smith_19850312")
+    re.compile(r"[A-Za-z]+[\s_-]+\d{4,}"),
+    re.compile(r"\d{4,}[\s_-]+[A-Za-z]+"),
+)
+
+
+def _looks_like_phi(value: Any) -> bool:
+    """Return True if ``value`` matches any PHI-shape heuristic.
+
+    Conservative — runs against ``str(value)`` and uses ``fullmatch`` so a
+    perfectly-shaped SSN / DOB / name+number triggers but a long tenant id
+    that merely *contains* digits does not.
+    """
+    if value is None:
+        return False
+    try:
+        s = str(value)
+    except Exception:
+        return True  # something weird — fail closed
+    if not s:
+        return False
+    for pat in _PHI_SHAPE_PATTERNS:
+        if pat.fullmatch(s):
+            return True
+    return False
+
+
 class TenantMissingOrInvalid(VeraError):
     """The action requires a ``tenant_id`` but none was resolved (or it's invalid).
 
@@ -502,7 +616,15 @@ class TenantMissingOrInvalid(VeraError):
         self.reason = reason
         # NEVER echo a PHI-shape value — that would defeat the purpose of the
         # heuristic (the value is the thing we're trying NOT to log).
-        if reason == TENANT_REASON_PHI_SHAPE:
+        #
+        # Belt-and-suspenders: run the PHI-shape heuristic against
+        # ``provided_value`` regardless of the ``reason`` the caller
+        # supplied. The backend may classify an SSN-shaped value as
+        # ``tenant_malformed`` while the SDK would call it
+        # ``phi_shape_detected``; trusting the caller's reason here would
+        # leak the value. Lean toward false-positive — losing a diagnostic
+        # string is far cheaper than logging PHI.
+        if reason == TENANT_REASON_PHI_SHAPE or _looks_like_phi(provided_value):
             self.provided_value = None
         else:
             self.provided_value = provided_value
@@ -523,9 +645,12 @@ class TenantMissingOrInvalid(VeraError):
                     "rejected hard on al_live_*."
                 )
             elif reason == TENANT_REASON_MALFORMED:
+                # Use the post-redaction ``self.provided_value`` (None when
+                # the PHI heuristic fired) so we don't leak via developer_reason.
+                safe_value = self.provided_value
                 developer_reason = (
                     f"tenant_id failed the ^[a-zA-Z0-9_-]{{1,64}}$ format check"
-                    + (f" (provided={provided_value!r})." if provided_value else ".")
+                    + (f" (provided={safe_value!r})." if safe_value else ".")
                 )
             else:
                 developer_reason = (

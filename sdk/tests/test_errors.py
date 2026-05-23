@@ -16,6 +16,8 @@ Covers:
   positional construction MUST keep working without any new kwargs.
 """
 
+import warnings
+
 import pytest
 
 from vera import (
@@ -433,3 +435,122 @@ class TestDomainErrorConstructors:
         assert err.reviewer_role == "md"
         assert err.required_role == "dea_licensed_prescriber"
         assert "dea_licensed_prescriber" in err.developer_reason
+
+
+class TestPHIShapeRedaction:
+    """Belt-and-suspenders: ``provided_value`` MUST be redacted whenever it
+    matches a PHI-shape pattern, regardless of the ``reason`` the caller
+    supplied. The backend may classify an SSN-shaped value as
+    ``tenant_malformed`` while the SDK would call it ``phi_shape_detected``;
+    trusting the caller's reason here would leak the value into structured
+    logs.
+    """
+
+    def test_tenant_malformed_with_phi_shape_value_is_redacted(self):
+        # The headline regression: backend mis-classifies SSN-shaped value
+        # as ``tenant_malformed``. The SDK MUST redact it before storing.
+        err = TenantMissingOrInvalid(
+            reason=TENANT_REASON_MALFORMED,
+            provided_value="123-45-6789",
+        )
+        assert err.provided_value is None
+        d = err.to_dict()
+        assert d["provided_value"] is None
+        # And the synthesised developer_reason MUST NOT leak it either.
+        assert "123-45-6789" not in err.developer_reason
+
+    @pytest.mark.parametrize(
+        "phi_value",
+        [
+            "123-45-6789",           # SSN with dashes
+            "123456789",             # SSN without dashes
+            "1985-03-12",            # ISO DOB
+            "03/12/1985",            # US DOB
+            "03-12-1985",            # alt DOB
+            "smith_19850312",        # name + number
+            "John 1985",             # name + number with space
+            "19850312_smith",        # number + name
+        ],
+    )
+    def test_phi_shape_redacted_for_every_reason(self, phi_value):
+        for reason in (TENANT_REASON_MISSING, TENANT_REASON_MALFORMED):
+            err = TenantMissingOrInvalid(reason=reason, provided_value=phi_value)
+            assert err.provided_value is None, (
+                f"reason={reason!r} value={phi_value!r} should redact"
+            )
+            assert phi_value not in err.developer_reason
+
+    def test_normal_tenant_id_is_not_redacted(self):
+        # Genuine tenant IDs that don't match PHI shape MUST pass through —
+        # over-redacting destroys diagnostic info but never PHI.
+        err = TenantMissingOrInvalid(
+            reason=TENANT_REASON_MALFORMED,
+            provided_value="acme-corp-prod",
+        )
+        assert err.provided_value == "acme-corp-prod"
+
+
+class TestDocsUrlRenameWarnings:
+    """The three transport classes whose ``code`` (and therefore the
+    ``docs_url`` slug inside ``str(err)``) was renamed in Phase 1 PR 6
+    MUST emit a one-shot DeprecationWarning per renamed class per process
+    so log-grep / alerting operators see the change in CI before it shows
+    up in alert noise.
+    """
+
+    def setup_method(self):
+        from vera.errors import _reset_docs_url_rename_warnings
+
+        _reset_docs_url_rename_warnings()
+
+    @pytest.mark.parametrize(
+        "cls,old_slug,new_slug",
+        [
+            (VeraAuthError, "auth", "invalid_api_key"),
+            (VeraTimeoutError, "timeout", "gate_timeout_or_network"),
+            (VeraNetworkError, "network", "gate_timeout_or_network"),
+        ],
+    )
+    def test_str_emits_deprecation_warning_once(self, cls, old_slug, new_slug):
+        from vera.errors import _reset_docs_url_rename_warnings
+
+        _reset_docs_url_rename_warnings()
+        err = cls("boom")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            # First str() call -> exactly one warning.
+            _ = str(err)
+            # Second str() on the same instance -> no further warning.
+            _ = str(err)
+            # Third str() on a fresh instance of the SAME class -> still
+            # no warning, because the dedupe is process-wide per class.
+            _ = str(cls("again"))
+
+        dep_warnings = [w for w in caught if issubclass(w.category, DeprecationWarning)]
+        assert len(dep_warnings) == 1, (
+            f"expected exactly one DeprecationWarning for {cls.__name__}, "
+            f"got {len(dep_warnings)}: {[str(w.message) for w in dep_warnings]}"
+        )
+        msg = str(dep_warnings[0].message)
+        assert f"errors/{old_slug}" in msg
+        assert f"errors/{new_slug}" in msg
+        assert cls.__name__ in msg
+
+    def test_warnings_are_independent_per_class(self):
+        # VeraTimeoutError and VeraNetworkError both collapsed onto the
+        # ``gate_timeout_or_network`` code — they MUST still warn
+        # independently so operators see each rename.
+        from vera.errors import _reset_docs_url_rename_warnings
+
+        _reset_docs_url_rename_warnings()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            _ = str(VeraTimeoutError("t"))
+            _ = str(VeraNetworkError("n"))
+        dep_warnings = [
+            w for w in caught if issubclass(w.category, DeprecationWarning)
+        ]
+        assert len(dep_warnings) == 2
+        messages = [str(w.message) for w in dep_warnings]
+        assert any("VeraTimeoutError" in m for m in messages)
+        assert any("VeraNetworkError" in m for m in messages)

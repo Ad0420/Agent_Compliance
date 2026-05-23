@@ -413,3 +413,112 @@ class TestWrapHttpxError:
         out = client_mod.wrap_httpx_error(exc)
         assert isinstance(out, VeraError)
         assert out.request_id == "abc-xyz"
+
+
+# ---------------------------------------------------------------------------
+# Polish fixes (PR-194 review)
+# ---------------------------------------------------------------------------
+
+
+class TestPolicyBlockRichDeveloperReason:
+    """When the backend doesn't supply ``developer_reason`` but DOES supply
+    ``reason`` + ``citation``, the PolicyBlock constructor builds a rich
+    ``"<reason> (citation=<citation>)"`` developer_reason. The backend
+    ``detail`` field (FastAPI's default error string) MUST NOT clobber it.
+    """
+
+    def test_rich_developer_reason_preserved_when_backend_only_sets_detail(self, monkeypatch):
+        c = _make_sync(monkeypatch)
+        body = {
+            "code": "policy_block",
+            "reason": "BAA required",
+            "citation": "HIPAA § 164.504(e)",
+            "detail": "BAA missing",  # FastAPI's terse default
+            # no explicit developer_reason
+        }
+        _patch_transport(c, lambda req: httpx.Response(422, json=body))
+        with pytest.raises(PolicyBlock) as ei:
+            c.record_action(action_name="x")
+        # The rich format wins, NOT the bare "BAA missing" detail.
+        assert "BAA required" in ei.value.developer_reason
+        assert "HIPAA § 164.504(e)" in ei.value.developer_reason
+        assert "citation=" in ei.value.developer_reason
+        c.close()
+
+    def test_explicit_backend_developer_reason_wins(self, monkeypatch):
+        c = _make_sync(monkeypatch)
+        body = {
+            "code": "policy_block",
+            "reason": "BAA required",
+            "citation": "HIPAA § 164.504(e)",
+            "developer_reason": "customers.baa_signed_at past expiry; tenant=acme",
+        }
+        _patch_transport(c, lambda req: httpx.Response(422, json=body))
+        with pytest.raises(PolicyBlock) as ei:
+            c.record_action(action_name="x")
+        assert "customers.baa_signed_at" in ei.value.developer_reason
+        c.close()
+
+
+class TestDeveloperReasonTruncation:
+    """5xx bodies (HTML stack traces, reflected headers) MUST be truncated
+    before landing in ``developer_reason`` → Sentry → structured logs.
+    """
+
+    def test_oversized_5xx_body_is_truncated(self, monkeypatch):
+        c = _make_sync(monkeypatch)
+        # 10KB body (well over the 2048-char cap).
+        huge = "X" * 10_000
+        _patch_transport(
+            c,
+            lambda req: httpx.Response(500, json={"detail": huge}),
+        )
+        with pytest.raises(VeraServerError) as ei:
+            c.record_action(action_name="x")
+        reason = ei.value.developer_reason
+        # Truncated to the documented cap, with the marker present.
+        assert len(reason) <= 2048
+        assert reason.endswith("...[truncated]")
+        c.close()
+
+    def test_oversized_developer_reason_field_is_truncated(self, monkeypatch):
+        c = _make_sync(monkeypatch)
+        huge = "Y" * 10_000
+        body = {
+            "code": "policy_block",
+            "reason": "blocked",
+            "citation": "ref",
+            "developer_reason": huge,
+        }
+        _patch_transport(c, lambda req: httpx.Response(422, json=body))
+        with pytest.raises(PolicyBlock) as ei:
+            c.record_action(action_name="x")
+        assert len(ei.value.developer_reason) <= 2048
+        assert ei.value.developer_reason.endswith("...[truncated]")
+        c.close()
+
+
+class TestXRequestIdCaseInsensitive:
+    """``httpx.Headers`` is case-insensitive — one ``.get`` handles every
+    casing an upstream proxy might emit. Asserting this explicitly so the
+    test passes for the right reason (not because of dead fallback code).
+    """
+
+    @pytest.mark.parametrize(
+        "header_name",
+        ["X-Request-ID", "x-request-id", "X-REQUEST-ID", "x-Request-Id"],
+    )
+    def test_x_request_id_case_insensitive(self, monkeypatch, header_name):
+        c = _make_sync(monkeypatch)
+        _patch_transport(
+            c,
+            lambda req: httpx.Response(
+                401, json={"detail": "no"}, headers={header_name: "rid-case"}
+            ),
+        )
+        with pytest.raises(VeraAuthError) as ei:
+            c.record_action(action_name="x")
+        assert ei.value.request_id == "rid-case", (
+            f"header {header_name!r} should match case-insensitively"
+        )
+        c.close()

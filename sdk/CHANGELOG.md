@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Breaking (log surface only)
+- `VeraAuthError.code` is now `invalid_api_key` (was `auth`); `VeraTimeoutError.code`
+  and `VeraNetworkError.code` are now `gate_timeout_or_network` (were `timeout` and
+  `network`). This realigns the SDK with the 12-class catalog documented in
+  `docs/error-discipline.md`. Constructor signatures, `except` matching, the
+  `VeraError` base class, and `to_dict()` field names are all unchanged — only
+  the `code` value (and therefore the `docs_url` suffix that appears in
+  `str(err)`) changed. **Update any log-grep / alerting that matches
+  `errors/auth`, `errors/timeout`, or `errors/network` URL substrings to the
+  new slugs.** The first call to `str(err)` on each renamed class in a process
+  emits a one-shot `DeprecationWarning` carrying the old → new mapping so
+  pilots see the change in CI before it shows up in alert noise.
+
 ### Documentation
 - README expansion (Phase 4b DX-G + B2). The README is now a reference doc
   instead of a quickstart-only file. New sections:
