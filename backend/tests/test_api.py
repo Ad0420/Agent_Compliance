@@ -279,49 +279,10 @@ async def test_get_current_organization(async_client, org_and_key):
 
 
 # ── API Keys ──────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_create_api_key(async_client, org_and_key):
-    _, raw_key, _ = org_and_key
-    resp = await async_client.post(
-        "/v1/api-keys",
-        json={"name": "new-key", "permissions": ["read"]},
-        headers={"Authorization": f"Bearer {raw_key}"},
-    )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "raw_key" in data
-    assert data["name"] == "new-key"
-
-
-@pytest.mark.asyncio
-async def test_list_api_keys(async_client, org_and_key):
-    _, raw_key, _ = org_and_key
-    resp = await async_client.get(
-        "/v1/api-keys",
-        headers={"Authorization": f"Bearer {raw_key}"},
-    )
-    assert resp.status_code == 200
-
-
-@pytest.mark.asyncio
-async def test_revoke_api_key(async_client, org_and_key):
-    _, raw_key, _ = org_and_key
-    # Create a key to revoke
-    create_resp = await async_client.post(
-        "/v1/api-keys",
-        json={"name": "to-revoke", "permissions": ["read"]},
-        headers={"Authorization": f"Bearer {raw_key}"},
-    )
-    key_id = create_resp.json()["id"]
-
-    resp = await async_client.delete(
-        f"/v1/api-keys/{key_id}",
-        headers={"Authorization": f"Bearer {raw_key}"},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["detail"] == "API key revoked"
+# Legacy /v1/api-keys/* routes were removed in the E4 cleanup. The same
+# happy-path create/list/revoke coverage now lives in
+# tests/test_dashboard_api_keys.py against the Clerk-gated
+# /v1/dashboard/api-keys (which is the only entry point in production).
 
 
 # ── Auth error cases ───────────────────────────────────────
