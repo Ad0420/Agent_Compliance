@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Optional
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -11,6 +12,7 @@ from sqlalchemy import (
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -64,6 +66,30 @@ class Approval(Base):
     )
     expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    # ── Wave 2B PR A5: HITL workflow timing ───────────────────────────
+    # Schema-only in this PR. Populated by downstream PRs:
+    #   client_review_started_at  → PR C2 (dashboard open event)
+    #   decided_at                → PR A4 (reviewer completion)
+    #   webhook_sent_at           → PR A3 (webhook dispatcher)
+    #   callback_received_at      → PR A4 (POST /v1/reviews/{id}/complete)
+    #   reviewed_below_threshold  → PR A4 (role-vs-required_role comparison)
+    # All timestamps are naive UTC to match the project-wide convention
+    # (see services/approvals.py::_now, services/hashing.py::_normalize).
+    # The Alembic migration `q7k8l9m0n1o2_add_approval_workflow_timing`
+    # is the source of truth for indexes; `index=True` is intentionally
+    # omitted here to keep autogenerate diffs clean.
+    client_review_started_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    webhook_sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    callback_received_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+    reviewed_below_threshold: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("0"), default=False
+    )
 
     organization: Mapped["Organization"] = relationship(
         "Organization", back_populates="approvals"
