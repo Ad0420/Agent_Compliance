@@ -1,32 +1,34 @@
-"""Phase 2 Wave 2A — stub gate evaluator.
+"""Phase 2 Wave 2B PR A2 — ClinicalScribePack evaluator.
 
 ``evaluate_gates`` is the single funnel that ``POST /v1/gates/evaluate``
-calls. It is the contract every downstream gate pack plugs into.
+calls. It iterates the registered ``CLINICAL_SCRIBE_PACK``, collects
+per-gate ``Ruling`` objects, and reduces them via strictest-wins.
 
-Wave 2A scope (this PR): stub — returns ``ALLOW`` for every input. No
-ApprovalRecord creation, no PHI inspection, no RxNorm/DEA lookups, no
-BAA freshness check. The point of this PR is to lock the interface so
-Wave 2B PRs (A2 real gates, A3 review-routing, A5 ApprovalRecord
-extension, B1 SDK ``@vera.gate`` decorator, C1 dashboard) can be written
-against a merged endpoint shape.
+Reduction shape
+---------------
+* ``BLOCK``         — any gate blocks → block (cites the regulation)
+* ``REQUIRE_HITL``  — no block, any gate requires HITL → HITL (a later
+  commit in this PR adds the ``Approval``-row side effect)
+* ``ALLOW``         — no gate blocks or requires HITL → allow
 
-Wave 2B PR A2 (next): ClinicalScribePack — new-diagnosis gate,
-controlled-substance gate (RxNorm + DEA list), stale-BAA gate. That PR
-replaces this stub wholesale with a registry-driven evaluator that
-reduces multiple gate results via **strictest-gate-wins**:
-
-* ``BLOCK``         (any gate blocks → block)
-* ``REQUIRE_HITL``  (no block, any gate requires HITL → HITL)
-* ``ALLOW``         (no gate blocks or requires HITL → allow)
-
-The SDK's ``@vera.gate`` decorator (Wave 2B PR B1) consumes
-``Ruling.effect`` for routing. Keep this module's signature stable so
-that PR doesn't need rework.
+When no gate's ``applies()`` returns True for the proposed action, the
+evaluator short-circuits to a synthetic ALLOW with
+``reason='no_gate_triggered'`` — preserving the Wave 2A behaviour that
+a non-clinical action sails through.
 """
+
+from __future__ import annotations
+
+import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ...packs import CLINICAL_SCRIBE_PACK
+from ...packs.base import GateContext
 from ...schemas.gate import GateEvaluateRequest, Ruling, RulingEffect
+from .reducer import reduce_rulings
+
+logger = logging.getLogger("vera.gates")
 
 
 async def evaluate_gates(
@@ -34,30 +36,61 @@ async def evaluate_gates(
     org_id: str,
     request: GateEvaluateRequest,
 ) -> Ruling:
-    """Evaluate all registered gate packs against the proposed action.
+    """Evaluate ``CLINICAL_SCRIBE_PACK`` against a proposed action.
 
-    Phase 2 Wave 2A: stub — returns ``ALLOW`` for every input. Real
-    gates land in Wave 2B PR A2 (ClinicalScribePack: new diagnosis,
-    controlled substance via RxNorm + DEA list, stale BAA).
-
-    The strictest-gate-wins reduction
-    (``BLOCK > REQUIRE_HITL > ALLOW``) will live here once multiple
-    gates exist. For now, single-result no-op.
-
-    The ``session`` and ``org_id`` parameters are accepted (and
-    intentionally unused in the stub) so the signature matches what
-    Wave 2B will need — gates will load org-scoped state (BAA freshness,
-    customer scopes, DEA-list cache) via the session.
+    Strictest-wins reduction over the rulings from gates whose
+    ``applies()`` returned True. The next commit in this PR wires the
+    HITL-materialization side effect for ``REQUIRE_HITL`` winners.
     """
-    # session / org_id / request intentionally accepted but unused in the
-    # Wave 2A stub. Wave 2B PR A2 wires them through to the gate registry.
-    del session, org_id, request
+    ctx = GateContext(session=session, org_id=org_id, request=request)
 
-    return Ruling(
-        effect=RulingEffect.ALLOW,
-        reason="no_gates_registered",
-        reason_detail=(
-            "Phase 2 stub evaluator. ClinicalScribePack lands in Wave 2B "
-            "PR A2."
-        ),
+    rulings: list[Ruling] = []
+    for gate in CLINICAL_SCRIBE_PACK.gates:
+        try:
+            applies = gate.applies(ctx)
+        except Exception:  # pragma: no cover - defensive
+            # A buggy applies() must not poison the whole pack. Log,
+            # skip the gate, continue. This is a structural safeguard
+            # for future gate authors; current A2 gates don't raise.
+            logger.exception(
+                "gate.applies.error",
+                extra={"gate_name": gate.name, "org_id": org_id},
+            )
+            continue
+        if not applies:
+            continue
+        try:
+            ruling = await gate.evaluate(ctx)
+        except Exception:
+            # Same defensive posture as applies() — a single gate's
+            # bug must not crash the evaluator. Skip and continue;
+            # if all gates fail we'll fall through to the
+            # no-gate-triggered ALLOW.
+            logger.exception(
+                "gate.evaluate.error",
+                extra={"gate_name": gate.name, "org_id": org_id},
+            )
+            continue
+        rulings.append(ruling)
+
+    if not rulings:
+        # No gate produced a ruling. Preserve the Wave 2A behaviour
+        # that a benign / non-clinical action returns ALLOW.
+        return Ruling(
+            effect=RulingEffect.ALLOW,
+            reason="no_gate_triggered",
+        )
+
+    winner = reduce_rulings(rulings, gate_order=CLINICAL_SCRIBE_PACK.gate_order)
+
+    logger.info(
+        "gate.evaluated",
+        extra={
+            "org_id": org_id,
+            "winner_gate": winner.gate_name,
+            "winner_effect": winner.effect.value,
+            "all_gates_triggered": [r.gate_name for r in rulings],
+        },
     )
+
+    return winner

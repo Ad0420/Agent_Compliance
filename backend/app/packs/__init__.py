@@ -12,5 +12,6 @@ Future PRs (D-series) add more packs without touching the evaluator.
 """
 
 from .base import Gate, GateContext, GatePack
+from .clinical import CLINICAL_SCRIBE_PACK
 
-__all__ = ["Gate", "GateContext", "GatePack"]
+__all__ = ["CLINICAL_SCRIBE_PACK", "Gate", "GateContext", "GatePack"]

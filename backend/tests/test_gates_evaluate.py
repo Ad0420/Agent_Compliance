@@ -1,29 +1,20 @@
-"""Tests for the Phase 2 Wave 2A Ruling contract + POST /v1/gates/evaluate.
+"""Contract + schema tests for ``POST /v1/gates/evaluate``.
 
-Wave 2A scope is the *contract* — the stub evaluator returns ALLOW for
-every input. Real gate logic (ClinicalScribePack) ships in Wave 2B
-PR A2 and gets its own test module. Tests here cover:
+Wave 2A landed the wire shape with a stub evaluator (always ALLOW).
+Wave 2B PR A2 replaces the stub with ``CLINICAL_SCRIBE_PACK`` — so
+the tests in this module now exercise the contract *around* the real
+evaluator without seeding any clinical conditions:
 
-API:
-1. 200 minimal payload → ALLOW + reason='no_gates_registered'
-2. 200 full payload (tenant_id + input_data) → still ALLOW (stub doesn't
-   differentiate)
-3. 401 no auth header
-4. 403 read-only key → write permission required
-5. 422 missing required field (agent_name)
-6. 422 invalid tenant_id shape (must match ActionRecord regex)
-7. 200 response omits review_id/fix_url/required_role/citation/gate_name
+* Auth + permission gating (401, 403)
+* Validation (422 on missing fields, malformed tenant_id, empty body)
+* Schema round-trip
+* Effect enum values
+* Per-field size caps mirrored from ``ActionRecord``
 
-Schema:
-8. Ruling round-trips through model_dump → model_validate without losing
-   optional None fields
-9. RulingEffect accepts the three legal strings and rejects others
-10. GateEvaluateRequest defaults input_data and metadata to empty dicts
-11. GateEvaluateRequest rejects oversized input_data (mirrors ActionRecord
-    1 MB cap)
-12. GateEvaluateRequest rejects oversized metadata (mirrors ActionRecord
-    1 MB cap)
-"""
+Behavioural tests for the three gates and their reduction live in
+``test_gates_evaluate_integration.py`` and the per-gate unit modules.
+This module deliberately does NOT seed BAAs / diagnoses / controlled
+substances — that's the integration suite's job."""
 
 import pytest
 from pydantic import ValidationError
@@ -109,61 +100,11 @@ def test_gate_evaluate_request_rejects_oversized_metadata():
 
 
 # ── API-level tests ─────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_evaluate_minimal_payload_returns_allow(async_client, org_and_key):
-    """POST /v1/gates/evaluate with minimal valid payload returns stub ALLOW."""
-    _, raw_key, _ = org_and_key
-    response = await async_client.post(
-        "/v1/gates/evaluate",
-        json={
-            "agent_name": "scribemd",
-            "action_type": "function_call",
-            "action_name": "record_diagnosis",
-            "authorized_by": "dr_smith",
-        },
-        headers={"Authorization": f"Bearer {raw_key}"},
-    )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["effect"] == "allow"
-    assert body["reason"] == "no_gates_registered"
-    # Stub never populates the routing fields.
-    assert body["review_id"] is None
-    assert body["fix_url"] is None
-    assert body["required_role"] is None
-    assert body["citation"] is None
-    assert body["gate_name"] is None
-
-
-@pytest.mark.asyncio
-async def test_evaluate_full_payload_still_returns_allow(async_client, org_and_key):
-    """tenant_id + populated input_data does not change the stub ruling."""
-    _, raw_key, _ = org_and_key
-    response = await async_client.post(
-        "/v1/gates/evaluate",
-        json={
-            "agent_name": "scribemd",
-            "agent_id": "agent_abc",
-            "action_type": "function_call",
-            "action_name": "record_diagnosis",
-            "action_description": "Record new diagnosis for visit",
-            "tenant_id": "cleveland_clinic",
-            "data_subject_id": "patient_42",
-            "target_system": "ehr",
-            "target_resource": "patients/42/encounters/9",
-            "authorized_by": "dr_smith",
-            "input_data": {"icd10": "E11.9", "controlled_substance": True},
-            "metadata": {"source": "scribe-ui"},
-        },
-        headers={"Authorization": f"Bearer {raw_key}"},
-    )
-    assert response.status_code == 200
-    body = response.json()
-    # The stub is deliberately indifferent to payload contents in Wave 2A.
-    assert body["effect"] == "allow"
-    assert body["reason"] == "no_gates_registered"
+#
+# Behavioural coverage of the three gates (stale_baa, new_diagnosis,
+# controlled_substance) and their strictest-wins reduction lives in
+# ``test_gates_evaluate_integration.py``. This module keeps the
+# auth / validation surface tested in isolation.
 
 
 @pytest.mark.asyncio
