@@ -39,7 +39,32 @@ for the tamper-evident archive subsystem.
 | `MAX_SEARCH_LENGTH` | `200` | Max search query length | Railway |
 | `RATE_LIMIT_RPM` | `120` | Per-key requests per minute | Railway |
 | `RATE_LIMIT_BURST` | `20` | Per-key max burst per second | Railway |
+| `RATE_LIMIT_ENABLED` | `true` | Enables the in-process limiter. Set `false` when AWS WAF rate rules are authoritative. | Railway/AWS |
+| `RATE_LIMIT_TRUST_PROXY_HEADERS` | `false` | Trusts `X-Forwarded-For` for IP buckets. Use only behind a trusted ALB/proxy. | AWS |
+| `DB_POOL_SIZE` | `5` | SQLAlchemy pool size per process/worker. Use small values for small RDS instances. | Railway/AWS |
+| `DB_MAX_OVERFLOW` | `5` | Extra transient DB connections per process/worker. | Railway/AWS |
+| `DB_POOL_TIMEOUT` | `30` | Seconds to wait for a DB connection before failing. | Railway/AWS |
+| `DB_POOL_RECYCLE_SECONDS` | `1800` | Recycle pooled DB connections after this many seconds. | Railway/AWS |
 | `ALERT_FROM_EMAIL` | `alerts@usevera.xyz` | `From` address for alert emails | Railway |
+
+### Durable jobs (SQS + ECS worker)
+
+| Variable | Required | Description | Set in |
+|---|---|---|---|
+| `ACTIONLEDGER_JOB_QUEUE_PROVIDER` | no (defaults to `local`) | `local` schedules in-process asyncio tasks; `sqs` writes jobs to SQS for `python -m app.worker`. Use `sqs` in AWS production. | AWS |
+| `ACTIONLEDGER_SQS_QUEUE_URL` | yes if provider is `sqs` | SQS queue URL used for webhook delivery, email alerts, checkpoint jobs, and async PDF exports. | AWS |
+
+### S3 documents and exports
+
+| Variable | Required | Description | Set in |
+|---|---|---|---|
+| `ACTIONLEDGER_BAA_BUCKET` | yes for BAA file upload | Private S3 bucket for signed BAA PDFs. Use SSE-KMS and block public access. | AWS |
+| `ACTIONLEDGER_BAA_PREFIX` | no (defaults to `baa/`) | Prefix for signed BAA PDFs. | AWS |
+| `ACTIONLEDGER_BAA_KMS_KEY_ID` | no | Optional KMS key id/ARN for explicit per-object SSE-KMS headers. | AWS |
+| `ACTIONLEDGER_BAA_UPLOAD_MAX_BYTES` | no (defaults to `10000000`) | Max accepted PDF size for the BAA upload endpoint. | AWS |
+| `ACTIONLEDGER_EXPORT_BUCKET` | yes for async PDF exports | Private S3 bucket for generated export artifacts. Use SSE-KMS and block public access. | AWS |
+| `ACTIONLEDGER_EXPORT_PREFIX` | no (defaults to `exports/`) | Prefix for generated export artifacts. | AWS |
+| `ACTIONLEDGER_EXPORT_KMS_KEY_ID` | no | Optional KMS key id/ARN for explicit per-object SSE-KMS headers. | AWS |
 
 ### Email alerts (Resend)
 
@@ -66,8 +91,8 @@ class. They're only required if the corresponding subsystem is enabled.
 |---|---|---|---|
 | `AWS_KMS_KEY_ID` | yes if KMS signer is used | KMS key alias or ARN for checkpoint signing. | Railway |
 | `AWS_REGION` | no (defaults to `us-east-1`) | AWS region for KMS and S3. | Railway |
-| `AWS_ACCESS_KEY_ID` | yes if KMS / S3 used | Standard AWS credential. Read implicitly by boto3. | Railway |
-| `AWS_SECRET_ACCESS_KEY` | yes if KMS / S3 used | Paired with above. | Railway |
+| `AWS_ACCESS_KEY_ID` | yes if KMS / S3 used outside AWS | Standard AWS credential. In ECS, prefer the task role instead of static keys. | Railway |
+| `AWS_SECRET_ACCESS_KEY` | yes if KMS / S3 used outside AWS | Paired with above. In ECS, prefer the task role instead of static keys. | Railway |
 | `ACTIONLEDGER_EXTERNAL_STORE` | no (defaults to `local`) | Selects external WORM store provider. Set to `s3` to enable the S3 backend. | Railway |
 | `ACTIONLEDGER_S3_BUCKET` | yes if `ACTIONLEDGER_EXTERNAL_STORE=s3` | S3 bucket name. Must have Object Lock enabled. | Railway |
 | `ACTIONLEDGER_S3_PREFIX` | no (defaults to `checkpoints/`) | Key prefix within the bucket. | Railway |

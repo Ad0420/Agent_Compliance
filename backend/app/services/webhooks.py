@@ -2,7 +2,7 @@
 
 Public surface:
     - ALLOWED_EVENT_TYPES: frozenset of event-type strings customers may subscribe to.
-    - dispatch_event(session, org_id, event_type, payload): fire-and-forget delivery
+    - dispatch_event(session, org_id, event_type, payload): enqueue delivery
       to all matching active subscriptions for the org.
 
 Design notes
@@ -17,15 +17,14 @@ Design notes
   ``json.dumps(envelope, separators=(",", ":"), sort_keys=True).encode()``.
   Recipients MUST re-derive the same canonical form to verify. The
   ``X-Vera-Signature`` header contains ``sha256=<hex>``.
-* **Fire-and-forget.** ``dispatch_event`` schedules ``asyncio.create_task``
-  per matching subscription and returns. The calling request is NOT blocked
-  on HTTP delivery. Each delivery uses its own DB session because the
-  request's session is gone by the time the task runs.
+* **Durable in production.** ``dispatch_event`` writes delivery jobs to the
+  configured job queue. Local development keeps fire-and-forget asyncio tasks.
+  Each delivery uses its own DB session because the request's session is gone
+  by the time the job runs.
 """
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import hmac
 import json
@@ -41,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import AsyncSessionLocal
 from ..models import WebhookSubscription
+from .jobs import enqueue_job
 
 
 logger = logging.getLogger("vera.webhooks")
@@ -189,16 +189,26 @@ async def _deliver(
         )
 
 
+async def deliver_webhook_job(payload: dict) -> None:
+    """Worker entrypoint for a queued webhook delivery."""
+    await _deliver(
+        subscription_id=payload["subscription_id"],
+        url=payload["url"],
+        secret=payload["secret"],
+        envelope=payload["envelope"],
+    )
+
+
 async def dispatch_event(
     session: AsyncSession,
     org_id: str,
     event_type: str,
     payload: dict,
 ) -> None:
-    """Fire-and-forget delivery to all matching active subscriptions.
+    """Queue delivery to all matching active subscriptions.
 
-    Never raises. Schedules HTTP work via ``asyncio.create_task`` so the
-    calling request returns immediately.
+    Never raises. Enqueues HTTP work so the calling request returns
+    immediately.
 
     Parameters
     ----------
@@ -249,11 +259,14 @@ async def dispatch_event(
             "data": payload,
         }
         # Capture mutable fields locally to avoid races with row updates.
-        asyncio.create_task(
-            _deliver(
-                subscription_id=sub.id,
-                url=sub.url,
-                secret=sub.secret,
-                envelope=envelope,
-            )
+        job_payload = {
+            "subscription_id": sub.id,
+            "url": sub.url,
+            "secret": sub.secret,
+            "envelope": envelope,
+        }
+        await enqueue_job(
+            "webhook.delivery",
+            job_payload,
+            local_runner=lambda p=job_payload: deliver_webhook_job(p),
         )

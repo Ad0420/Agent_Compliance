@@ -38,8 +38,34 @@ class Settings(BaseSettings):
     valid_permissions: list[str] = ["read", "write", "admin"]
 
     # Rate limiting
+    rate_limit_enabled: bool = True
     rate_limit_rpm: int = 120  # requests per minute per key
     rate_limit_burst: int = 20  # max burst per second
+    rate_limit_trust_proxy_headers: bool = False
+
+    # PostgreSQL connection pool tuning. Keep defaults modest because each
+    # Gunicorn worker owns its own SQLAlchemy pool.
+    db_pool_size: int = 5
+    db_max_overflow: int = 5
+    db_pool_timeout: int = 30
+    db_pool_recycle_seconds: int = 1800
+
+    # Durable background jobs. Local mode preserves dev/test behavior;
+    # production can set this to "sqs" and run app.worker in a separate ECS
+    # service.
+    actionledger_job_queue_provider: str = "local"
+    actionledger_sqs_queue_url: str = ""
+
+    # S3-backed document/export storage. Buckets should use default SSE-KMS
+    # encryption in AWS; optional *_KMS_KEY_ID values add explicit per-object
+    # encryption headers when presigning/putting objects.
+    actionledger_baa_bucket: str = ""
+    actionledger_baa_prefix: str = "baa/"
+    actionledger_baa_kms_key_id: str = ""
+    actionledger_baa_upload_max_bytes: int = 10_000_000
+    actionledger_export_bucket: str = ""
+    actionledger_export_prefix: str = "exports/"
+    actionledger_export_kms_key_id: str = ""
 
     # Email alerting via Resend (https://resend.com)
     resend_api_key: str = ""
@@ -142,6 +168,25 @@ class Settings(BaseSettings):
                 "issued by this instance, including ones issued for other "
                 "frontends on the same Clerk app. Set this to your dashboard "
                 "origin(s) — e.g. 'https://app.example.com'.",
+                UserWarning,
+                stacklevel=2,
+            )
+        if (
+            self.actionledger_job_queue_provider.lower() == "sqs"
+            and not self.actionledger_sqs_queue_url
+        ):
+            raise ValueError(
+                "ACTIONLEDGER_SQS_QUEUE_URL is required when "
+                "ACTIONLEDGER_JOB_QUEUE_PROVIDER=sqs."
+            )
+        if (
+            self.environment != "development"
+            and self.actionledger_job_queue_provider.lower() == "local"
+        ):
+            warnings.warn(
+                "ACTIONLEDGER_JOB_QUEUE_PROVIDER=local in a non-development "
+                "environment. Background jobs can be lost on process restart; "
+                "use 'sqs' with a separate ECS worker for production.",
                 UserWarning,
                 stacklevel=2,
             )

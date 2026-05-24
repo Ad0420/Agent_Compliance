@@ -219,3 +219,13 @@ class BAAUploadResponse(BaseModel):
     customer_status: CustomerStatus
     effective_at: Optional[datetime] = None
     expires_at: Optional[datetime] = None
+
+
+class BAADocumentUploadResponse(BaseModel):
+    """Response from uploading a signed BAA PDF into Vera-owned S3."""
+
+    document_uri: str
+    bucket: str
+    key: str
+    size_bytes: int
+    content_type: str

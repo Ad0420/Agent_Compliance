@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -20,6 +19,7 @@ from ..schemas.action import ActionRecordCreate
 from .hashing import canonicalize, compute_record_hash, extract_hashable_fields
 from .policy_engine import evaluate_policies
 from .email import send_policy_violation_alert
+from .jobs import enqueue_job
 from .locks import get_org_lock
 from .webhooks import dispatch_event
 
@@ -422,22 +422,24 @@ async def _store_violations_and_notify(
     if org and org.alert_email:
         for result in triggered:
             if result.get("action") == "email":
-                asyncio.create_task(
-                    send_policy_violation_alert(
-                        org_name=org.name,
-                        org_id=org_id,
-                        alert_email=org.alert_email,
-                        policy_name=result["policy_name"],
-                        condition_type=result["condition_type"],
-                        severity=result["severity"],
-                        record_id=record_id,
-                        context=result.get("context", {}),
-                    )
+                email_payload = {
+                    "org_name": org.name,
+                    "org_id": org_id,
+                    "alert_email": org.alert_email,
+                    "policy_name": result["policy_name"],
+                    "condition_type": result["condition_type"],
+                    "severity": result["severity"],
+                    "record_id": record_id,
+                    "context": result.get("context", {}),
+                }
+                await enqueue_job(
+                    "email.policy_violation_alert",
+                    email_payload,
+                    local_runner=lambda p=email_payload: send_policy_violation_alert(**p),
                 )
 
-    # Fire webhook events for every triggered policy. dispatch_event is itself
-    # fire-and-forget (it schedules tasks and returns), so this loop does not
-    # block the request.
+    # Queue webhook events for every triggered policy. dispatch_event enqueues
+    # delivery work and returns quickly.
     for result in triggered:
         await dispatch_event(
             session,
@@ -469,7 +471,7 @@ async def build_and_insert_record(
     # PR 3 / B3-B5 — auto-discovery may queue webhook events. We collect
     # them inside the lock but dispatch ONLY after the commit succeeds.
     # A rolled-back transaction must never produce phantom events, and
-    # dispatch is fire-and-forget so its own failures must not unwind
+    # dispatch enqueues delivery work so its own failures must not unwind
     # the chain advance (test plan: "event delivery failure does not
     # roll back the chain").
     pending_events: list[dict] = []
@@ -529,10 +531,8 @@ async def build_and_insert_record(
         await session.refresh(record)
 
     # PR 3 / B3-B5 — auto-discovery events fire AFTER the commit. The
-    # webhook service is already fire-and-forget (``dispatch_event``
-    # schedules ``asyncio.create_task`` per matching subscription and
-    # returns), and ``dispatch_event`` never raises into the caller —
-    # so a delivery problem cannot roll back the chain.
+    # webhook service queues delivery and never raises into the caller, so a
+    # delivery problem cannot roll back the chain.
     for evt in pending_events:
         try:
             await dispatch_event(
@@ -629,9 +629,8 @@ async def build_and_insert_batch(
             await session.refresh(record)
 
     # PR 3 / B3-B5 — see ``build_and_insert_record`` for the design
-    # rationale. Same fire-and-forget pattern: dispatch after commit,
-    # swallow delivery errors so the batch's chain advance stays
-    # intact.
+    # rationale. Same pattern: dispatch after commit, swallow delivery errors
+    # so the batch's chain advance stays intact.
     for evt in pending_events:
         try:
             await dispatch_event(

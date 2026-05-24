@@ -1,6 +1,6 @@
-import asyncio
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
@@ -17,8 +17,14 @@ from ..services.checkpoint import (
     verify_all_checkpoints,
 )
 from ..services.email import send_checkpoint_alert
+from ..services.jobs import enqueue_job
 
 router = APIRouter(prefix="/verify/checkpoints", tags=["checkpoints"])
+
+
+class CheckpointJobResponse(BaseModel):
+    job_id: str
+    status: str = "queued"
 
 
 @router.post("", response_model=CheckpointResponse)
@@ -30,6 +36,16 @@ async def create_checkpoint_endpoint(
     org_id, _ = auth
     checkpoint = await create_checkpoint(session, org_id)
     return checkpoint
+
+
+@router.post("/jobs", response_model=CheckpointJobResponse, status_code=202)
+async def create_checkpoint_job_endpoint(
+    auth: tuple[str, APIKey | None] = Depends(require_permission("admin")),
+):
+    """Queue a checkpoint creation job for the current organization."""
+    org_id, _ = auth
+    job_id = await enqueue_job("checkpoint.create", {"org_id": org_id})
+    return CheckpointJobResponse(job_id=job_id)
 
 
 @router.get("", response_model=CheckpointListResponse)
@@ -57,14 +73,17 @@ async def verify_checkpoints_endpoint(
         invalid = [r for r in results if not r["is_valid"]]
         org = await session.get(Organization, org_id)
         if org and org.alert_email:
-            asyncio.create_task(
-                send_checkpoint_alert(
-                    org_name=org.name,
-                    org_id=org_id,
-                    alert_email=org.alert_email,
-                    invalid_checkpoints=invalid,
-                    detected_at=datetime.now(timezone.utc).isoformat(),
-                )
+            email_payload = {
+                "org_name": org.name,
+                "org_id": org_id,
+                "alert_email": org.alert_email,
+                "invalid_checkpoints": invalid,
+                "detected_at": datetime.now(timezone.utc).isoformat(),
+            }
+            await enqueue_job(
+                "email.checkpoint_alert",
+                email_payload,
+                local_runner=lambda p=email_payload: send_checkpoint_alert(**p),
             )
 
     return CheckpointVerifyAllResponse(

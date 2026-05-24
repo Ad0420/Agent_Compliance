@@ -1,13 +1,26 @@
 #!/bin/sh
-# Run alembic migrations.
-# On first Railway deploy the tables were created by SQLAlchemy's create_all,
-# not by alembic, so alembic_version is empty and the initial migration fails
-# ("table already exists"). In that case we stamp the DB with the last known
-# good revision and re-run so only the new migrations are applied.
-if ! alembic upgrade head; then
-    echo "Alembic upgrade failed — stamping existing schema and retrying"
-    alembic stamp b2c3d4e5f6a7
+set -eu
+
+PORT="${PORT:-8000}"
+WEB_CONCURRENCY="${WEB_CONCURRENCY:-2}"
+GUNICORN_TIMEOUT="${GUNICORN_TIMEOUT:-120}"
+RUN_MIGRATIONS="${RUN_MIGRATIONS:-1}"
+VERA_BOOTSTRAP_LOCAL="${VERA_BOOTSTRAP_LOCAL:-0}"
+
+if [ "$RUN_MIGRATIONS" = "1" ]; then
     alembic upgrade head
 fi
-python setup_local.py
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+# Explicit opt-in only. setup_local.py creates a default organization and
+# admin key, which must never happen implicitly in production.
+if [ "$VERA_BOOTSTRAP_LOCAL" = "1" ]; then
+    python setup_local.py
+fi
+
+exec gunicorn app.main:app \
+    --bind "0.0.0.0:${PORT}" \
+    --workers "$WEB_CONCURRENCY" \
+    --worker-class uvicorn.workers.UvicornWorker \
+    --access-logfile - \
+    --error-logfile - \
+    --timeout "$GUNICORN_TIMEOUT"

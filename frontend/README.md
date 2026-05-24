@@ -34,3 +34,17 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+
+## Container build
+
+The production Dockerfile is intended for AWS ECS/Fargate and uses Next.js standalone output. Build from this directory with BuildKit enabled:
+
+```bash
+docker build \
+  --secret id=clerk_secret_key,env=CLERK_SECRET_KEY \
+  --build-arg NEXT_PUBLIC_API_URL=https://api.example.com \
+  --build-arg NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_live_... \
+  -t vera-frontend .
+```
+
+Set `CLERK_SECRET_KEY` again as an ECS task secret at runtime. `NEXT_PUBLIC_*` values are browser-facing and are baked into the built app.

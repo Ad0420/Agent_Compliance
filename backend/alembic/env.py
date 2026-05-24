@@ -35,6 +35,7 @@ from app.models import (  # noqa: E402, F401 – side-effect: registers tables
     CustomerAgent,
     BAAAgreement,
     BAAScope,
+    ExportJob,
 )
 
 config = context.config
