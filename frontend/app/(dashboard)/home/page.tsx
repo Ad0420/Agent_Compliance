@@ -15,8 +15,10 @@
  *      with expiring BAAs, pending reviews, webhook failures.
  *   2. Chain integrity — reuses the existing `useChainVerification()`
  *      hook so the Home read matches the topbar pill on every load.
- *   3. Recent activity — last 20 ActionRecord rows across the org. Each
- *      row links to the customer detail stub at /customers/{tenant_id}.
+ *   3. Recent activity — last 5 ActionRecord rows across the org with a
+ *      "See all →" affordance. Each row links to the customer detail stub
+ *      at /customers/{tenant_id}. (Limit dropped from 20 → 5 per PR #198
+ *      review: the daily 30-second check is "scan, leave", not "scroll".)
  *
  * NO greeting chrome, NO marketing copy, NO charts. The compliance
  * officer wants to leave the dashboard, not be entertained.
@@ -28,10 +30,11 @@ import { useActions } from "@/hooks/use-actions";
 import { useChainVerification } from "@/hooks/use-verification";
 import { StatusDot } from "@/components/ui/status-indicator";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Loading } from "@/components/ui/loading";
 import { formatRelativeTime } from "@/lib/utils";
 import type { ActionRecord } from "@/lib/api-types";
 
-const RECENT_ACTIVITY_LIMIT = 20;
+const RECENT_ACTIVITY_LIMIT = 5;
 
 /**
  * Full date + time formatter. Per spec: "Counsel reads exact dates, not
@@ -92,7 +95,12 @@ export default function HomePage() {
           data-testid="home-org-name"
         >
           {authLoading ? (
-            <span className="inline-block h-9 w-48 animate-pulse rounded bg-[color:var(--ink-5)]" />
+            <span
+              aria-busy="true"
+              className="inline-flex items-center text-[color:var(--ink-3)]"
+            >
+              <Loading.Spinner size={16} label="Loading organization" />
+            </span>
           ) : (
             organization?.name ?? "Your organization"
           )}
@@ -113,6 +121,7 @@ export default function HomePage() {
           {/* ───────────────── Needs your attention ───────────────── */}
           <section aria-labelledby="needs-attention-heading" className="space-y-4">
             <SectionHeader id="needs-attention-heading">Needs your attention</SectionHeader>
+            {/* Phase 1: no actionable items yet — Phase 2 will populate this with pending reviews / expiring BAAs / webhook failures. */}
             <EmptyState
               title="Nothing needs your attention"
               subtitle="Pending reviews, expiring BAAs, and webhook failures will appear here."
@@ -165,9 +174,12 @@ function ChainIntegrityRow({
   if (loading || !chain) {
     return (
       <div
-        className="h-6 w-64 animate-pulse rounded bg-[color:var(--ink-5)]"
+        aria-busy="true"
+        className="flex h-6 items-center text-[color:var(--ink-3)]"
         data-testid="chain-integrity-loading"
-      />
+      >
+        <Loading.Spinner size={14} label="Verifying chain integrity" />
+      </div>
     );
   }
   const variant = chain.is_valid ? "ok" : "error";
@@ -201,13 +213,12 @@ function RecentActivityList({
 }) {
   if (loading) {
     return (
-      <div className="space-y-2" data-testid="recent-activity-loading">
-        {Array.from({ length: 5 }).map((_, i) => (
-          <div
-            key={i}
-            className="h-10 w-full animate-pulse rounded bg-[color:var(--ink-5)]"
-          />
-        ))}
+      <div
+        aria-busy="true"
+        className="flex justify-center py-8 text-[color:var(--ink-3)]"
+        data-testid="recent-activity-loading"
+      >
+        <Loading.Spinner size={20} label="Loading recent activity" />
       </div>
     );
   }
@@ -222,40 +233,51 @@ function RecentActivityList({
   }
 
   return (
-    <ul className="divide-y divide-[color:var(--ink-4)] border-y border-[color:var(--ink-4)]" data-testid="recent-activity-list">
-      {actions.map((action) => {
-        const tenantId = getTenantId(action);
-        const rowContent = (
-          <div className="grid grid-cols-[140px_1fr_auto] items-baseline gap-4 py-3">
-            <span className="text-[13px] text-[color:var(--ink-2)] tabular-nums">
-              {formatFullTimestamp(action.action_timestamp)}
-            </span>
-            <span className="min-w-0 text-[14px] text-[color:var(--ink)]">
-              <span className="font-medium">{action.action_name}</span>
-              {action.action_description ? (
-                <span className="ml-2 text-[color:var(--ink-2)]">{action.action_description}</span>
-              ) : null}
-            </span>
-            <span className="text-[12px] text-[color:var(--ink-3)] uppercase tracking-[0.06em]">
-              {action.agent_name}
-            </span>
-          </div>
-        );
-
-        if (tenantId) {
-          return (
-            <li key={action.id}>
-              <Link
-                href={`/customers/${encodeURIComponent(tenantId)}`}
-                className="block transition-colors hover:bg-[color:var(--paper-2)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[color:var(--ink)]"
-              >
-                {rowContent}
-              </Link>
-            </li>
+    <div className="space-y-3">
+      <ul className="divide-y divide-[color:var(--ink-4)] border-y border-[color:var(--ink-4)]" data-testid="recent-activity-list">
+        {actions.map((action) => {
+          const tenantId = getTenantId(action);
+          const rowContent = (
+            <div className="grid grid-cols-[140px_1fr_auto] items-baseline gap-4 py-3">
+              <span className="text-[13px] text-[color:var(--ink-2)] tabular-nums">
+                {formatFullTimestamp(action.action_timestamp)}
+              </span>
+              <span className="min-w-0 text-[14px] text-[color:var(--ink)]">
+                <span className="font-medium">{action.action_name}</span>
+                {action.action_description ? (
+                  <span className="ml-2 text-[color:var(--ink-2)]">{action.action_description}</span>
+                ) : null}
+              </span>
+              <span className="text-[12px] text-[color:var(--ink-3)] uppercase tracking-[0.06em]">
+                {action.agent_name}
+              </span>
+            </div>
           );
-        }
-        return <li key={action.id}>{rowContent}</li>;
-      })}
-    </ul>
+
+          if (tenantId) {
+            return (
+              <li key={action.id}>
+                <Link
+                  href={`/customers/${encodeURIComponent(tenantId)}`}
+                  className="block transition-colors hover:bg-[color:var(--paper-2)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[color:var(--ink)]"
+                >
+                  {rowContent}
+                </Link>
+              </li>
+            );
+          }
+          return <li key={action.id}>{rowContent}</li>;
+        })}
+      </ul>
+      {/* TODO(Phase 2): link to /activity once that page ships. */}
+      <div className="text-right">
+        <Link
+          href="/customers"
+          className="text-[13px] text-[color:var(--ink-2)] hover:text-[color:var(--ink)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--ink)]"
+        >
+          See all →
+        </Link>
+      </div>
+    </div>
   );
 }

@@ -11,9 +11,13 @@ import type { CustomerQueryParams } from "@/lib/api-types";
  * extend this surface with the Coverage Matrix; for now the Home page +
  * Customers stub list both consume the same shape.
  */
+// Query-key shape: `["customers", "list", params]` / `["customers", "detail", id]`.
+// The explicit "list"/"detail" segment lets us invalidate either bucket
+// independently — `invalidateQueries({ queryKey: ["customers", "list"] })`
+// refreshes the list without invalidating in-flight detail queries.
 export function useCustomers(params?: CustomerQueryParams) {
   return useQuery({
-    queryKey: ["customers", params],
+    queryKey: ["customers", "list", params],
     queryFn: () => getCustomers(params),
     staleTime: 30_000,
   });
@@ -21,7 +25,7 @@ export function useCustomers(params?: CustomerQueryParams) {
 
 export function useCustomer(tenant_id: string) {
   return useQuery({
-    queryKey: ["customers", tenant_id],
+    queryKey: ["customers", "detail", tenant_id],
     queryFn: () => getCustomer(tenant_id),
     enabled: !!tenant_id,
   });

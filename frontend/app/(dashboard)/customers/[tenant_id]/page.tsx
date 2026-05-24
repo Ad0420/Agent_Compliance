@@ -12,6 +12,7 @@ import { use } from "react";
 import { useCustomer } from "@/hooks/use-customers";
 import { StatusDot, type StatusVariant } from "@/components/ui/status-indicator";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Loading } from "@/components/ui/loading";
 import type { BAAStatus, CustomerStatus } from "@/lib/api-types";
 import { ArrowLeft } from "lucide-react";
 
@@ -64,9 +65,12 @@ export default function CustomerDetailStubPage({ params }: PageProps) {
       </Link>
 
       {isLoading ? (
-        <div className="space-y-3" data-testid="customer-detail-loading">
-          <div className="h-9 w-64 animate-pulse rounded bg-[color:var(--ink-5)]" />
-          <div className="h-5 w-48 animate-pulse rounded bg-[color:var(--ink-5)]" />
+        <div
+          aria-busy="true"
+          className="flex justify-center py-8 text-[color:var(--ink-3)]"
+          data-testid="customer-detail-loading"
+        >
+          <Loading.Spinner size={20} label="Loading customer" />
         </div>
       ) : error ? (
         <EmptyState
@@ -90,9 +94,6 @@ export default function CustomerDetailStubPage({ params }: PageProps) {
                 variant={BAA_VARIANT[customer.baa_status]}
                 label={BAA_LABEL[customer.baa_status]}
               />
-              <span className="text-[12px] text-[color:var(--ink-3)] tabular-nums">
-                Tenant ID: {customer.tenant_id}
-              </span>
             </div>
           </header>
 

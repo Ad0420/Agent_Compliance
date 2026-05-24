@@ -3,11 +3,13 @@
 // Phase 1 PR 12 ships the Customers sidebar entry; without a landing
 // page at /customers, the nav click 404s. This page is intentionally
 // thin: it lists the rows from GET /v1/customers (shipped in PR #195)
-// with the four columns that don't depend on Phase 1 work still in
-// flight (display_name, status, baa_status, tenant_id). PR 13 will
-// replace this file end-to-end with the full Customers experience
-// described in `dashboard-design.md` §Screen 2 — Customers list +
-// Coverage Matrix.
+// with three user-facing columns (Customer, Status, BAA). The customer
+// display name links to the detail page where the tenant_id is the URL
+// segment — there's no separate user-facing "Tenant ID" column, since
+// tenant_id is SDK plumbing and not vocabulary for CEOs / in-house
+// counsel. PR 13 will replace this file end-to-end with the full
+// Customers experience described in `dashboard-design.md` §Screen 2 —
+// Customers list + Coverage Matrix.
 
 "use client";
 
@@ -15,6 +17,7 @@ import Link from "next/link";
 import { useCustomers } from "@/hooks/use-customers";
 import { StatusDot, type StatusVariant } from "@/components/ui/status-indicator";
 import { EmptyState } from "@/components/ui/empty-state";
+import { Loading } from "@/components/ui/loading";
 import type { BAAStatus, Customer, CustomerStatus } from "@/lib/api-types";
 
 const STATUS_LABEL: Record<CustomerStatus, string> = {
@@ -71,18 +74,17 @@ export default function CustomersPage() {
       ) : null}
 
       {isLoading ? (
-        <div className="space-y-2" data-testid="customers-loading">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <div
-              key={i}
-              className="h-10 w-full animate-pulse rounded bg-[color:var(--ink-5)]"
-            />
-          ))}
+        <div
+          aria-busy="true"
+          className="flex justify-center py-8 text-[color:var(--ink-3)]"
+          data-testid="customers-loading"
+        >
+          <Loading.Spinner size={20} label="Loading customers" />
         </div>
       ) : customers.length === 0 ? (
         <EmptyState
           title="No customers yet"
-          subtitle="Customers are auto-discovered when your agents call the SDK with a tenant_id."
+          subtitle="Customers appear here automatically once your SDK starts capturing decisions."
         />
       ) : (
         <CustomersTable customers={customers} />
@@ -103,7 +105,6 @@ function CustomersTable({ customers }: { customers: Customer[] }) {
             <th scope="col" className="px-4 py-3">Customer</th>
             <th scope="col" className="px-4 py-3">Status</th>
             <th scope="col" className="px-4 py-3">BAA</th>
-            <th scope="col" className="px-4 py-3 text-right">Tenant ID</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-[color:var(--ink-4)]">
@@ -125,9 +126,6 @@ function CustomersTable({ customers }: { customers: Customer[] }) {
               </td>
               <td className="px-4 py-3">
                 <StatusDot variant={BAA_VARIANT[c.baa_status]} label={BAA_LABEL[c.baa_status]} />
-              </td>
-              <td className="px-4 py-3 text-right text-[12px] text-[color:var(--ink-3)] tabular-nums">
-                {c.tenant_id}
               </td>
             </tr>
           ))}

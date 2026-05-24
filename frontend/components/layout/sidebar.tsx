@@ -29,7 +29,12 @@ export function Sidebar() {
       </div>
       <nav className="flex-1 space-y-1 p-3">
         {NAV_ITEMS.map((item) => {
-          const isActive = pathname === item.href || (item.href !== "/home" && pathname.startsWith(item.href));
+          // /home is exact-match only — `/home` should not light up for `/homework` or any other prefix collision.
+          // For everything else, only treat the link as active for the page itself or a true child route
+          // (e.g. `/customers/123`), never for adjacent siblings like `/customers-archive`.
+          const isActive =
+            pathname === item.href ||
+            (item.href !== "/home" && pathname.startsWith(item.href + "/"));
           return (
             <Link
               key={item.href}

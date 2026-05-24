@@ -15,6 +15,13 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 //                            specifically to be Clerk-gated. The page-level
 //                            server component re-checks `auth()` for defense
 //                            in depth.
+//   - `/home(.*)`          — Phase 1 PR 12 dashboard home. Same defense-in-depth
+//                            shape: the (dashboard) layout wraps these pages in
+//                            `<SignedIn>`/`<SignedOut>` guards, but the middleware
+//                            matcher is what actually blocks unauthenticated
+//                            requests before the page render.
+//   - `/customers(.*)`     — Phase 1 PR 12 Customers list + stub detail. Same
+//                            shape as `/home`.
 //   - `/api/dashboard(.*)` — Next.js route handlers that proxy to the Vera
 //                            backend's `/v1/dashboard/*` endpoints. These
 //                            handlers attach the Clerk session token; without
@@ -31,6 +38,8 @@ const isProtectedRoute = createRouteMatcher([
   "/api/protected(.*)",
   "/api-keys(.*)",
   "/compliance(.*)",
+  "/home(.*)",
+  "/customers(.*)",
   "/api/dashboard(.*)",
   // /dashboard(.*) intentionally NOT included until Phase 3 (E4) migrates
   // dashboard pages from legacy localStorage API-key auth to Clerk sessions.
