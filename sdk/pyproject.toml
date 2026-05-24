@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vera-sdk"
-version = "1.0.0"
+version = "1.0.1"
 description = "Vera — runtime trust layer SDK for AI agents (immutable audit trail, HITL approvals, policy enforcement)"
 readme = "README.md"
 requires-python = ">=3.10"

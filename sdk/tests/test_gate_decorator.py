@@ -1237,3 +1237,55 @@ def test_422_async_version_skew_raises():
         asyncio.run(wrapped())
     assert ei.value.status_code == 422
     client.close()
+
+
+# ---------------------------------------------------------------------------
+# Wave 2B PR B1 — bypass_gates short-circuits BEFORE the new wire-shape builder
+# ---------------------------------------------------------------------------
+
+
+def test_bypass_skips_new_wire_shape_builder():
+    """B1 regression — bypass must short-circuit before _build_evaluate_request.
+
+    Risk we guard against: if the order of operations in _sync_call
+    were ever reorganised (e.g. moving _build_evaluate_request above
+    the bypass check for input validation reasons), a bypass-active
+    test would start sending requests AND the new wire-shape builder
+    would run even when policy enforcement is off. Assert that under
+    `bypass_gates`, the MockTransport sees NO POST to
+    /v1/gates/evaluate.
+    """
+    from vera.testing import bypass_gates_cm
+
+    client = _make_client()
+    paths_hit: list[str] = []
+
+    def handler(request):
+        paths_hit.append(request.url.path)
+        if request.url.path == GATE_EVALUATE_PATH:
+            # Fail loudly if bypass didn't short-circuit.
+            return httpx.Response(500, json={"detail": "bypass leaked"})
+        return httpx.Response(200, json={"records": []})
+
+    _install_transport(client, handler)
+    set_default_client(client)
+
+    spy = MagicMock(return_value="ok")
+
+    @vera.gate(action_class="x", tenant="acme")
+    def wrapped():
+        return spy()
+
+    with bypass_gates_cm():
+        result = wrapped()
+
+    assert result == "ok"
+    spy.assert_called_once()
+    # The bypass MUST short-circuit BEFORE the new wire-shape builder
+    # runs — no /v1/gates/evaluate POST should have been issued.
+    assert GATE_EVALUATE_PATH not in paths_hit
+    # Capture invariant still holds: bypass records the action.
+    items = list(client._queue.queue)
+    assert len(items) == 1
+    assert items[0]["result"] == "success"
+    client.close()
