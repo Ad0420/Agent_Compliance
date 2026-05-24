@@ -13,6 +13,11 @@ target versions.
    raises in call sites that previously swallowed only HTTP errors.
 5. Pin `vera-sdk>=1,<2` in your `requirements.txt` / `pyproject.toml`.
 
+> **New here?** Skip the migration steps and run `vera init` (scaffolds
+> `.env`), then `vera quickstart` (generates + runs a demo) or `vera
+> doctor` (verifies your setup end-to-end). See the
+> [CLI reference in the README](README.md#command-line-interface).
+
 If you can't move yet, pin `vera-sdk>=0.3,<1` instead. The final 0.3
 release (`0.3.1`) emits a `DeprecationWarning` from `@vera.audit` so
 the migration surfaces in your CI logs on your own timeline.

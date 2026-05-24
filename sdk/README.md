@@ -715,6 +715,78 @@ vera config show
 The `vera` CLI ships with the SDK as a runtime entry point. No extra install
 step required.
 
+### `vera init`
+
+Scaffold a local `.env` and walk through API-key creation. Opens the
+dashboard's API Keys page in your default browser, then asks you to paste
+the new key back into the terminal (key input does not echo). Existing
+config (`.env` in the target path **or** a `VERA_API_KEY` env var) is
+detected — without `--force`, `init` exits 0 with a friendly summary
+rather than clobbering.
+
+```bash
+vera init                          # interactive — opens browser
+vera init --key al_test_xxxxxxxx   # script-friendly — skips browser
+vera init --force                  # overwrite existing .env
+vera init --env-file path/to/.env  # custom path
+vera init --dashboard-url https://staging.app.usevera.xyz
+```
+
+Headless detection (`SSH_CONNECTION`, `CI`, no `DISPLAY` on Linux) falls
+back to printing the URL instead of opening a browser. The file is
+written `mode 0600` so the API key isn't world-readable.
+
+### `vera quickstart`
+
+The 5-minute zero-to-record path. Generates a small demo file with two
+`@vera.gate`-decorated actions, runs it against the configured backend so
+the auto-discovery pipeline registers the agent, and opens the dashboard
+at `/customers/<tenant>` so you can see your first records.
+
+```bash
+vera quickstart                       # default demo file + random tenant
+vera quickstart --tenant my_demo      # explicit tenant
+vera quickstart --no-open             # don't auto-open the dashboard (CI)
+vera quickstart --non-interactive     # fail if no config (don't drop into init)
+vera quickstart --skip-run            # generate the file but don't execute
+```
+
+If no config is found and the run is interactive, `quickstart` invokes
+`vera init` first so the whole flow is one command.
+
+### `vera doctor`
+
+Diagnostic checks against your environment. Independent checks for config,
+connectivity, auth, tenant resolver, spool, SDK version, and codemod
+availability. Exit code 1 if any check FAILs; WARN / INFO are non-fatal.
+
+```bash
+vera doctor
+#   [PASS] config        API key present (test), API URL configured
+#   [PASS] connectivity  200 from https://api.usevera.xyz/health (87ms)
+#   [PASS] auth          authenticated as org org_1234…cdef
+#   [INFO] tenant        no tenant configured — set VERA_TENANT_ID...
+#   [INFO] spool         spool not configured (VERA_SPOOL_PATH unset)
+#   [PASS] sdk_version   vera-sdk 1.0.0
+#   [PASS] codemod       libcst available (codemod feature ready)
+#
+#   summary: 5 pass, 0 fail, 0 warn, 2 info
+
+vera doctor --json     # structured output for CI:
+# {"checks": [{"name": "config", "status": "PASS", ...}], "summary": {...}}
+```
+
+Out of scope for the current `doctor`: middleware-wiring detection (needs
+a running app context) and customer-webhook URL reachability (the SDK
+doesn't know what the customer's webhook URL is). Both are deferred to a
+v2 `doctor`.
+
+### `vera review-status <review_id>` *(Phase 2 stub)*
+
+Phase 1 placeholder. The body fills in alongside the gate-evaluation
+backend in Phase 2 without changing the CLI shape; for now it prints a
+clear "use the dashboard" message and exits 0.
+
 ### `vera config show`
 
 Print the effective configuration: env vars and computed defaults.
