@@ -57,6 +57,42 @@ async def db_session(db_engine):
         yield session
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _patch_async_session_local_for_webhooks(db_engine, monkeypatch):
+    """Wave 2B PR A3 — point ``AsyncSessionLocal`` at the test engine.
+
+    The webhook delivery pipeline (``services.webhooks._attempt_delivery``
+    + ``services.webhook_sweeper``) opens its own sessions via
+    ``AsyncSessionLocal`` so a fire-and-forget ``asyncio.create_task``
+    doesn't hold the caller's request session. Tests run against an
+    in-memory engine, so unless we patch the module-level binding the
+    background task lands on the dev ``vera.db`` (or worse, a Postgres
+    that doesn't have the test fixtures).
+
+    Autouse so every test gets the redirect without explicit setup —
+    matches the spirit of the in-memory ``db_engine`` fixture itself.
+    Individual tests can still ``patch(...)`` to override.
+    """
+    session_factory = async_sessionmaker(
+        db_engine, class_=AsyncSession, expire_on_commit=False
+    )
+    import app.services.webhooks as _webhooks_module
+
+    monkeypatch.setattr(
+        _webhooks_module, "AsyncSessionLocal", session_factory
+    )
+    # Sweeper uses its own import binding.
+    try:
+        import app.services.webhook_sweeper as _sweeper_module
+
+        monkeypatch.setattr(
+            _sweeper_module, "AsyncSessionLocal", session_factory
+        )
+    except Exception:
+        pass
+    yield
+
+
 @pytest_asyncio.fixture
 async def org_and_key(db_session):
     """Create a test org with chain state and an admin API key.
