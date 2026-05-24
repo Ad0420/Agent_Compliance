@@ -320,3 +320,259 @@ def test_is_headless_ssh_signal(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_is_headless_ci_signal(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CI", "true")
     assert cli_mod._is_headless() is True
+
+
+# ---------------------------------------------------------------------------
+# URL injection / scheme validation (Phase 1 PR 11 review fix #1 + #3)
+# ---------------------------------------------------------------------------
+
+
+def test_init_rejects_api_url_with_newline_injection(tmp_path: Path) -> None:
+    """``--api-url`` with an embedded newline would write a rogue
+    ``ADMIN_PASSWORD=hijacked`` line into the generated .env. Must abort."""
+    runner = CliRunner()
+    env_file = tmp_path / ".env"
+    api_key = "al_test_" + "x" * 32
+    malicious = "http://api.example.com\nADMIN_PASSWORD=hijacked"
+    result = runner.invoke(
+        cli,
+        [
+            "init",
+            "--key",
+            api_key,
+            "--env-file",
+            str(env_file),
+            "--api-url",
+            malicious,
+        ],
+    )
+    assert result.exit_code != 0
+    assert "control characters" in result.output
+    assert not env_file.exists()
+
+
+def test_init_rejects_api_url_with_carriage_return(tmp_path: Path) -> None:
+    runner = CliRunner()
+    env_file = tmp_path / ".env"
+    api_key = "al_test_" + "x" * 32
+    result = runner.invoke(
+        cli,
+        [
+            "init",
+            "--key",
+            api_key,
+            "--env-file",
+            str(env_file),
+            "--api-url",
+            "http://api.example.com\rOTHER=1",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "control characters" in result.output
+    assert not env_file.exists()
+
+
+def test_init_rejects_javascript_scheme_api_url(tmp_path: Path) -> None:
+    runner = CliRunner()
+    env_file = tmp_path / ".env"
+    api_key = "al_test_" + "x" * 32
+    result = runner.invoke(
+        cli,
+        [
+            "init",
+            "--key",
+            api_key,
+            "--env-file",
+            str(env_file),
+            "--api-url",
+            "javascript:alert(1)",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "must be http(s)" in result.output
+    assert not env_file.exists()
+
+
+def test_init_rejects_file_scheme_dashboard_url(tmp_path: Path) -> None:
+    runner = CliRunner()
+    env_file = tmp_path / ".env"
+    api_key = "al_test_" + "x" * 32
+    result = runner.invoke(
+        cli,
+        [
+            "init",
+            "--key",
+            api_key,
+            "--env-file",
+            str(env_file),
+            "--dashboard-url",
+            "file:///etc/passwd",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "must be http(s)" in result.output
+    assert not env_file.exists()
+
+
+def test_init_rejects_dashboard_url_with_newline(tmp_path: Path) -> None:
+    runner = CliRunner()
+    env_file = tmp_path / ".env"
+    api_key = "al_test_" + "x" * 32
+    result = runner.invoke(
+        cli,
+        [
+            "init",
+            "--key",
+            api_key,
+            "--env-file",
+            str(env_file),
+            "--dashboard-url",
+            "https://app.example.com\nEVIL=1",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "control characters" in result.output
+    assert not env_file.exists()
+
+
+def test_init_rejects_api_url_without_host(tmp_path: Path) -> None:
+    runner = CliRunner()
+    env_file = tmp_path / ".env"
+    api_key = "al_test_" + "x" * 32
+    result = runner.invoke(
+        cli,
+        [
+            "init",
+            "--key",
+            api_key,
+            "--env-file",
+            str(env_file),
+            "--api-url",
+            "https://",  # scheme but no netloc
+        ],
+    )
+    assert result.exit_code != 0
+    assert "no host" in result.output
+    assert not env_file.exists()
+
+
+def test_validate_url_helper_accepts_https() -> None:
+    assert (
+        cli_mod._validate_url("https://api.example.com", kind="api-url")
+        == "https://api.example.com"
+    )
+
+
+def test_validate_url_helper_accepts_http() -> None:
+    assert (
+        cli_mod._validate_url("http://localhost:8000", kind="api-url")
+        == "http://localhost:8000"
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://api.example.com\n",
+        "http://api.example.com\r",
+        "http://api.example.com\x00",
+        "http://api.example.com\x1f",
+        "http://api.example.com\x7f",
+    ],
+)
+def test_validate_url_helper_rejects_control_chars(url: str) -> None:
+    import click as _click
+
+    with pytest.raises(_click.ClickException):
+        cli_mod._validate_url(url, kind="api-url")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "javascript:alert(1)",
+        "file:///etc/passwd",
+        "ftp://example.com",
+        "data:text/html,<script>",
+        "ssh://example.com",
+        "",  # empty
+        "not a url",  # no scheme
+    ],
+)
+def test_validate_url_helper_rejects_bad_scheme(url: str) -> None:
+    import click as _click
+
+    with pytest.raises(_click.ClickException):
+        cli_mod._validate_url(url, kind="api-url")
+
+
+def test_write_env_file_rejects_control_chars_in_api_key(tmp_path: Path) -> None:
+    """Defense-in-depth: even if a future caller bypasses CLI validation,
+    the writer itself must refuse to interpolate a key with newlines."""
+    env_file = tmp_path / ".env"
+    with pytest.raises(Exception) as excinfo:
+        cli_mod._write_env_file(
+            env_file,
+            api_key="al_test_xxx\nEVIL=1",
+            api_url="https://api.example.com",
+            tenant_id="",
+            force=True,
+        )
+    assert "control characters" in str(excinfo.value)
+    assert not env_file.exists()
+
+
+def test_write_env_file_rejects_control_chars_in_api_url(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    with pytest.raises(Exception) as excinfo:
+        cli_mod._write_env_file(
+            env_file,
+            api_key="al_test_" + "x" * 32,
+            api_url="http://api.example.com\nADMIN=1",
+            tenant_id="",
+            force=True,
+        )
+    assert "control characters" in str(excinfo.value)
+    assert not env_file.exists()
+
+
+def test_write_env_file_rejects_control_chars_in_tenant_id(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    with pytest.raises(Exception) as excinfo:
+        cli_mod._write_env_file(
+            env_file,
+            api_key="al_test_" + "x" * 32,
+            api_url="https://api.example.com",
+            tenant_id="tenant\nADMIN=1",
+            force=True,
+        )
+    assert "control characters" in str(excinfo.value)
+    assert not env_file.exists()
+
+
+def test_write_env_file_refuses_to_overwrite_without_force(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("VERA_API_KEY=existing\n")
+    with pytest.raises(FileExistsError):
+        cli_mod._write_env_file(
+            env_file,
+            api_key="al_test_" + "x" * 32,
+            api_url="https://api.example.com",
+            tenant_id="",
+        )
+    # Existing file must be untouched.
+    assert env_file.read_text() == "VERA_API_KEY=existing\n"
+
+
+def test_write_env_file_overwrites_with_force(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("VERA_API_KEY=existing\n")
+    api_key = "al_test_" + "x" * 32
+    cli_mod._write_env_file(
+        env_file,
+        api_key=api_key,
+        api_url="https://api.example.com",
+        tenant_id="",
+        force=True,
+    )
+    assert api_key in env_file.read_text()

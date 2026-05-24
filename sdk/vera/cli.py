@@ -555,6 +555,42 @@ _DEFAULT_API_URL = "https://api.usevera.xyz"
 # the SDK enforces in :func:`vera._context._validate_tenant_id`.
 _TENANT_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
+# Matches any ASCII control character (incl. newline / carriage return /
+# vertical tab) plus DEL. Used to reject URL flags before they get
+# interpolated into the .env file or handed to webbrowser.open.
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _validate_url(value: str, *, kind: str) -> str:
+    """Reject URLs with non-http(s) schemes or control characters.
+
+    ``kind`` is a label for the error message (e.g. "api-url",
+    "dashboard-url"). Returns ``value`` unchanged when it passes — callers
+    can write ``url = _validate_url(url, kind="api-url")`` inline.
+
+    Rejecting control chars closes a ``.env``-line-injection vector where
+    ``--api-url $'http://api.example.com\\nADMIN_PASSWORD=x'`` would
+    interpolate a second key=value line into the generated file. Rejecting
+    non-http(s) schemes blocks ``javascript:`` / ``file:`` payloads that
+    could fire when we hand the URL to ``webbrowser.open``.
+    """
+    from urllib.parse import urlparse
+
+    if _CONTROL_CHAR_RE.search(value):
+        raise click.ClickException(
+            f"--{kind} contains control characters; refusing to use it"
+        )
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https"):
+        raise click.ClickException(
+            f"--{kind} must be http(s); got {parsed.scheme or '(no scheme)'}"
+        )
+    if not parsed.netloc:
+        raise click.ClickException(
+            f"--{kind} has no host: {value!r}"
+        )
+    return value
+
 
 def _is_headless() -> bool:
     """Detect headless environments where ``webbrowser.open`` would fail.
@@ -623,12 +659,39 @@ def _write_env_file(
     api_key: str,
     api_url: str,
     tenant_id: str = "",
+    force: bool = False,
 ) -> None:
     """Write a minimal ``.env`` with the three Vera variables.
 
     File mode is set to ``0600`` so the API key isn't world-readable on
     multi-user systems. Parent directory is created with ``0700`` if missing.
+
+    Defense-in-depth: reject control characters in ``api_key`` / ``api_url``
+    / ``tenant_id`` before interpolating so a future caller that bypasses
+    the CLI flag validators can't inject extra ``KEY=value`` lines into the
+    .env. Callers should still validate URL shape via :func:`_validate_url`
+    upstream; this is a last-line guard.
+
+    Set ``force=True`` to overwrite an existing file. Without it, an
+    existing file raises ``FileExistsError`` so misuse from a non-CLI
+    caller can't silently clobber a real config.
     """
+    for field_name, field_value in (
+        ("api_key", api_key),
+        ("api_url", api_url),
+        ("tenant_id", tenant_id),
+    ):
+        if _CONTROL_CHAR_RE.search(field_value):
+            raise click.ClickException(
+                f"{field_name} contains control characters; refusing to "
+                "write .env (would enable line injection)"
+            )
+
+    if env_file.exists() and not force:
+        raise FileExistsError(
+            f"{env_file} already exists — pass force=True to overwrite"
+        )
+
     parent = env_file.parent
     if parent and not parent.exists():
         parent.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -640,7 +703,7 @@ def _write_env_file(
         f"VERA_TENANT_ID={tenant_id}\n"
     )
     # Open with 0600 from the start so an attacker can't read between
-    # creation and a follow-up chmod.
+    # creation and a follow-up chmod. (threading-unsafe — fine for CLI.)
     old_umask = os.umask(0o077)
     try:
         env_file.write_text(contents, encoding="utf-8")
@@ -755,6 +818,14 @@ def init_cmd(
         or _DEFAULT_DASHBOARD_URL
     ).rstrip("/")
 
+    # Validate BEFORE we open a browser or write .env so a malicious
+    # --api-url / --dashboard-url can't inject extra lines into the file
+    # or hand a javascript: / file: payload to webbrowser.open.
+    effective_api_url = _validate_url(effective_api_url, kind="api-url")
+    effective_dashboard_url = _validate_url(
+        effective_dashboard_url, kind="dashboard-url"
+    )
+
     if key_flag is not None:
         api_key = key_flag.strip()
         if not _validate_api_key_shape(api_key):
@@ -772,11 +843,14 @@ def init_cmd(
         api_key = _prompt_api_key_with_retries(max_attempts=3)
 
     try:
+        # ``force=True`` is safe here because we already short-circuited
+        # at line 744 if the file existed and ``--force`` wasn't passed.
         _write_env_file(
             env_file,
             api_key=api_key,
             api_url=effective_api_url,
             tenant_id="",
+            force=True,
         )
     except OSError as exc:
         raise click.ClickException(
@@ -1023,6 +1097,11 @@ def quickstart_cmd(
         or os.environ.get("VERA_DASHBOARD_URL")
         or _DEFAULT_DASHBOARD_URL
     ).rstrip("/")
+    # Validate BEFORE we hand the URL to webbrowser.open — blocks
+    # javascript: / file: schemes and control-char injection.
+    effective_dashboard_url = _validate_url(
+        effective_dashboard_url, kind="dashboard-url"
+    )
     dashboard_link = f"{effective_dashboard_url}/customers/{tenant}"
     click.echo("")
     click.echo("Quickstart complete.")
