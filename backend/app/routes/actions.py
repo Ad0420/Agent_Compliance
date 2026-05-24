@@ -512,6 +512,10 @@ async def list_actions(
     action_type: Optional[str] = None,
     result: Optional[str] = None,
     data_subject_id: Optional[str] = None,
+    # Phase 1 PR 13: per-customer filter for the Customer detail page's
+    # decisions stream. The promoted ``tenant_id`` column on ActionRecord
+    # already has an index (idx_ar_org_tenant_seq) so this is cheap.
+    tenant_id: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     authorized_by: Optional[str] = None,
@@ -541,6 +545,9 @@ async def list_actions(
     if data_subject_id:
         query = query.where(ActionRecord.data_subject_id == data_subject_id)
         count_query = count_query.where(ActionRecord.data_subject_id == data_subject_id)
+    if tenant_id:
+        query = query.where(ActionRecord.tenant_id == tenant_id)
+        count_query = count_query.where(ActionRecord.tenant_id == tenant_id)
     if start_date:
         query = query.where(ActionRecord.action_timestamp >= start_date)
         count_query = count_query.where(ActionRecord.action_timestamp >= start_date)
