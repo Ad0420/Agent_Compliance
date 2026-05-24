@@ -161,12 +161,15 @@ async def _auto_discover_customer_and_agent(
     org_id: str,
     tenant_id: str,
     agent_id: str,
+    agent_name: str,
     action_class: str | None,
     now: datetime,
+    pending_events: list[dict],
 ) -> None:
     """Auto-create / touch Customer + CustomerAgent rows on action insert.
 
-    Phase 1 PR 2 Stream B item B2.
+    Phase 1 PR 2 Stream B item B2 (Customer / CustomerAgent auto-discovery)
+    and Phase 1 PR 3 Stream B items B3 / B5 (webhook event signals).
 
     Contract:
       * If no Customer exists for ``(org_id, tenant_id)``, create one with
@@ -184,15 +187,27 @@ async def _auto_discover_customer_and_agent(
         update ``last_seen_at``; the agent_type and agent_id columns are
         never rewritten.
 
-    Cross-org tenant_id collision (a different org's customers table
-    already holds this tenant_id) is logged as a warning. The webhook
-    event emission is intentionally deferred to Phase 1 PR 3 — that PR
-    owns ``new_customer_detected`` / ``cross_org_collision`` events.
+    Event signals (PR 3):
+      * ``new_agent_type_detected`` — appended to ``pending_events`` when
+        a CustomerAgent row is freshly inserted (not on touch). The
+        caller dispatches AFTER commit so a rolled-back transaction
+        never fires a phantom event.
+      * ``cross_org_tenant_collision`` — appended when this org auto-
+        discovers a ``tenant_id`` already present under one or more
+        other orgs. PHI-safe: only ``other_org_ids`` (opaque UUIDs) are
+        included; no display_name / contact / Customer.id from the
+        colliding orgs ever leaves the function. The event is delivered
+        to the discovering org only.
+
+    Cross-org tenant_id collision is also logged at WARNING level for
+    operators tailing logs (unchanged from PR 2).
 
     All inserts happen on the same session as the caller's. The caller
     runs inside the org lock and commits after this returns — if the
     parent commit fails, these rows roll back too (transactional safety
-    per the test_plan "auto-discover transactional" row).
+    per the test_plan "auto-discover transactional" row). The
+    ``pending_events`` list is the caller's; the caller MUST only
+    dispatch them after a successful commit.
     """
     if not tenant_id:
         return
@@ -205,30 +220,24 @@ async def _auto_discover_customer_and_agent(
         )
     )
     customer = existing.scalar_one_or_none()
+    customer_was_created = False
     if customer is None:
         # Cross-org collision detection. NB: we do NOT share or block —
         # tenant_id is org-scoped on purpose (one operator's "abridge"
         # may legitimately be a different operator's "abridge"). PR 3
-        # will emit a webhook for ops review; PR 2 just logs.
+        # emits a webhook to THIS org so ops can review.
         collision = await session.execute(
             select(Customer.org_id).where(
                 Customer.tenant_id == tenant_id,
                 Customer.org_id != org_id,
-            ).limit(1)
-        )
-        other_org = collision.scalar_one_or_none()
-        if other_org is not None:
-            # TODO(PR 3): emit ``customer.cross_org_collision`` webhook
-            # event so ops can review whether the operators are pointing
-            # at the same downstream customer (a legitimate multi-tenant
-            # setup) or whether someone typo'd a competitor's identifier.
-            logger.warning(
-                "cross-org tenant_id collision: org_id=%s auto-discovered "
-                "tenant_id=%s which already exists under org_id=%s",
-                org_id,
-                tenant_id,
-                other_org,
             )
+        )
+        # Collect ALL colliding org IDs, not just the first. Multiple
+        # downstream orgs may legitimately share a tenant_id label, and
+        # ops needs the full set to triage. Dedup defensively in case a
+        # historical org had multiple rows somehow (unique constraint
+        # makes this unlikely, but the cost is one set() call).
+        other_org_ids = sorted({row for row in collision.scalars().all()})
 
         try:
             async with session.begin_nested():
@@ -247,6 +256,7 @@ async def _auto_discover_customer_and_agent(
                 # nested transaction, not the outer one (which holds the
                 # pending ActionRecord + chain_state advance).
                 await session.flush()
+                customer_was_created = True
         except IntegrityError:
             # Concurrent insert (same tenant under same org) won the
             # race — SAVEPOINT auto-rolled back, outer txn intact.
@@ -259,6 +269,38 @@ async def _auto_discover_customer_and_agent(
             )
             customer = again.scalar_one()
             customer.last_seen_at = now
+
+        # Only emit the collision event when WE actually created the
+        # Customer row (i.e. it didn't exist for this org yet AND the
+        # tenant_id matched at least one other org). The IntegrityError
+        # branch means someone else won the race — they own the event,
+        # not us, and the bookkeeping is idempotent.
+        if customer_was_created and other_org_ids:
+            logger.warning(
+                "cross-org tenant_id collision: org_id=%s auto-discovered "
+                "tenant_id=%s which already exists under org_id(s)=%s",
+                org_id,
+                tenant_id,
+                other_org_ids,
+            )
+            pending_events.append(
+                {
+                    "event_type": "cross_org_tenant_collision",
+                    "payload": {
+                        # ``org_id`` of the discovering org is added by
+                        # the webhook envelope; including it explicitly
+                        # in the data makes the body self-describing for
+                        # consumers that log the body without the
+                        # envelope context.
+                        "org_id": org_id,
+                        "tenant_id": tenant_id,
+                        "other_org_ids": other_org_ids,
+                        "detected_at": now.replace(
+                            tzinfo=timezone.utc
+                        ).isoformat(),
+                    },
+                }
+            )
     else:
         customer.last_seen_at = now
 
@@ -279,6 +321,7 @@ async def _auto_discover_customer_and_agent(
         )
     )
     ca = ca_existing.scalar_one_or_none()
+    ca_was_created = False
     if ca is None:
         try:
             async with session.begin_nested():
@@ -294,6 +337,7 @@ async def _auto_discover_customer_and_agent(
                 )
                 session.add(ca)
                 await session.flush()
+                ca_was_created = True
         except IntegrityError:
             # SAVEPOINT rolled back; outer txn (chain + ActionRecord)
             # preserved. Re-read the row the concurrent writer inserted.
@@ -310,6 +354,30 @@ async def _auto_discover_customer_and_agent(
         # the historical stamp (Codex E1). If the same logical agent
         # later changes its metadata, the past coverage stays intact.
         ca.last_seen_at = now
+
+    # PR 3 / B3 — fire ``new_agent_type_detected`` ONCE on first
+    # auto-discovery of a (customer, agent_type) tuple. Idempotent
+    # touches and IntegrityError re-reads MUST NOT re-emit (Codex E1:
+    # the stamp is historical; the event mirrors the stamp).
+    if ca_was_created:
+        pending_events.append(
+            {
+                "event_type": "new_agent_type_detected",
+                "payload": {
+                    "org_id": org_id,
+                    "customer_id": customer.id,
+                    "tenant_id": tenant_id,
+                    "agent_id": agent_id,
+                    "agent_name": agent_name,
+                    "agent_type": agent_type,
+                    "detected_at": now.replace(
+                        tzinfo=timezone.utc
+                    ).isoformat(),
+                    "source": "auto_discovered",
+                    "confidence": "high",
+                },
+            }
+        )
 
 
 async def _store_violations_and_notify(
@@ -398,6 +466,13 @@ async def build_and_insert_record(
     trail captures the attempted action and the chain stays intact.
     """
     lock = await get_org_lock(org_id)
+    # PR 3 / B3-B5 — auto-discovery may queue webhook events. We collect
+    # them inside the lock but dispatch ONLY after the commit succeeds.
+    # A rolled-back transaction must never produce phantom events, and
+    # dispatch is fire-and-forget so its own failures must not unwind
+    # the chain advance (test plan: "event delivery failure does not
+    # roll back the chain").
+    pending_events: list[dict] = []
     async with lock:
         chain_state = await _lock_chain_state(session, org_id)
 
@@ -440,8 +515,10 @@ async def build_and_insert_record(
                 org_id=org_id,
                 tenant_id=data.tenant_id,
                 agent_id=agent_id,
+                agent_name=data.agent_name,
                 action_class=data.action_class,
                 now=now,
+                pending_events=pending_events,
             )
 
         chain_state.latest_sequence = new_sequence
@@ -450,6 +527,24 @@ async def build_and_insert_record(
 
         await session.commit()
         await session.refresh(record)
+
+    # PR 3 / B3-B5 — auto-discovery events fire AFTER the commit. The
+    # webhook service is already fire-and-forget (``dispatch_event``
+    # schedules ``asyncio.create_task`` per matching subscription and
+    # returns), and ``dispatch_event`` never raises into the caller —
+    # so a delivery problem cannot roll back the chain.
+    for evt in pending_events:
+        try:
+            await dispatch_event(
+                session, org_id, evt["event_type"], evt["payload"]
+            )
+        except Exception:
+            logger.exception(
+                "webhook dispatch failed for event_type=%s org=%s — "
+                "chain advance preserved",
+                evt["event_type"],
+                org_id,
+            )
 
     # [POLICY ENGINE] Store violations + send emails (outside lock, separate commit)
     if policy_results:
@@ -493,6 +588,7 @@ async def build_and_insert_batch(
     Batch records have policies_applied = [] (no policy results).
     """
     lock = await get_org_lock(org_id)
+    pending_events: list[dict] = []
     async with lock:
         chain_state = await _lock_chain_state(session, org_id)
 
@@ -517,8 +613,10 @@ async def build_and_insert_batch(
                     org_id=org_id,
                     tenant_id=data.tenant_id,
                     agent_id=agent_id,
+                    agent_name=data.agent_name,
                     action_class=data.action_class,
                     now=now,
+                    pending_events=pending_events,
                 )
 
             chain_state.latest_sequence = new_sequence
@@ -529,4 +627,22 @@ async def build_and_insert_batch(
         await session.commit()
         for record in records:
             await session.refresh(record)
-        return records
+
+    # PR 3 / B3-B5 — see ``build_and_insert_record`` for the design
+    # rationale. Same fire-and-forget pattern: dispatch after commit,
+    # swallow delivery errors so the batch's chain advance stays
+    # intact.
+    for evt in pending_events:
+        try:
+            await dispatch_event(
+                session, org_id, evt["event_type"], evt["payload"]
+            )
+        except Exception:
+            logger.exception(
+                "webhook dispatch failed for event_type=%s org=%s — "
+                "batch chain advance preserved",
+                evt["event_type"],
+                org_id,
+            )
+
+    return records

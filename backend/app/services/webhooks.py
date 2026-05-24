@@ -57,6 +57,19 @@ ALLOWED_EVENT_TYPES: frozenset[str] = frozenset(
         # is_valid=False. Allowed in the subscription enum so customers can
         # subscribe ahead of the wiring.
         "chain.tampered",
+        # ── Phase 1 PR 3 — auto-discovery signals ──
+        # ``new_agent_type_detected`` fires once on first auto-creation of
+        # a CustomerAgent row for an (org_id, customer_id, agent_type)
+        # tuple. The stamp is historical per Codex E1: later actions that
+        # only touch ``last_seen_at`` MUST NOT re-emit.
+        "new_agent_type_detected",
+        # ``cross_org_tenant_collision`` fires when an org auto-discovers
+        # a ``tenant_id`` that already exists under a different org. The
+        # event is delivered ONLY to subscriptions of the org doing the
+        # discovery — never to the colliding org (cross-org notification
+        # would itself be a leak vector). Payload carries only the other
+        # org's opaque UUID, never any customer-controlled fields.
+        "cross_org_tenant_collision",
     }
 )
 

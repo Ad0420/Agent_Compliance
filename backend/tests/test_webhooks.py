@@ -670,6 +670,9 @@ def test_allowed_event_types_is_complete():
             "approval.resolved",
             "approval.cancelled",
             "chain.tampered",
+            # Phase 1 PR 3 — auto-discovery signals.
+            "new_agent_type_detected",
+            "cross_org_tenant_collision",
         }
     )
 
