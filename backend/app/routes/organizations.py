@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -5,6 +7,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..models import Organization, ChainState, APIKey
 from ..schemas.organization import AlertEmailUpdate, OrganizationCreate, OrganizationResponse
+from ..schemas.wizard import (
+    WizardAnswers,
+    WizardAnswersResponse,
+    WizardAnswersSubmission,
+)
 from ..services.auth import require_permission
 from ..services.baa import is_org_baa_active
 
@@ -94,3 +101,147 @@ async def update_alert_email(
     await session.commit()
     await session.refresh(org)
     return OrganizationResponse.model_validate(org)
+
+
+# ── Wizard answers (Phase 1 PR 14, Stream F item F5) ───────────────
+#
+# The 5-question onboarding wizard ([policy-engine-mvp.md Appendix A]).
+# Answers persist on the Organization row as a JSON blob. The route
+# layer enforces multi-tenancy (org_id from auth, never from the body)
+# and tier-appropriate permissions:
+#
+#   - GET is ``read`` so any org member can fetch and rehydrate the
+#     in-progress wizard across browser sessions.
+#   - POST is ``admin`` so only org admins can mutate the persisted
+#     answer set. Lines up with how Customer + BAA admin actions are
+#     gated elsewhere in this router.
+#
+# When ``completed=true`` we require every wizard field be populated;
+# partial saves (``completed=false``) accept any subset of valid
+# fields. Idempotency: submitting twice with the same answers leaves
+# the row unchanged except for an updated ``wizard_completed_at`` only
+# if the row wasn't already completed (we don't bump the timestamp on
+# a re-submit of an already-completed wizard).
+
+
+def _require_all_fields(answers: WizardAnswers) -> None:
+    """Raise HTTPException(400) if any wizard field is missing.
+
+    Called for ``completed=true`` submissions. Partial saves bypass this
+    so the wizard can persist mid-flow without forcing the operator to
+    answer every question up front.
+    """
+    missing: list[str] = []
+    if answers.agent_type is None:
+        missing.append("agent_type")
+    if answers.agent_type == "other" and not answers.agent_type_other:
+        missing.append("agent_type_other")
+    if not answers.jurisdictions:
+        missing.append("jurisdictions")
+    if answers.decision_volume is None:
+        missing.append("decision_volume")
+    if answers.channel is None:
+        missing.append("channel")
+    if answers.privacy_officer is None:
+        missing.append("privacy_officer")
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "wizard_incomplete",
+                "detail": (
+                    "Cannot mark wizard complete: missing answers for "
+                    f"{missing}"
+                ),
+                "missing_fields": missing,
+            },
+        )
+
+
+@router.get(
+    "/me/wizard-answers", response_model=WizardAnswersResponse
+)
+async def get_wizard_answers(
+    session: AsyncSession = Depends(get_db),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
+):
+    """Return the org's persisted onboarding-wizard answers (or null).
+
+    Any org member can read so the wizard rehydrates across browser
+    sessions and devices. The response shape is stable across
+    "never opened", "in progress", and "complete" so the frontend
+    branches on ``completed_at`` rather than on payload presence.
+    """
+    org_id, _ = auth
+    org = await session.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    # The JSON column accepts any dict — validate on read so a manually
+    # mutated row (or a stale partial save written by an older schema)
+    # surfaces as an empty wizard rather than crashing the frontend.
+    answers: WizardAnswers | None
+    if org.wizard_answers is None:
+        answers = None
+    else:
+        try:
+            answers = WizardAnswers.model_validate(org.wizard_answers)
+        except Exception:
+            # Forward-compat: an older or hand-edited blob shouldn't
+            # crash the GET. Treat as "never opened" so the wizard
+            # re-prompts cleanly.
+            answers = None
+
+    return WizardAnswersResponse(
+        answers=answers,
+        completed_at=org.wizard_completed_at,
+    )
+
+
+@router.post(
+    "/me/wizard-answers", response_model=WizardAnswersResponse
+)
+async def submit_wizard_answers(
+    payload: WizardAnswersSubmission,
+    session: AsyncSession = Depends(get_db),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("admin")),
+):
+    """Persist the org's onboarding-wizard answers.
+
+    Admin-only — only org admins should be reshaping compliance posture
+    declarations. ``completed=true`` requires every field populated and
+    stamps ``wizard_completed_at`` on first completion. Subsequent
+    re-submissions update the answer blob but do NOT bump
+    ``wizard_completed_at`` once already set (so the "first complete"
+    timestamp survives later edits).
+    """
+    org_id, _ = auth
+    org = await session.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    if payload.completed:
+        _require_all_fields(payload.answers)
+
+    # Persist the validated, normalised answers as a plain dict so the
+    # JSON column round-trips cleanly on both SQLite (TEXT) and
+    # Postgres (JSON).
+    org.wizard_answers = payload.answers.model_dump(mode="json")
+
+    if payload.completed and org.wizard_completed_at is None:
+        # First completion: stamp now (UTC, naive — the column type is
+        # ``DateTime`` without timezone for SQLite portability, matching
+        # the project pattern in ``services/auth.generate_api_key``).
+        # Re-completions are a no-op on the timestamp so the "first
+        # completed at" history is preserved.
+        org.wizard_completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+
+    await session.commit()
+    await session.refresh(org)
+
+    # Re-validate before returning so the response is always shape-true.
+    answers = WizardAnswers.model_validate(org.wizard_answers)
+    return WizardAnswersResponse(
+        answers=answers,
+        completed_at=org.wizard_completed_at,
+    )

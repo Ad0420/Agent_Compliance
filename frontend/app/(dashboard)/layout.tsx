@@ -1,6 +1,8 @@
 import { Sidebar } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
 import { ProtectedRoute } from "@/components/layout/protected-route";
+import { OnboardingWizardProvider } from "@/hooks/use-onboarding-wizard";
+import { OnboardingWizard } from "@/components/wizard/onboarding-wizard";
 
 /**
  * Dashboard route-group layout.
@@ -18,11 +20,17 @@ import { ProtectedRoute } from "@/components/layout/protected-route";
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
     <ProtectedRoute>
-      <div className="dashboard min-h-screen bg-background text-foreground">
-        <Sidebar />
-        <Topbar />
-        <main className="ml-56 mt-14 min-h-[calc(100vh-3.5rem)] p-6">{children}</main>
-      </div>
+      <OnboardingWizardProvider>
+        <div className="dashboard min-h-screen bg-background text-foreground">
+          <Sidebar />
+          <Topbar />
+          <main className="ml-56 mt-14 min-h-[calc(100vh-3.5rem)] p-6">{children}</main>
+          {/* Phase 1 PR 14 — 5-question onboarding wizard. Single
+              instance hoisted to the layout so any tree under
+              /(dashboard)/* can call useOnboardingWizard().open(). */}
+          <OnboardingWizard />
+        </div>
+      </OnboardingWizardProvider>
     </ProtectedRoute>
   );
 }

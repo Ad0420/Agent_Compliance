@@ -27,6 +27,8 @@ import type {
   CustomerAgentsResponse,
   CustomerListResponse,
   CustomerQueryParams,
+  WizardAnswersResponse,
+  WizardAnswersSubmission,
   BAAUploadInput,
   BAAUploadResponse,
 } from "./api-types";
@@ -190,6 +192,22 @@ export function updateAlertEmail(alert_email: string | null): Promise<Organizati
   return request("/v1/organizations/me/alert-email", {
     method: "PATCH",
     body: JSON.stringify({ alert_email }),
+  });
+}
+
+// Onboarding wizard (Phase 1 PR 14, Stream F item F5).
+// Five-question modal sequence persisted on the Organization row.
+// GET is `read`, POST is `admin` — see backend organizations route.
+export function getWizardAnswers(): Promise<WizardAnswersResponse> {
+  return request("/v1/organizations/me/wizard-answers");
+}
+
+export function submitWizardAnswers(
+  body: WizardAnswersSubmission,
+): Promise<WizardAnswersResponse> {
+  return request("/v1/organizations/me/wizard-answers", {
+    method: "POST",
+    body: JSON.stringify(body),
   });
 }
 

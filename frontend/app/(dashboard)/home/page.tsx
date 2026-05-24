@@ -31,6 +31,7 @@ import { useChainVerification } from "@/hooks/use-verification";
 import { StatusDot } from "@/components/ui/status-indicator";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Loading } from "@/components/ui/loading";
+import { ResumeSetupBanner } from "@/components/wizard/resume-setup-banner";
 import { formatRelativeTime } from "@/lib/utils";
 import type { ActionRecord } from "@/lib/api-types";
 
@@ -118,6 +119,13 @@ export default function HomePage() {
         </section>
       ) : (
         <>
+          {/* ───────────────── Resume setup banner ─────────────────
+              Phase 1 PR 14 (Stream F item F5) — Codex D4.
+              Shown when SDK has captured ≥1 action AND wizard is incomplete.
+              Renders ABOVE "Needs your attention" so it's the first
+              non-greeting block the operator sees on a return visit. */}
+          <ResumeSetupBanner />
+
           {/* ───────────────── Needs your attention ───────────────── */}
           <section aria-labelledby="needs-attention-heading" className="space-y-4">
             <SectionHeader id="needs-attention-heading">Needs your attention</SectionHeader>
