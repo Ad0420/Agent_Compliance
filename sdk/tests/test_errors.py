@@ -490,6 +490,87 @@ class TestPHIShapeRedaction:
         assert err.provided_value == "acme-corp-prod"
 
 
+class TestDefensivePHILikelyRedaction:
+    """Second layer: whitespace + digit combos are over-redacted.
+
+    The strict :func:`_looks_like_phi` heuristic uses ``fullmatch`` against
+    single-token shapes and misses multi-word strings like
+    ``"John Doe 1972"`` or ``"Jane Smith DOB 03 14 1972"`` (the regex
+    ``[A-Za-z]+[\\s_-]+\\d{4,}`` doesn't anchor a four-token sentence).
+    Those exact strings are the most common PHI-leak shape: a developer
+    pastes a patient name + DOB into a ``tenant=`` kwarg.
+
+    The :func:`_is_likely_phi` defensive filter catches the gap by
+    redacting ANY string with both whitespace AND a digit. Legitimate
+    tenant ids never contain whitespace, so this costs nothing in
+    practice.
+    """
+
+    @pytest.mark.parametrize(
+        "phi_value",
+        [
+            "John Doe 1972",                 # name + DOB year
+            "Jane Smith DOB 03 14 1972",     # name + labeled DOB
+            "123 main street",               # number + words
+            "Patient 12345 admitted",        # patient id sentence
+            "DOB 1985",                      # labeled year
+        ],
+    )
+    def test_whitespace_plus_digit_is_redacted_for_all_reasons(self, phi_value):
+        for reason in (
+            TENANT_REASON_MISSING,
+            TENANT_REASON_MALFORMED,
+            TENANT_REASON_PHI_SHAPE,
+        ):
+            err = TenantMissingOrInvalid(reason=reason, provided_value=phi_value)
+            assert err.provided_value is None, (
+                f"reason={reason!r} value={phi_value!r} should redact"
+            )
+            assert phi_value not in err.developer_reason, (
+                f"reason={reason!r} leaked {phi_value!r} into developer_reason: "
+                f"{err.developer_reason!r}"
+            )
+            d = err.to_dict()
+            assert d["provided_value"] is None
+            assert phi_value not in (d.get("developer_reason") or "")
+
+    def test_malformed_emits_distinct_message_for_likely_phi(self):
+        # When the defensive heuristic fires (not the strict one), the
+        # synthesised developer_reason should call that out so the operator
+        # knows the value was deliberately suppressed (vs. simply absent).
+        err = TenantMissingOrInvalid(
+            reason=TENANT_REASON_MALFORMED,
+            provided_value="John Doe 1972",
+        )
+        assert "value redacted" in err.developer_reason
+        assert "whitespace" in err.developer_reason
+        assert "John" not in err.developer_reason
+        assert "1972" not in err.developer_reason
+
+    @pytest.mark.parametrize(
+        "safe_value",
+        [
+            "acme_corp_us_east_2",   # snake_case + digit, no whitespace
+            "tenant_42",             # short id + digit
+            "us-east-1",             # region code
+            "tenant",                # letters only
+        ],
+    )
+    def test_normal_tenant_ids_without_whitespace_keep_diagnostic(self, safe_value):
+        # Whitespace is the trip; pure alphanumeric + dash/underscore are
+        # legitimate tenant ids and must keep diagnostic info. (Note:
+        # values like ``customer-12345`` would be redacted by the strict
+        # ``_looks_like_phi`` heuristic — ``[A-Za-z]+[_-]+\\d{4,}`` matches
+        # them. That's the existing strict layer; we don't reverse it
+        # here.)
+        err = TenantMissingOrInvalid(
+            reason=TENANT_REASON_MALFORMED,
+            provided_value=safe_value,
+        )
+        assert err.provided_value == safe_value
+        assert safe_value in err.developer_reason
+
+
 class TestDocsUrlRenameWarnings:
     """The three transport classes whose ``code`` (and therefore the
     ``docs_url`` slug inside ``str(err)``) was renamed in Phase 1 PR 6
