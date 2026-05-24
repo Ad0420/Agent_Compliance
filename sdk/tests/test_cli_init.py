@@ -226,6 +226,38 @@ def test_init_skips_if_env_file_exists(tmp_path: Path) -> None:
     assert env_file.read_text() == "VERA_API_KEY=existing\n"
 
 
+def test_init_proceeds_when_env_file_has_no_key(tmp_path: Path) -> None:
+    """Fix #7: an .env that exists but has no VERA_API_KEY should NOT
+    short-circuit init — clobbering an empty stub file isn't destructive."""
+    runner = CliRunner()
+    env_file = tmp_path / ".env"
+    env_file.write_text("# placeholder, no key yet\n")
+    api_key = "al_test_" + "x" * 32
+    result = runner.invoke(
+        cli,
+        ["init", "--key", api_key, "--env-file", str(env_file)],
+    )
+    # Without ``--force`` we'd ordinarily expect a refusal-to-clobber,
+    # but the existing-config summary returns None when no real key is
+    # present, so init proceeds with default ``force=True`` semantics.
+    assert result.exit_code == 0, result.output
+    assert api_key in env_file.read_text()
+
+
+def test_init_proceeds_when_env_file_has_empty_key(tmp_path: Path) -> None:
+    """Fix #7: ``VERA_API_KEY=`` (empty value) doesn't count as configured."""
+    runner = CliRunner()
+    env_file = tmp_path / ".env"
+    env_file.write_text("VERA_API_KEY=\nVERA_API_URL=https://api.example.com\n")
+    api_key = "al_test_" + "x" * 32
+    result = runner.invoke(
+        cli,
+        ["init", "--key", api_key, "--env-file", str(env_file)],
+    )
+    assert result.exit_code == 0, result.output
+    assert api_key in env_file.read_text()
+
+
 def test_init_skips_if_env_var_set(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -642,3 +674,64 @@ def test_write_env_file_overwrites_with_force(tmp_path: Path) -> None:
         force=True,
     )
     assert api_key in env_file.read_text()
+
+
+# ---------------------------------------------------------------------------
+# _parse_env_file helper (fix #8)
+# ---------------------------------------------------------------------------
+
+
+def test_parse_env_file_missing_returns_empty(tmp_path: Path) -> None:
+    assert cli_mod._parse_env_file(tmp_path / "does_not_exist.env") == {}
+
+
+def test_parse_env_file_basic_keys(tmp_path: Path) -> None:
+    p = tmp_path / ".env"
+    p.write_text("VERA_API_KEY=al_test_xyz\nVERA_TENANT_ID=acme\n")
+    parsed = cli_mod._parse_env_file(p)
+    assert parsed["VERA_API_KEY"] == "al_test_xyz"
+    assert parsed["VERA_TENANT_ID"] == "acme"
+
+
+def test_parse_env_file_strips_double_quotes(tmp_path: Path) -> None:
+    p = tmp_path / ".env"
+    p.write_text('VERA_API_KEY="al_test_xyz"\n')
+    assert cli_mod._parse_env_file(p)["VERA_API_KEY"] == "al_test_xyz"
+
+
+def test_parse_env_file_strips_single_quotes(tmp_path: Path) -> None:
+    p = tmp_path / ".env"
+    p.write_text("VERA_API_KEY='al_test_xyz'\n")
+    assert cli_mod._parse_env_file(p)["VERA_API_KEY"] == "al_test_xyz"
+
+
+def test_parse_env_file_inline_comment_stripped(tmp_path: Path) -> None:
+    p = tmp_path / ".env"
+    p.write_text("VERA_API_KEY=al_test_xyz  # this is a comment\n")
+    assert cli_mod._parse_env_file(p)["VERA_API_KEY"] == "al_test_xyz"
+
+
+def test_parse_env_file_hash_without_space_kept(tmp_path: Path) -> None:
+    """A ``#`` not preceded by whitespace is part of the value."""
+    p = tmp_path / ".env"
+    p.write_text("VERA_API_KEY=al_test_xy#z\n")
+    assert cli_mod._parse_env_file(p)["VERA_API_KEY"] == "al_test_xy#z"
+
+
+def test_parse_env_file_skips_blank_and_comment_lines(tmp_path: Path) -> None:
+    p = tmp_path / ".env"
+    p.write_text(
+        "\n"
+        "# this is a comment\n"
+        "\n"
+        "VERA_API_KEY=al_test_xyz\n"
+        "\n"
+    )
+    parsed = cli_mod._parse_env_file(p)
+    assert parsed == {"VERA_API_KEY": "al_test_xyz"}
+
+
+def test_parse_env_file_skips_lines_without_equals(tmp_path: Path) -> None:
+    p = tmp_path / ".env"
+    p.write_text("not a key value line\nVERA_API_KEY=al_test_xyz\n")
+    assert cli_mod._parse_env_file(p) == {"VERA_API_KEY": "al_test_xyz"}

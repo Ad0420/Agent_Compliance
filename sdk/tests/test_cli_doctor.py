@@ -418,6 +418,73 @@ def test_doctor_exit_zero_when_all_pass(
     assert "[FAIL]" not in result.output
 
 
+def test_check_sdk_version_fail_on_runtime_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix #10: if ``vera.__version__`` exists and disagrees with the pip
+    metadata, that's a stale-install footgun — FAIL with a clear message."""
+    import vera as _vera_mod
+
+    # ``vera`` doesn't expose ``__version__`` today. Set + tear down
+    # manually because ``monkeypatch.setattr(..., raising=False)`` then
+    # ``delattr`` on teardown raises AttributeError if the attr never
+    # existed before.
+    had_attr = hasattr(_vera_mod, "__version__")
+    prev = getattr(_vera_mod, "__version__", None)
+    try:
+        _vera_mod.__version__ = "999.0.0-shadow"  # type: ignore[attr-defined]
+        result = cli_mod._doctor_check_sdk_version()
+    finally:
+        if had_attr:
+            _vera_mod.__version__ = prev  # type: ignore[attr-defined]
+        else:
+            try:
+                delattr(_vera_mod, "__version__")
+            except AttributeError:
+                pass
+    # Pip metadata says 1.0.0 on this branch; runtime patched to mismatch.
+    assert result["status"] == "FAIL"
+    assert "version mismatch" in result["message"]
+    assert "shadowing" in result["message"]
+
+
+def test_check_sdk_version_pass_when_runtime_version_absent() -> None:
+    """When ``vera.__version__`` is missing (current state of the module),
+    the check falls back to the pip-only behavior — PASS on 1.0+."""
+    import vera as _vera_mod
+
+    # Defensive: ensure no leftover patch from another test.
+    if hasattr(_vera_mod, "__version__"):
+        try:
+            delattr(_vera_mod, "__version__")
+        except AttributeError:
+            pass
+    result = cli_mod._doctor_check_sdk_version()
+    assert result["status"] == "PASS"
+
+
+def test_doctor_warns_on_unknown_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix #14: a check that emits a status outside PASS/FAIL/WARN/INFO
+    must surface a warning to stderr rather than being silently dropped."""
+
+    def _weird() -> dict[str, Any]:
+        return {
+            "name": "weirdo",
+            "status": "MAYBE",
+            "message": "unclassified",
+            "details": {},
+        }
+
+    monkeypatch.setattr(cli_mod, "_DOCTOR_CHECKS", (_weird,))
+    runner = CliRunner()
+    result = runner.invoke(cli, ["doctor"])
+    # Doctor itself doesn't fail when there's no FAIL count.
+    combined = result.output + (result.stderr if result.stderr_bytes else "")
+    assert "unknown doctor status" in combined or "MAYBE" in combined
+
+
 def test_doctor_check_isolation_one_check_explodes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -327,3 +327,111 @@ def test_quickstart_dashboard_url_override(
     )
     assert result.exit_code == 0, result.output
     assert "https://staging.example.com/customers/abc" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Path sanitization (fix #13)
+# ---------------------------------------------------------------------------
+
+
+def test_quickstart_rejects_demo_file_outside_safe_dirs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--demo-file /etc/passwd`` must error with a clear message instead
+    of leaking a raw OSError from the subprocess/write path."""
+    monkeypatch.setenv("VERA_API_KEY", "al_test_" + "x" * 32)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "quickstart",
+            "--demo-file",
+            "/etc/vera_quickstart_demo.py",  # outside CWD / HOME / TMPDIR
+            "--no-open",
+            "--skip-run",
+            "--non-interactive",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "outside" in result.output
+
+
+def test_quickstart_rejects_demo_file_with_traversal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """``../`` traversal that escapes CWD/HOME/TMPDIR is rejected."""
+    monkeypatch.setenv("VERA_API_KEY", "al_test_" + "x" * 32)
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "quickstart",
+            "--demo-file",
+            "/var/log/../../etc/evil.py",
+            "--no-open",
+            "--skip-run",
+            "--non-interactive",
+        ],
+    )
+    assert result.exit_code != 0
+    assert "outside" in result.output
+
+
+# ---------------------------------------------------------------------------
+# Ingest polling helper (fix #9)
+# ---------------------------------------------------------------------------
+
+
+def test_wait_for_tenant_ingest_returns_true_on_200(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The poll helper returns ``True`` as soon as the backend responds 200."""
+    import httpx
+
+    from vera import cli as cli_mod
+
+    transport = httpx.MockTransport(
+        lambda req: httpx.Response(200, json={"tenant_id": "demo"})
+    )
+    real_init = httpx.Client.__init__
+
+    def _wrap(self, *args, **kwargs):
+        kwargs["transport"] = transport
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.Client, "__init__", _wrap)
+    # Trim the backoff so the test runs fast even on failure.
+    monkeypatch.setattr(cli_mod, "_INGEST_POLL_DELAYS", (0.01,))
+    ok = cli_mod._wait_for_tenant_ingest(
+        api_url="https://mock.example",
+        api_key="al_test_" + "x" * 32,
+        tenant="demo",
+    )
+    assert ok is True
+
+
+def test_wait_for_tenant_ingest_gives_up_after_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backend returns 404 forever → poll gives up and returns False
+    (but the quickstart flow still proceeds — we never raise here)."""
+    import httpx
+
+    from vera import cli as cli_mod
+
+    transport = httpx.MockTransport(lambda req: httpx.Response(404))
+    real_init = httpx.Client.__init__
+
+    def _wrap(self, *args, **kwargs):
+        kwargs["transport"] = transport
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.Client, "__init__", _wrap)
+    monkeypatch.setattr(cli_mod, "_INGEST_POLL_DELAYS", (0.01, 0.01))
+    ok = cli_mod._wait_for_tenant_ingest(
+        api_url="https://mock.example",
+        api_key="al_test_" + "x" * 32,
+        tenant="demo",
+    )
+    assert ok is False

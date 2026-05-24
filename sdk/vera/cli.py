@@ -634,15 +634,65 @@ def _open_browser_or_print(url: str, *, headless_hint: str = "") -> None:
             click.echo(f"  {headless_hint}")
 
 
+def _parse_env_file(path: Path) -> dict[str, str]:
+    """Parse a ``KEY=value`` ``.env``-style file into a dict.
+
+    Lightweight handling of common dotenv conventions — the SDK doesn't
+    ship a ``python-dotenv`` dependency for this one helper:
+
+    * Skip blank lines and lines starting with ``#``.
+    * Strip wrapping single or double quotes from values
+      (``KEY="value"`` → ``value``).
+    * Strip inline ``# comment`` only when the ``#`` is preceded by
+      whitespace, so legitimate ``#`` inside a value (rare, but possible
+      e.g. for a quoted password) isn't truncated.
+    * Lines without ``=`` are ignored (matching standard dotenv behavior).
+    * Missing file returns an empty dict — callers test the file's
+      existence separately when that distinction matters.
+    """
+    if not path.exists():
+        return {}
+    result: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        # Strip inline comments only when preceded by whitespace, to avoid
+        # truncating ``KEY=val#ue`` (no space before ``#``).
+        m = re.search(r"\s+#", value)
+        if m:
+            value = value[: m.start()].rstrip()
+        # Strip matching wrapping quotes (single or double).
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        if key:
+            result[key] = value
+    return result
+
+
 def _existing_config_summary(env_file: Path) -> str | None:
     """Return a one-line summary of existing config, or ``None`` if absent.
 
-    Checks the ``.env`` file at ``env_file`` first, then ``VERA_API_KEY``
-    in the process env. Returns ``None`` when neither is configured (i.e.
-    ``vera init`` should proceed without prompting).
+    Checks for a valid ``VERA_API_KEY`` in the ``.env`` file at
+    ``env_file`` first, then in the process env. Returns ``None`` when
+    neither is configured (i.e. ``vera init`` should proceed without
+    prompting). An ``.env`` that exists but doesn't contain a non-empty
+    ``VERA_API_KEY`` returns ``None`` — clobbering an empty/stub file
+    is not actually destructive.
     """
     if env_file.exists():
-        return f".env at {env_file} (API key already configured)"
+        parsed = _parse_env_file(env_file)
+        if parsed.get("VERA_API_KEY", "").strip():
+            return f".env at {env_file} (API key already configured)"
     if os.environ.get("VERA_API_KEY", "").strip():
         return "VERA_API_KEY env var already set"
     return None
@@ -953,6 +1003,55 @@ def _random_tenant_suffix() -> str:
     return secrets.token_hex(4)  # 8 chars, hex-safe for the tenant regex
 
 
+# Backoff schedule for ``_wait_for_tenant_ingest`` — exponential to ~10s
+# so a slow backend doesn't kill the quickstart flow but a fast one only
+# pays ~250ms.
+_INGEST_POLL_DELAYS = (0.25, 0.5, 1.0, 2.0, 5.0)
+_INGEST_POLL_HINT_AFTER = 2.0
+
+
+def _wait_for_tenant_ingest(
+    *,
+    api_url: str,
+    api_key: str,
+    tenant: str,
+) -> bool:
+    """Poll ``GET /v1/customers/{tenant}`` until it returns 200 or budget runs out.
+
+    Returns ``True`` on success, ``False`` if we gave up. The quickstart
+    flow proceeds either way — a missed poll just means the operator
+    will see an empty page until the backend catches up. We print a
+    user-visible hint after ``_INGEST_POLL_HINT_AFTER`` seconds so
+    operators on slow networks understand the wait.
+    """
+    import httpx
+
+    url = f"{api_url}/v1/customers/{tenant}"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    elapsed = 0.0
+    hint_printed = False
+    for delay in _INGEST_POLL_DELAYS:
+        try:
+            with httpx.Client(timeout=3.0) as client:
+                resp = client.get(url, headers=headers)
+            if resp.status_code == 200:
+                return True
+        except httpx.HTTPError:
+            # Transient — keep polling.
+            pass
+        if not hint_printed and elapsed >= _INGEST_POLL_HINT_AFTER:
+            click.echo("  Waiting for backend to ingest demo decisions...")
+            hint_printed = True
+        time.sleep(delay)
+        elapsed += delay
+    click.echo(
+        "  warning: backend hasn't reported the tenant yet — "
+        "the dashboard may show an empty page momentarily.",
+        err=True,
+    )
+    return False
+
+
 @cli.command(name="quickstart")
 @click.option(
     "--demo-file",
@@ -1026,17 +1125,8 @@ def quickstart_cmd(
 
     # 2. Config check.
     api_key = os.environ.get("VERA_API_KEY", "").strip()
-    if not api_key and Path(".env").exists():
-        # Try to read .env line-by-line — we don't depend on python-dotenv
-        # for this path because the SDK doesn't ship it. The subprocess we
-        # run later inherits this dict so the demo sees the key.
-        for line in Path(".env").read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if line.startswith("VERA_API_KEY="):
-                api_key = line.split("=", 1)[1].strip()
-                break
+    if not api_key:
+        api_key = _parse_env_file(Path(".env")).get("VERA_API_KEY", "").strip()
 
     if not api_key:
         if non_interactive:
@@ -1051,12 +1141,7 @@ def quickstart_cmd(
         ctx.invoke(init_cmd, dashboard_url=dashboard_url, key_flag=None,
                    env_file=Path(".env"), api_url=None, force=False)
         # Reload after init wrote the file.
-        api_key = ""
-        if Path(".env").exists():
-            for line in Path(".env").read_text(encoding="utf-8").splitlines():
-                if line.startswith("VERA_API_KEY="):
-                    api_key = line.split("=", 1)[1].strip()
-                    break
+        api_key = _parse_env_file(Path(".env")).get("VERA_API_KEY", "").strip()
         if not api_key:
             raise click.ClickException(
                 "still no API key after `vera init` — aborting quickstart."
@@ -1069,6 +1154,31 @@ def quickstart_cmd(
         raise click.ClickException(
             f"invalid --tenant value {tenant!r} "
             "(must match `^[a-zA-Z0-9_-]{1,64}$`)."
+        )
+
+    # 3a. Demo-file path sanitization. We're about to ``write_text`` here
+    # and then ``subprocess.run`` it; restrict the path to under CWD,
+    # ``$HOME``, or the system temp dir so a typo like
+    # ``--demo-file /etc/passwd`` errors with a clear message instead of
+    # leaking a raw OSError. The OS would block the write anyway, but a
+    # clean error is friendlier. ``$TMPDIR`` is allowed because CI and
+    # pytest's ``tmp_path`` fixture frequently use it.
+    import tempfile
+
+    resolved_demo = demo_file.resolve()
+    cwd = Path.cwd().resolve()
+    home = Path.home().resolve()
+    tmp_root = Path(tempfile.gettempdir()).resolve()
+    if not (
+        resolved_demo.is_relative_to(cwd)
+        or resolved_demo.is_relative_to(home)
+        or resolved_demo.is_relative_to(tmp_root)
+    ):
+        raise click.ClickException(
+            f"--demo-file {demo_file} resolves to {resolved_demo}, "
+            "which is outside the current directory, $HOME, and "
+            "the system temp dir. Pass a path under one of those "
+            "for safety."
         )
 
     # 4. Generate demo file.
@@ -1105,8 +1215,18 @@ def quickstart_cmd(
                 f"demo exited with code {proc.returncode} — "
                 "see stderr above. Try `vera doctor` to diagnose."
             )
-        # Give the backend a beat to ingest before we open the dashboard.
-        time.sleep(1.5)
+        # Poll the backend until it's ingested the tenant, rather than a
+        # brittle hardcoded sleep. Total budget ~10s with exponential
+        # backoff; print a hint at ~2s so the operator knows we're
+        # waiting on the backend (network may just be slow). If polling
+        # never succeeds we still open the dashboard — the user can
+        # refresh manually rather than us erroring out on a flaky link.
+        api_url = (
+            os.environ.get("VERA_API_URL", "").strip() or _DEFAULT_API_URL
+        ).rstrip("/")
+        _wait_for_tenant_ingest(
+            api_url=api_url, api_key=api_key, tenant=tenant,
+        )
 
     # 6. Open dashboard.
     effective_dashboard_url = (
@@ -1503,7 +1623,16 @@ def _doctor_check_spool() -> dict[str, Any]:
 
 
 def _doctor_check_sdk_version() -> dict[str, Any]:
-    """Check 6: SDK version. WARN on 0.x, PASS on 1.0+."""
+    """Check 6: SDK version. WARN on 0.x, PASS on 1.0+.
+
+    Cross-checks pip metadata against ``vera.__version__`` when the
+    runtime module exposes one. A disagreement usually means a local
+    ``vera/`` directory is shadowing the installed wheel (or vice
+    versa) — a real footgun that the pip-only check misses entirely.
+    Today ``vera/__init__.py`` does not expose ``__version__``, so the
+    cross-check just no-ops; the moment we add one, this check starts
+    catching shadow installs.
+    """
     try:
         from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
@@ -1523,6 +1652,37 @@ def _doctor_check_sdk_version() -> dict[str, Any]:
             "message": "could not read SDK version",
             "details": {"version": "unknown"},
         }
+
+    # Cross-check: does the imported ``vera`` module agree with pip?
+    # A mismatch means there's a stale `vera/` directory shadowing the
+    # installed wheel (common when developers `pip install -e .` then
+    # later `pip install vera-sdk`).
+    runtime_version: str | None = None
+    try:
+        import vera as _vera_mod
+
+        runtime_version = getattr(_vera_mod, "__version__", None)
+    except Exception:
+        runtime_version = None
+    if runtime_version and runtime_version != ver:
+        return {
+            "name": "sdk_version",
+            "status": _DOCTOR_STATUS_FAIL,
+            "message": (
+                f"version mismatch: pip says {ver}, imported `vera` "
+                f"module says {runtime_version}. A stale `vera/` "
+                "directory is probably shadowing the installed wheel."
+            ),
+            "details": {
+                "pip_version": ver,
+                "runtime_version": runtime_version,
+            },
+        }
+
+    # PEP-440 epoch versions (e.g. ``1!0.0``) would misclassify here
+    # since ``"1!0".split(".")[0] == "1!0"``. Not worth pulling in the
+    # ``packaging`` dep for an edge case we never plan to use — the
+    # bare ``.split`` is fine for foreseeable versions.
     major = ver.split(".")[0]
     try:
         major_int = int(major)
@@ -1627,6 +1787,14 @@ def doctor_cmd(as_json: bool) -> None:
         key = r["status"].lower()
         if key in summary:
             summary[key] += 1
+        else:
+            # Surface check-implementation bugs (typo in a new status
+            # constant) rather than silently dropping the count.
+            click.echo(
+                f"warning: unknown doctor status: {r['status']!r} "
+                f"(check={r.get('name', 'unknown')!r})",
+                err=True,
+            )
 
     if as_json:
         click.echo(_json.dumps({"checks": results, "summary": summary}))
