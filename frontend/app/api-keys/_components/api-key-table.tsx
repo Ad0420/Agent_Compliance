@@ -86,10 +86,15 @@ function formatDate(iso: string | null): string {
   }
 }
 
-// FastAPI wraps our structured error envelopes under a top-level
-// ``detail`` key. Pull the code+detail back out so we can show the
-// human-readable string and act on the machine code.
+// The backend now emits a *flat* error envelope for structured errors
+// (``{"code": "...", "detail": "...", "fix_url": "..."}``) via the
+// ``_flatten_dict_detail`` handler in ``backend/app/main.py``. Unstructured
+// errors still round-trip as FastAPI's default ``{"detail": "<string>"}``.
+// Accept both shapes so the dashboard keeps rendering useful copy whether
+// the backend lifts the dict or not.
 interface BackendErrorEnvelope {
+  code?: string;
+  fix_url?: string;
   detail?:
     | string
     | {
@@ -100,7 +105,18 @@ interface BackendErrorEnvelope {
   error?: string;
 }
 
+function extractErrorCode(body: BackendErrorEnvelope): string | undefined {
+  if (typeof body.code === "string") return body.code;
+  const d = body.detail;
+  if (d && typeof d === "object" && typeof d.code === "string") return d.code;
+  return undefined;
+}
+
 function extractErrorMessage(body: BackendErrorEnvelope): string {
+  // Flat envelope path (post-#201 review fix).
+  if (typeof body.code === "string") {
+    if (typeof body.detail === "string") return body.detail;
+  }
   const d = body.detail;
   if (typeof d === "string") return d;
   if (d && typeof d === "object" && typeof d.detail === "string") {
@@ -189,14 +205,29 @@ export function ApiKeyTable({ initialKeys, canMint, canRevoke }: Props) {
         const body = (await res.json().catch(() => ({}))) as BackendErrorEnvelope;
         setCreateError(extractErrorMessage(body));
         // If the backend says no BAA, flip our cached state so the
-        // EmptyState renders on the next render cycle.
-        const detail = body.detail;
-        if (
-          detail &&
-          typeof detail === "object" &&
-          (detail.code === "baa_required" || detail.code === "baa_expired")
-        ) {
+        // EmptyState renders on the next render cycle. Handles both the
+        // flat envelope (post-#201 review fix) and the legacy nested
+        // ``detail.code`` shape.
+        const code = extractErrorCode(body);
+        if (code === "baa_required" || code === "baa_expired") {
           setBaaActive(false);
+          // Defensive re-fetch so cached client state doesn't drift from
+          // server truth. If a BAA was uploaded in another tab between the
+          // create attempt and the error response, ``/api/dashboard/baa-status``
+          // will say ``active: true`` and we correct the flip — otherwise
+          // we confirm the no-BAA EmptyState. Fire-and-forget; failure here
+          // just leaves the optimistic ``baaActive=false`` in place, which
+          // is the safer default.
+          fetch("/api/dashboard/baa-status")
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data: { active?: boolean } | null) => {
+              if (data && typeof data.active === "boolean") {
+                setBaaActive(data.active);
+              }
+            })
+            .catch(() => {
+              /* keep the pessimistic flip */
+            });
         }
         return;
       }

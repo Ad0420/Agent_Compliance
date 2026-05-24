@@ -147,6 +147,14 @@ def invalidate_org_baa_cache(org_id: str) -> None:
     Called by BAA upload / revoke / status-flip paths (lands later in
     Phase 1 PR 10) so a freshly-changed BAA is visible without waiting
     for the TTL. Safe to call when no entry exists.
+
+    TODO(PR 10): the BAA upload endpoint MUST call this after the
+    insert/commit lands so the operator who just clicked "upload signed
+    BAA" doesn't wait up to 60s for the live-key gate to flip. Reviewer
+    of PR 10: grep for ``invalidate_org_baa_cache`` and confirm it fires
+    on every code path that mutates BAA freshness (upload, revoke,
+    expire). Wired here so the call site is one line away from a
+    finished primitive.
     """
     _BAA_FRESHNESS_CACHE.pop(org_id, None)
 
