@@ -129,7 +129,7 @@ function SignInPrompt() {
           <CardTitle>Sign in required</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3 text-sm">
-          <p>You must sign in to manage API keys for your organization.</p>
+          <p>Sign in to manage API keys for your organization.</p>
           <Link
             href="/login"
             className="text-emerald-400 underline-offset-2 hover:underline"

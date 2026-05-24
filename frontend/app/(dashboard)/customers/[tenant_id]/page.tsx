@@ -462,7 +462,7 @@ function StatusSection({
         <li>
           <CoverageMatrixCompact agents={agents} />
         </li>
-        <li className="text-[13px] text-[color:var(--ink-2)]">
+        <li className="text-[13px] text-[color:var(--ink-2)] tabular-nums">
           {customer.decision_count_30d.toLocaleString()} decision
           {customer.decision_count_30d === 1 ? "" : "s"} captured in the last 30
           days

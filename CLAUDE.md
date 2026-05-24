@@ -18,5 +18,56 @@ hex strings, agent names, latency claims, terminal commands, code snippets.
 Engineering-audience content (SDK, code samples, integration details) lives on
 sub-pages or behind explicit toggles, not on the main landing page.
 
+<!-- copy-allow: this is the rule itself — banned tokens quoted for definition -->
 Never use "court-admissible" or "court-ready" anywhere. Use "regulator-ready" or
 "evidence trail" instead.
+
+## Voice & copy
+
+User-facing copy on the dashboard is for **CEOs and in-house counsel** of regulated
+AI vendors. Specific rules (full spec in `dashboard-design-system.md` §Voice & copy):
+
+- Use "Customer" not "Hospital" / "Tenant"; "posture" not "score";
+  <!-- copy-allow: rule definition — banned tokens quoted intentionally -->
+  "regulator-ready" not "court-admissible"; "evidence trail" not
+  <!-- copy-allow: rule definition — banned token quoted intentionally -->
+  "cryptographic proof"
+<!-- copy-allow: rule example — "2026" is a year, not a quantity -->
+- Full-date format with year ("Mar 15, 2026" not "Mar 15"); comma separators on
+  <!-- copy-allow: rule example — counter-form intentionally lacks comma separator -->
+  numbers ("12,500" not "12500"); no abbreviation under 10K
+  ("9,500" not "9.5K")
+- Recommendation language: "Consider X" / "Recommended: X" — never bare
+  <!-- copy-allow: rule definition — banned imperative phrases quoted intentionally -->
+  imperatives ("You should X", "We recommend that you X", "Make sure to X")
+<!-- copy-allow: rule definition — banned token quoted intentionally -->
+- No "Welcome back"; no marketing chrome on the dashboard; no comparative
+  claims about competitors
+- `tabular-nums` on every rendered number (via Tailwind utility or
+  `font-feature-settings: 'tnum'`)
+
+The CI gate is `frontend-copy-check`
+(`.github/workflows/frontend-copy-check.yml`). The default ruleset is enforced
+in CI. Before opening a PR, also run the heuristic strict tier locally:
+
+```
+python scripts/check_copy_violations.py --strict frontend/
+```
+
+Strict mode adds `date-no-year`, `numbers-no-commas`, `recommendation-language`,
+and `tabular-nums-missing` — heuristic rules with non-trivial false-positive
+rates. They surface candidates for review; CI does not gate on them.
+
+Add `# copy-allow: <reason>` inline (in any comment style — `//`, `#`,
+`/* */`, `<!-- -->`) to suppress a false positive. The reason is mandatory,
+must be at least 8 characters, and is surfaced in `--report-json` output for
+auditability. The marker must be on the same line as the violation OR the
+immediately preceding line.
+
+**Strict→default graduation criteria.** A `--strict` rule earns a promotion
+to the CI-gated default tier when BOTH: (1) the false-positive rate across
+the entire `frontend/` codebase is zero (running `--strict` produces no
+unexpected hits — only true positives or correctly-allowlisted entries),
+and (2) at least 3 real violations have been caught in PR review since the
+rule landed. Both directions (strict→default and the reverse) are
+documented in the changelog.

@@ -64,6 +64,11 @@ def ids_of(violations) -> set[str]:
         ('<input placeholder="Tenant" />', "tenant-label"),
         ('<p>posture score: 8/10</p>', "posture-score"),
         ('<p>compliance score</p>', "posture-score"),
+        # number-abbreviation-quantity (default tier).
+        ('<p>2.8K decisions captured today</p>', "number-abbreviation-quantity"),
+        ('<p>5K records</p>', "number-abbreviation-quantity"),
+        ('<p>1M actions</p>', "number-abbreviation-quantity"),
+        ('<p>3B events processed</p>', "number-abbreviation-quantity"),
     ],
 )
 def test_detects_each_token(tmp_path: Path, snippet: str, expected_id: str) -> None:
@@ -83,6 +88,407 @@ def test_clean_input_has_no_violations(tmp_path: Path) -> None:
     )
     violations = ccv.scan_paths([tmp_path / "frontend"])
     blocking = [v for v in violations if not v.allowed]
+    assert blocking == []
+
+
+# ---------------------------------------------------------------------------
+# number-abbreviation-quantity — negative cases (no false positives)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        # Storage units must not trigger (regex requires a quantity noun after).
+        '<p>upload limit 8MB per file</p>',
+        '<p>2GB max</p>',
+        # Video resolution — no quantity noun follows.
+        '<p>4K display supported</p>',
+        # Statutory dollar figures (regulations citations) — no operational
+        # noun follows ("€35M penalty" is fine; "€35M decisions" would not be).
+        '<p>EU AI Act: €35M or 7% of turnover</p>',
+        '<p>$5K/day, compounding</p>',
+        # Wizard volume bucket boundaries — range label, no noun after.
+        '<p>10K – 100K</p>',
+        # Random sentence with K in the middle is fine — needs digits-letter form.
+        '<p>OK indicator</p>',
+    ],
+)
+def test_abbreviation_rule_no_false_positives(tmp_path: Path, snippet: str) -> None:
+    write(tmp_path, "frontend/page.tsx", snippet)
+    violations = ccv.scan_paths([tmp_path / "frontend"])
+    blocking = [v for v in violations if not v.allowed]
+    abbrev_hits = [v for v in blocking if v.rule_id == "number-abbreviation-quantity"]
+    assert abbrev_hits == [], (
+        f"abbreviation rule should not fire on {snippet!r}, got {abbrev_hits}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Strict-mode rules — gated behind --strict
+# ---------------------------------------------------------------------------
+
+
+def test_strict_rules_inactive_by_default(tmp_path: Path) -> None:
+    # date-no-year, recommendation-language, tabular-nums-missing,
+    # numbers-no-commas should NOT fire in default mode.
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        'format(d, "MMM d")\n'
+        '<p>You should attest before continuing.</p>\n'
+        '<p>{count.toLocaleString()}</p>\n'
+        '<p>port 8080 timeout 5000ms</p>\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=False)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert blocking == []
+
+
+# ---------------------------------------------------------------------------
+# tabular-nums-missing — same-line and ±_TABULAR_NUMS_WINDOW behavior
+# ---------------------------------------------------------------------------
+
+
+def test_tabular_nums_same_line_classname_suppresses(tmp_path: Path) -> None:
+    """A ``tabular-nums`` className on the SAME line as the
+    ``.toLocaleString()`` rendering must NOT trigger the rule. This is
+    the headline fix for the rule's previous behaviour where any
+    ``{...toLocaleString()...}`` expression flagged regardless of the
+    wrapping treatment."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '<span className="tabular-nums">{count.toLocaleString()}</span>\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert not any(v.rule_id == "tabular-nums-missing" for v in blocking), (
+        f"tabular-nums on same line should suppress; got {ids_of(blocking)}"
+    )
+
+
+def test_tabular_nums_parent_classname_within_window_suppresses(tmp_path: Path) -> None:
+    """A ``tabular-nums`` className on a parent JSX element within the
+    ±3 line window suppresses the rule. This catches the typical
+    pattern of a parent block with the className and the child rendering
+    the number 1-3 lines later."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '<p className="tabular-nums">\n'
+        '  {isLoading\n'
+        '    ? "Loading…"\n'
+        '    : `${count.toLocaleString()} foo`}\n'
+        '</p>\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert not any(v.rule_id == "tabular-nums-missing" for v in blocking), (
+        f"parent tabular-nums within window should suppress; got {ids_of(blocking)}"
+    )
+
+
+def test_tabular_nums_distant_parent_still_flags(tmp_path: Path) -> None:
+    """When the parent ``tabular-nums`` className sits MORE than
+    ``_TABULAR_NUMS_WINDOW`` lines above the rendering, the rule still
+    fires. This is the documented v1 limitation — distant parents need
+    ``# copy-allow``. The test guards against a future change that
+    silently widens the window."""
+
+    blank_padding = "\n" * 10  # well beyond ±3 window
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '<table className="tabular-nums">\n'
+        + blank_padding
+        + '<td>{count.toLocaleString()}</td>\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert any(v.rule_id == "tabular-nums-missing" for v in blocking), (
+        "distant parent should NOT suppress — heuristic is bounded window"
+    )
+
+
+def test_tabular_nums_no_anchor_flags(tmp_path: Path) -> None:
+    """No tabular-nums anchor anywhere in the window → rule fires."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '<p>foo</p>\n<p>{count.toLocaleString()}</p>\n<p>bar</p>\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert any(v.rule_id == "tabular-nums-missing" for v in blocking)
+
+
+def test_tabular_nums_tnum_class_suppresses(tmp_path: Path) -> None:
+    """The Tailwind arbitrary-value ``[font-feature-settings:'tnum']``
+    counts as a tabular-nums anchor."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '<span className="[font-feature-settings:\'tnum\']">'
+        '{count.toLocaleString()}</span>\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert not any(v.rule_id == "tabular-nums-missing" for v in blocking)
+
+
+def test_tabular_nums_mono_var_suppresses(tmp_path: Path) -> None:
+    """``var(--mono)`` on the same line counts as a tabular anchor —
+    monospace fonts are already digit-aligned by construction."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '<span style={{fontFamily: "var(--mono)"}}>'
+        '{count.toLocaleString()}</span>\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert not any(v.rule_id == "tabular-nums-missing" for v in blocking)
+
+
+# ---------------------------------------------------------------------------
+# date-no-year — Intl.DateTimeFormat coverage
+# ---------------------------------------------------------------------------
+
+
+def test_intl_datetimeformat_without_year_flags(tmp_path: Path) -> None:
+    """``new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" })``
+    omits the year and must be flagged at strict tier."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        'new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" })\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert any(v.rule_id == "date-no-year" for v in blocking)
+
+
+def test_intl_datetimeformat_with_year_clean(tmp_path: Path) -> None:
+    """``Intl.DateTimeFormat`` with ``year: "numeric"`` is clean."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        'new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric" })\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert not any(v.rule_id == "date-no-year" for v in blocking)
+
+
+# ---------------------------------------------------------------------------
+# recommendation-language — code-comment context filter
+# ---------------------------------------------------------------------------
+
+
+def test_recommendation_in_jsx_text_flags(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '<p>You should attest before continuing.</p>\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert any(v.rule_id == "recommendation-language" for v in blocking)
+
+
+def test_recommendation_in_line_comment_does_not_flag(tmp_path: Path) -> None:
+    """``// you should refactor this`` is engineer-to-engineer code
+    chatter, not user-facing copy. The rule must not fire."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '// you should refactor this someday\n'
+        'const x = 1;\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert not any(v.rule_id == "recommendation-language" for v in blocking)
+
+
+def test_recommendation_in_jsdoc_does_not_flag(tmp_path: Path) -> None:
+    """JSDoc ``* You should call init() first`` is a code comment in
+    a code file — the rule must not fire."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '/**\n'
+        ' * Helper that does X.\n'
+        ' * You should call init() first.\n'
+        ' */\n'
+        'function helper() {}\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert not any(v.rule_id == "recommendation-language" for v in blocking)
+
+
+def test_recommendation_in_inline_trailing_comment_does_not_flag(tmp_path: Path) -> None:
+    """A trailing ``// you should X`` after code must not flag."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        'const x = 1; // you should refactor this someday\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert not any(v.rule_id == "recommendation-language" for v in blocking)
+
+
+def test_recommendation_in_markdown_bullet_flags(tmp_path: Path) -> None:
+    """In a markdown source, a ``- You should X`` bullet is the
+    user-facing copy itself. The rule must fire (CLAUDE.md and
+    similar docs are exactly the target surface)."""
+
+    write(
+        tmp_path,
+        "frontend/notes.md",
+        "Recommendations:\n- You should attest first.\n",
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert any(v.rule_id == "recommendation-language" for v in blocking)
+
+
+def test_recommendation_jsdoc_in_markdown_flags(tmp_path: Path) -> None:
+    """A line starting with ``*`` in a markdown file is a list bullet,
+    not a JSDoc continuation — the rule must still fire."""
+
+    write(
+        tmp_path,
+        "frontend/notes.md",
+        "* You should attest first.\n",
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert any(v.rule_id == "recommendation-language" for v in blocking)
+
+
+# ---------------------------------------------------------------------------
+# Reason-length validation for # copy-allow
+# ---------------------------------------------------------------------------
+
+
+def test_short_reason_does_not_suppress(tmp_path: Path) -> None:
+    """A ``copy-allow: x`` marker (reason shorter than the minimum)
+    must NOT silence the rule. Auditability requires real text in the
+    reason field."""
+
+    write(
+        tmp_path,
+        "frontend/x.tsx",
+        '<p>court-admissible</p>  // copy-allow: x\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"])
+    blocking = [v for v in violations if not v.allowed]
+    assert any(v.rule_id == "court-admissible" for v in blocking), (
+        "1-char reason should not pass the min-length gate"
+    )
+
+
+def test_meaningful_reason_suppresses(tmp_path: Path) -> None:
+    """A reason at the minimum length (8 chars) is accepted as a real
+    suppression."""
+
+    write(
+        tmp_path,
+        "frontend/x.tsx",
+        '<p>court-admissible</p>  // copy-allow: rule def\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"])
+    blocking = [v for v in violations if not v.allowed]
+    assert blocking == []
+
+
+@pytest.mark.parametrize(
+    "snippet,expected_id",
+    [
+        # date-no-year — short date format strings.
+        ('format(d, "MMM d")', "date-no-year"),
+        ("format(d, 'MMM dd')", "date-no-year"),
+        # date-no-year — toLocaleDateString with month but no year.
+        ('d.toLocaleDateString("en-US", { month: "short", day: "numeric" })', "date-no-year"),
+        # recommendation-language — bare imperatives.
+        ('<p>You should attest before continuing.</p>', "recommendation-language"),
+        ('<p>We recommend that you upload the BAA.</p>', "recommendation-language"),
+        ('<p>Make sure to upload the BAA.</p>', "recommendation-language"),
+        ('<p>You must attest first.</p>', "recommendation-language"),
+        # tabular-nums-missing — bare .toLocaleString() render.
+        ('<p>{count.toLocaleString()}</p>', "tabular-nums-missing"),
+    ],
+)
+def test_strict_rules_detect(tmp_path: Path, snippet: str, expected_id: str) -> None:
+    write(tmp_path, "frontend/page.tsx", snippet)
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert expected_id in {v.rule_id for v in blocking}, (
+        f"strict rule {expected_id!r} should fire on {snippet!r}, "
+        f"got blocking={ids_of(blocking)}"
+    )
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        # date-no-year — full date format with year present is fine.
+        'format(d, "MMM d, yyyy")',
+        'd.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" })',
+        # recommendation-language — "Consider X" / "Recommended: X" are the OK forms.
+        '<p>Consider uploading the BAA now.</p>',
+        '<p>Recommended: upload the BAA.</p>',
+        # "You should be" is a state-of-being phrase, not a bare imperative.
+        '<p>You should be all set after uploading.</p>',
+    ],
+)
+def test_strict_rules_no_false_positives(tmp_path: Path, snippet: str) -> None:
+    write(tmp_path, "frontend/page.tsx", snippet)
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert blocking == [], (
+        f"strict rules should not fire on {snippet!r}, got {ids_of(blocking)}"
+    )
+
+
+def test_numbers_no_commas_is_warning_only(tmp_path: Path) -> None:
+    """The numbers-no-commas rule is warning-level — it surfaces but
+    does not flip the exit code. Verify both: the rule fires on a
+    legitimate 4+ digit run AND the violation is marked warning=True."""
+
+    write(tmp_path, "frontend/page.tsx", "<p>12500 decisions</p>")
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    warns = [v for v in violations if not v.allowed and v.warning]
+    assert any(v.rule_id == "numbers-no-commas" for v in warns)
+    assert not any(v.rule_id == "numbers-no-commas" for v in blocking)
+
+
+def test_copy_allow_suppresses_strict_rules_too(tmp_path: Path) -> None:
+    """``# copy-allow`` markers must work in strict mode for the same
+    rules as in default mode."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '// copy-allow: legacy format string used in a non-display context\n'
+        'format(d, "MMM d")\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
     assert blocking == []
 
 
@@ -252,3 +658,49 @@ def test_cli_paths_glob_restricts_scope(tmp_path: Path) -> None:
     assert result.returncode == 1
     assert "a.tsx" in result.stderr
     assert "b.tsx" not in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# --strict flag — CLI behavior
+# ---------------------------------------------------------------------------
+
+
+def test_cli_strict_flag_enables_strict_rules(tmp_path: Path) -> None:
+    # A clean (default-mode) input that contains a strict-only violation.
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '<p>{count.toLocaleString()}</p>',
+    )
+    # Default mode → exit 0 (strict rule is not active).
+    result = run_cli(["frontend"], cwd=tmp_path)
+    assert result.returncode == 0, result.stderr
+    # Strict mode → exit 1 (tabular-nums-missing now blocks).
+    strict = run_cli(["--strict", "frontend"], cwd=tmp_path)
+    assert strict.returncode == 1
+    assert "tabular-nums-missing" in strict.stderr
+
+
+def test_cli_strict_warnings_do_not_block(tmp_path: Path) -> None:
+    """Warning-tagged strict rules (e.g. numbers-no-commas) print but do
+    NOT flip the exit code. Otherwise the strict mode would be
+    unusable as a local audit tool."""
+
+    write(tmp_path, "frontend/page.tsx", "<p>12500 records here</p>")
+    result = run_cli(["--strict", "frontend"], cwd=tmp_path)
+    # The numbers-no-commas rule prints a warning but does not block.
+    assert result.returncode == 0, result.stderr
+    assert "numbers-no-commas" in result.stderr
+    assert "[warning]" in result.stderr
+
+
+def test_cli_strict_json_includes_warnings(tmp_path: Path) -> None:
+    write(tmp_path, "frontend/page.tsx", "<p>12500 records here</p>")
+    result = run_cli(
+        ["--strict", "--report-json", "frontend"],
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["summary"]["warnings"] >= 1
+    assert payload["summary"]["blocking"] == 0
