@@ -32,10 +32,13 @@ AI vendors. Specific rules (full spec in `dashboard-design-system.md` §Voice & 
   "regulator-ready" not "court-admissible"; "evidence trail" not
   <!-- copy-allow: rule definition — banned token quoted intentionally -->
   "cryptographic proof"
+<!-- copy-allow: rule example — "2026" is a year, not a quantity -->
 - Full-date format with year ("Mar 15, 2026" not "Mar 15"); comma separators on
+  <!-- copy-allow: rule example — counter-form intentionally lacks comma separator -->
   numbers ("12,500" not "12500"); no abbreviation under 10K
   ("9,500" not "9.5K")
 - Recommendation language: "Consider X" / "Recommended: X" — never bare
+  <!-- copy-allow: rule definition — banned imperative phrases quoted intentionally -->
   imperatives ("You should X", "We recommend that you X", "Make sure to X")
 <!-- copy-allow: rule definition — banned token quoted intentionally -->
 - No "Welcome back"; no marketing chrome on the dashboard; no comparative
@@ -56,6 +59,15 @@ and `tabular-nums-missing` — heuristic rules with non-trivial false-positive
 rates. They surface candidates for review; CI does not gate on them.
 
 Add `# copy-allow: <reason>` inline (in any comment style — `//`, `#`,
-`/* */`, `<!-- -->`) to suppress a false positive. The reason is mandatory
-and is surfaced in `--report-json` output for auditability. The marker must
-be on the same line as the violation OR the immediately preceding line.
+`/* */`, `<!-- -->`) to suppress a false positive. The reason is mandatory,
+must be at least 8 characters, and is surfaced in `--report-json` output for
+auditability. The marker must be on the same line as the violation OR the
+immediately preceding line.
+
+**Strict→default graduation criteria.** A `--strict` rule earns a promotion
+to the CI-gated default tier when BOTH: (1) the false-positive rate across
+the entire `frontend/` codebase is zero (running `--strict` produces no
+unexpected hits — only true positives or correctly-allowlisted entries),
+and (2) at least 3 real violations have been caught in PR review since the
+rule landed. Both directions (strict→default and the reverse) are
+documented in the changelog.
