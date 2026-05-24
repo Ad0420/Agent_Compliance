@@ -13,8 +13,8 @@
  *     controls slot)
  *   - 24px padding, 220px min-height for grid evenness, 1px ink-4 border
  *
- * The visual treatment intentionally mirrors `chain-status-card.tsx` (which
- * was the existing reference pattern in Phase 0).
+ * The visual treatment matches the Phase 0 dashboard card reference pattern
+ * (24px padding, 220px min-height, 1px ink-4 border, paper background).
  */
 
 import * as React from "react";
