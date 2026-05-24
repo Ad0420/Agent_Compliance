@@ -7,7 +7,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
-from ..models import APIKey, WebhookDelivery, WebhookSubscription
+from ..models import (
+    APIKey,
+    WebhookDelivery,
+    WebhookDeliveryAttempt,
+    WebhookSubscription,
+)
 from ..schemas.webhook import (
     WebhookCreate,
     WebhookCreateResponse,
@@ -23,7 +28,11 @@ from ..schemas.webhook_delivery import (
     WebhookDeliveryResponse,
 )
 from ..services.auth import require_permission
-from ..services.webhooks import _attempt_delivery, generate_webhook_secret
+from ..services.webhooks import (
+    _attempt_delivery,
+    _track_task,
+    generate_webhook_secret,
+)
 
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -260,10 +269,18 @@ async def replay_delivery(
 ):
     """Re-attempt a terminal (aborted/succeeded) delivery.
 
-    Resets attempt_count to 0 and flips status to ``pending`` with an
-    immediate ``next_retry_at`` so the sweeper picks it up on the next
-    tick. A fresh first attempt is also scheduled in-process so the
-    operator sees forward progress without waiting for the sweeper.
+    Flips status to ``pending`` with an immediate ``next_retry_at`` so
+    the sweeper picks it up on the next tick. A fresh first attempt is
+    also scheduled in-process so the operator sees forward progress
+    without waiting for the sweeper.
+
+    ``attempt_count`` is NOT reset to zero — that would collide with
+    the existing ``WebhookDeliveryAttempt`` rows on the
+    ``(delivery_id, attempt_number)`` unique constraint. Instead, the
+    counter continues from its prior value so the replay's attempts get
+    fresh sequential numbers (e.g. an aborted delivery with 7 attempts
+    starts the replay cycle at attempt 8). The audit trail therefore
+    captures every replay round in order.
     """
     org_id, _ = auth
     sub = await session.get(WebhookSubscription, webhook_id)
@@ -278,9 +295,20 @@ async def replay_delivery(
     ):
         raise HTTPException(status_code=404, detail="Delivery not found")
 
+    # Reconcile attempt_count with the max attempt_number persisted —
+    # defensive against state drift if attempts were inserted out of
+    # band (manual SQL, replay-of-a-replay).
+    max_attempt = (
+        await session.execute(
+            select(func.max(WebhookDeliveryAttempt.attempt_number)).where(
+                WebhookDeliveryAttempt.delivery_id == delivery.id
+            )
+        )
+    ).scalar() or 0
+    delivery.attempt_count = max(delivery.attempt_count or 0, int(max_attempt))
+
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     delivery.status = "pending"
-    delivery.attempt_count = 0
     delivery.next_retry_at = now
     delivery.succeeded_at = None
     delivery.aborted_at = None
@@ -291,7 +319,7 @@ async def replay_delivery(
     await session.refresh(delivery)
 
     # Fire an immediate retry so the operator doesn't wait a full tick.
-    asyncio.create_task(_attempt_delivery(delivery.id))
+    _track_task(asyncio.create_task(_attempt_delivery(delivery.id)))
 
     return WebhookDeliveryReplayResponse(
         id=delivery.id,

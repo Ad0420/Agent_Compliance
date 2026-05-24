@@ -155,6 +155,26 @@ PRODUCER_LEASE_SECONDS = 60
 RESPONSE_BODY_EXCERPT_BYTES = 1024
 
 
+# Strong references to in-flight first-attempt tasks. Python's asyncio
+# keeps only weak references to tasks created via ``create_task`` — if
+# GC fires between scheduling and task completion, a task can be
+# cancelled mid-execution (see https://docs.python.org/3/library/asyncio-task.html#asyncio.create_task).
+# Holding a strong reference until the task completes prevents that.
+_inflight_tasks: set[asyncio.Task] = set()
+
+
+def _track_task(task: asyncio.Task) -> asyncio.Task:
+    """Hold a strong reference to ``task`` until it finishes.
+
+    Pattern is the asyncio docs' recommended workaround for the weak-ref
+    pitfall. The done-callback discards the task so the set doesn't grow
+    unbounded.
+    """
+    _inflight_tasks.add(task)
+    task.add_done_callback(_inflight_tasks.discard)
+    return task
+
+
 def _now() -> datetime:
     """Naive UTC, matching the project-wide convention."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
@@ -599,7 +619,7 @@ async def dispatch_event(
         # Fire the first attempt. Errors inside the task are logged but
         # never propagate; the row is durable and the sweeper will pick
         # it up on the next tick if the task crashes.
-        asyncio.create_task(_attempt_delivery(delivery_id))
+        _track_task(asyncio.create_task(_attempt_delivery(delivery_id)))
 
 
 async def _create_delivery_row(

@@ -368,6 +368,11 @@ async def test_admin_list_and_replay_deliveries(
         )
         assert replay_resp.status_code == 200, replay_resp.text
         replay_body = replay_resp.json()
-        assert replay_body["attempt_count"] == 0
+        # Counter persists (does NOT reset to 0) — the replayed
+        # attempts get fresh sequential numbers to avoid colliding with
+        # historical rows on the (delivery_id, attempt_number) unique
+        # constraint. Seed delivery was MAX_ATTEMPTS, so the next
+        # attempt number will be MAX_ATTEMPTS + 1.
+        assert replay_body["attempt_count"] == MAX_ATTEMPTS
         assert replay_body["status"] in ("pending", "in_progress", "succeeded")
         await _flush_tasks()

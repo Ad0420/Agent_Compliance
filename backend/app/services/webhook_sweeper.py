@@ -37,7 +37,7 @@ from ..config import settings
 from ..database import AsyncSessionLocal
 from ..models import WebhookDelivery
 from .approval_expiry import sweep_expired_approvals
-from .webhooks import _attempt_delivery
+from .webhooks import _attempt_delivery, _track_task
 
 
 logger = logging.getLogger("vera.webhook_sweeper")
@@ -149,7 +149,7 @@ async def tick() -> int:
         return 0
 
     for delivery_id in ids:
-        asyncio.create_task(_attempt_delivery(delivery_id))
+        _track_task(asyncio.create_task(_attempt_delivery(delivery_id)))
         scheduled += 1
 
     if scheduled:
