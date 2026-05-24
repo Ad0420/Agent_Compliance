@@ -781,11 +781,65 @@ a running app context) and customer-webhook URL reachability (the SDK
 doesn't know what the customer's webhook URL is). Both are deferred to a
 v2 `doctor`.
 
-### `vera review-status <review_id>` *(Phase 2 stub)*
+### `vera review-status <review_id>`
 
-Phase 1 placeholder. The body fills in alongside the gate-evaluation
-backend in Phase 2 without changing the CLI shape; for now it prints a
-clear "use the dashboard" message and exits 0.
+Fetch the status of a single approval. Three modes: one-shot lookup,
+machine-readable JSON, and `--watch` polling.
+
+```bash
+# One-shot human-readable summary.
+vera review-status app_01H7XKCRJF8
+# Review app_01H7XKCRJF8                              [… PENDING]     risk: high
+#
+#   agent           dpo-bot
+#   action          delete_customer_record
+#   summary         Hard-delete user record per GDPR Art. 17
+#   subject         user_42
+#   requested       2026-05-24 14:27:00 UTC  (3m ago)
+#   expires         2026-05-24 14:37:00 UTC  (in 7m)
+#   approvers       2 required
+#
+# Context:
+#   rows        1
+#   table       customers
+
+# Raw ApprovalResponse JSON (pretty-printed) — pipe to jq.
+vera review-status app_01H7XKCRJF8 --json | jq .status
+
+# Watch until the approval resolves (or you Ctrl-C).
+vera review-status app_01H7XKCRJF8 --watch --interval 3
+
+# Watch with a 5-minute deadline; exit code 3 if it never resolves.
+vera review-status app_01H7XKCRJF8 --watch --timeout 300
+
+# NDJSON for streaming pipelines (one object per poll).
+vera review-status app_01H7XKCRJF8 --watch --json \
+  | jq -c 'select(.status != "pending")'
+```
+
+Times are always rendered in UTC; relative phrases ("3m ago", "in 7m")
+are computed from your local clock. Colors auto-disable when stdout is
+not a TTY, when `NO_COLOR` is set, or with `--no-color`.
+
+Exit codes:
+
+- `0`: approval fetched (or reached a terminal state under `--watch`).
+- `1`: approval not found (404).
+- `2`: auth failure, wrong-tier key, network error, rate limit, or
+  server error (specific reason printed to stderr).
+- `3`: `--watch --timeout` reached before the approval resolved.
+- `130`: user pressed Ctrl-C.
+
+Compliance-pipeline pattern:
+
+```bash
+vera review-status "$ID" --watch --timeout 600
+case $? in
+  0) echo "approved or rejected — proceed" ;;
+  3) echo "still pending after 10m — escalate" ;;
+  *) echo "transport or auth failure — abort" ;;
+esac
+```
 
 ### `vera config show`
 

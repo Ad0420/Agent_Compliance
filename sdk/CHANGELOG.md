@@ -6,7 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-(no unreleased changes — next release will append entries here)
+### Added
+- `vera review-status <review_id>` now fetches a real approval via
+  `GET /v1/approvals/{id}` and renders it as a human-readable summary
+  (or raw JSON with `--json`). Supports `--watch` to poll until the
+  approval reaches a terminal state, `--interval` (default 5s, min
+  0.5s, max 60s) to tune cadence, `--timeout` to bound watch duration,
+  and `--no-color` (honors `NO_COLOR`). Watch + JSON emits NDJSON
+  suitable for `jq -c` pipelines.
+  Exit codes: 0 ok, 1 not-found, 2 transport, 3 watch-timeout,
+  130 Ctrl-C. (Wave 2B PR B3 — replaces the Phase 1 PR 11 stub.)
 
 ## [1.0.0] - 2026-05-24
 
