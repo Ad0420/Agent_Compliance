@@ -11,8 +11,8 @@ from sqlalchemy import (
     JSON,
     String,
     Text,
+    false,
     func,
-    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -96,7 +96,7 @@ class Approval(Base):
         DateTime, nullable=True
     )
     reviewed_below_threshold: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, server_default=text("0"), default=False
+        Boolean, nullable=False, server_default=false(), default=False
     )
 
     organization: Mapped["Organization"] = relationship(

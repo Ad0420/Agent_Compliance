@@ -33,11 +33,13 @@ Design notes
    instead. A project-wide TZ migration is out of scope for this PR.
 
 2. **``reviewed_below_threshold`` server default.** ``server_default=
-   sa.text("0")`` backfills existing rows to ``FALSE`` as part of the
-   DDL itself, so no separate ``UPDATE`` is needed. The literal ``"0"``
-   token is portable across SQLite (which stores booleans as 0/1) and
-   PostgreSQL (which accepts ``0`` as a boolean literal). The SQLAlchemy
-   ``Boolean`` type adapter normalizes on read.
+   sa.false()`` backfills existing rows to ``FALSE`` as part of the DDL
+   itself, so no separate ``UPDATE`` is needed. We use the SQLAlchemy
+   ``false()`` element (which renders as ``FALSE`` on PostgreSQL and
+   ``0`` on SQLite) rather than ``sa.text("0")``: PostgreSQL's strict
+   type checker rejects ``DEFAULT 0`` on a ``BOOLEAN`` column with
+   ``DatatypeMismatch: column "..." is of type boolean but default
+   expression is of type integer``.
 
 3. **One new index: ``ix_approvals_decided_at``.** Supports the Phase 4
    audit-PDF query "decisions in the last N days" (SLA proof) and the
@@ -116,7 +118,10 @@ def upgrade() -> None:
                 _NEW_FLAG_COLUMN,
                 sa.Boolean(),
                 nullable=False,
-                server_default=sa.text("0"),
+                # sa.false() renders as FALSE on PostgreSQL and 0 on
+                # SQLite. Using sa.text("0") fails on PostgreSQL with
+                # DatatypeMismatch (BOOLEAN ≠ integer default).
+                server_default=sa.false(),
             ),
         )
         inspector = sa.inspect(bind)
