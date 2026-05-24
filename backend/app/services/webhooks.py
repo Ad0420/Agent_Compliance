@@ -70,6 +70,15 @@ ALLOWED_EVENT_TYPES: frozenset[str] = frozenset(
         # would itself be a leak vector). Payload carries only the other
         # org's opaque UUID, never any customer-controlled fields.
         "cross_org_tenant_collision",
+        # ── Phase 1 PR 5 — Stream C item C3 ──
+        # ``phi_shape_warning`` fires when a sandbox-key (or Clerk-human)
+        # call lands with a ``tenant_id`` that the PHI-shape heuristic
+        # flagged. Live keys reject with HTTP 422 instead — the warning
+        # event is the SANDBOX-tier signal so customers can spot PHI
+        # contamination during integration before they switch to live.
+        # PHI-safety: the payload carries ``tenant_id_length`` +
+        # ``pattern_name`` ONLY, never the flagged value itself.
+        "phi_shape_warning",
     }
 )
 
