@@ -85,7 +85,6 @@ export function ResumeSetupBanner() {
         <span className="font-medium">SDK connected</span>
         <span className="mx-2 text-[color:var(--ink-3)]">·</span>
         <span className="tabular-nums">
-          {/* copy-allow: parent <span> wrapper carries className="tabular-nums" */}
           {totalActions.toLocaleString()} decision{totalActions === 1 ? "" : "s"} captured
         </span>
         <span className="mx-2 text-[color:var(--ink-3)]">·</span>

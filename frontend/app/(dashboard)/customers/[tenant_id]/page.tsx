@@ -463,7 +463,6 @@ function StatusSection({
           <CoverageMatrixCompact agents={agents} />
         </li>
         <li className="text-[13px] text-[color:var(--ink-2)] tabular-nums">
-          {/* copy-allow: parent <li> sets className="tabular-nums" */}
           {customer.decision_count_30d.toLocaleString()} decision
           {customer.decision_count_30d === 1 ? "" : "s"} captured in the last 30
           days
@@ -484,7 +483,6 @@ function DecisionsStream({ tenant_id }: { tenant_id: string }) {
         </h2>
         {data && data.total > 0 ? (
           <span className="text-[12px] text-[color:var(--ink-3)] [font-feature-settings:'tnum']">
-            {/* copy-allow: parent <span> sets [font-feature-settings:'tnum'] */}
             {data.total.toLocaleString()} total
           </span>
         ) : null}
