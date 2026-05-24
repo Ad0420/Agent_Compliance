@@ -19,6 +19,10 @@ Schema:
    optional None fields
 9. RulingEffect accepts the three legal strings and rejects others
 10. GateEvaluateRequest defaults input_data and metadata to empty dicts
+11. GateEvaluateRequest rejects oversized input_data (mirrors ActionRecord
+    1 MB cap)
+12. GateEvaluateRequest rejects oversized metadata (mirrors ActionRecord
+    1 MB cap)
 """
 
 import pytest
@@ -73,6 +77,35 @@ def test_gate_evaluate_request_defaults_collections():
     assert req.metadata == {}
     assert req.tenant_id is None
     assert req.data_subject_id is None
+
+
+def test_gate_evaluate_request_rejects_oversized_input_data():
+    """input_data above the 1 MB cap is rejected (mirrors ActionRecord)."""
+    # 1.5 MB of ASCII — comfortably over the 1 MB cap once JSON-encoded.
+    oversized = {"blob": "x" * 1_500_000}
+    with pytest.raises(ValidationError) as exc:
+        GateEvaluateRequest(
+            agent_name="scribemd",
+            action_type="function_call",
+            action_name="record_diagnosis",
+            authorized_by="dr_smith",
+            input_data=oversized,
+        )
+    assert "input_data" in str(exc.value)
+
+
+def test_gate_evaluate_request_rejects_oversized_metadata():
+    """metadata above the 1 MB cap is rejected (mirrors ActionRecord)."""
+    oversized = {"blob": "x" * 1_500_000}
+    with pytest.raises(ValidationError) as exc:
+        GateEvaluateRequest(
+            agent_name="scribemd",
+            action_type="function_call",
+            action_name="record_diagnosis",
+            authorized_by="dr_smith",
+            metadata=oversized,
+        )
+    assert "metadata" in str(exc.value)
 
 
 # ── API-level tests ─────────────────────────────────────────────────────────

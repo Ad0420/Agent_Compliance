@@ -19,6 +19,7 @@ registered gates: ``BLOCK`` > ``REQUIRE_HITL`` > ``ALLOW``. That reduction
 will live in the evaluator once more than one gate exists.
 """
 
+import json
 import re
 from enum import Enum
 from typing import Any, Optional
@@ -32,6 +33,13 @@ from pydantic import BaseModel, Field, field_validator
 # pass the gate but be rejected by ``POST /v1/actions`` immediately after,
 # leaving the SDK in an unrecoverable state.
 _TENANT_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+# Mirrors the per-field JSON size cap on ``ActionRecordCreate``. Same
+# lockstep rationale as the tenant_id regex: a 10 MB ``input_data`` blob
+# that passes the gate but is rejected by ``POST /v1/actions`` leaves the
+# SDK with no recoverable path. Keep this constant in sync with
+# ``app/schemas/action.py::_MAX_JSON_BYTES``.
+_MAX_JSON_BYTES = 1_000_000  # 1 MB
 
 
 class RulingEffect(str, Enum):
@@ -138,5 +146,26 @@ class GateEvaluateRequest(BaseModel):
         if not _TENANT_ID_RE.match(v):
             raise ValueError(
                 "tenant_id must match ^[a-zA-Z0-9_-]{1,64}$"
+            )
+        return v
+
+    @field_validator("input_data", "metadata")
+    @classmethod
+    def _check_json_size(
+        cls, v: dict[str, Any], info: Any
+    ) -> dict[str, Any]:
+        """Cap per-field JSON size at the gate boundary.
+
+        Mirrors the 1 MB cap on ``ActionRecordCreate.input_data`` /
+        ``metadata``. Without this mirror, a 10 MB blob would clear the
+        gate, run real gate logic in Wave 2B (RxNorm lookups, DEA list
+        scans), and then be rejected by ``POST /v1/actions`` — leaving
+        the SDK with no recoverable path and wasting gate compute.
+        Same lockstep rationale as the tenant_id regex above.
+        """
+        if v and len(json.dumps(v, default=str)) > _MAX_JSON_BYTES:
+            raise ValueError(
+                f"{info.field_name} exceeds maximum size of "
+                f"{_MAX_JSON_BYTES} bytes"
             )
         return v
