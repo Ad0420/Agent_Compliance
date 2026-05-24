@@ -13,10 +13,12 @@ import "server-only";
 
 import { getClerkBackendToken } from "./auth-server";
 
+// Single source of truth — matches `lib/api-client.ts` (browser fetch) and
+// `next.config.ts` (CSP). Keeping these in sync prevents the trap where a
+// Server Component falls back to localhost on Vercel while the browser
+// correctly hits Railway.
 const API_BASE =
-  process.env.VERA_API_URL ??
-  process.env.NEXT_PUBLIC_API_BASE ??
-  "http://localhost:8000";
+  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export class VeraApiError extends Error {
   status: number;
