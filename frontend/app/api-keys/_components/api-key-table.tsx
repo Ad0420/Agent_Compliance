@@ -4,12 +4,19 @@
  * Client island for the API keys page. Renders the table + the
  * create-key modal + the one-time raw-key reveal.
  *
+ * Phase 1 PR 4 (Stream C item C5): the create dialog now exposes a
+ * Sandbox / Production toggle. Switching to Production fetches the
+ * org's BAA status from `/api/dashboard/baa-status` (which proxies
+ * `GET /v1/organizations/me/baa-status`). When no active BAA exists,
+ * the "Create live key" button is disabled and an `<EmptyState>`
+ * deep-links into `/customers` where BAAs are uploaded.
+ *
  * The initial list is hydrated from a server-component fetch (via
  * `initialKeys`) so the first paint shows real data. After mutations
  * we re-fetch through the same server route handlers (`/api/dashboard/...`)
  * so the Clerk session token never has to be exposed to the client.
  */
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
@@ -25,6 +32,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { EmptyState } from "@/components/ui/empty-state";
 import {
   Table,
   TableBody,
@@ -33,6 +41,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Plus,
   Trash2,
@@ -42,11 +51,14 @@ import {
   Loader2,
 } from "lucide-react";
 
+type ApiKeyKind = "test" | "live";
+
 interface ApiKey {
   id: string;
   name: string;
   key_prefix: string;
   permissions: string[];
+  kind: ApiKeyKind;
   created_at: string;
   revoked_at: string | null;
   expires_at: string | null;
@@ -74,6 +86,46 @@ function formatDate(iso: string | null): string {
   }
 }
 
+// The backend now emits a *flat* error envelope for structured errors
+// (``{"code": "...", "detail": "...", "fix_url": "..."}``) via the
+// ``_flatten_dict_detail`` handler in ``backend/app/main.py``. Unstructured
+// errors still round-trip as FastAPI's default ``{"detail": "<string>"}``.
+// Accept both shapes so the dashboard keeps rendering useful copy whether
+// the backend lifts the dict or not.
+interface BackendErrorEnvelope {
+  code?: string;
+  fix_url?: string;
+  detail?:
+    | string
+    | {
+        code?: string;
+        detail?: string;
+        fix_url?: string;
+      };
+  error?: string;
+}
+
+function extractErrorCode(body: BackendErrorEnvelope): string | undefined {
+  if (typeof body.code === "string") return body.code;
+  const d = body.detail;
+  if (d && typeof d === "object" && typeof d.code === "string") return d.code;
+  return undefined;
+}
+
+function extractErrorMessage(body: BackendErrorEnvelope): string {
+  // Flat envelope path (post-#201 review fix).
+  if (typeof body.code === "string") {
+    if (typeof body.detail === "string") return body.detail;
+  }
+  const d = body.detail;
+  if (typeof d === "string") return d;
+  if (d && typeof d === "object" && typeof d.detail === "string") {
+    return d.detail;
+  }
+  if (typeof body.error === "string") return body.error;
+  return "Failed to create key.";
+}
+
 export function ApiKeyTable({ initialKeys, canMint, canRevoke }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -89,6 +141,9 @@ export function ApiKeyTable({ initialKeys, canMint, canRevoke }: Props) {
   );
   const [newKeyName, setNewKeyName] = useState("");
   const [newKeyPerms, setNewKeyPerms] = useState<string[]>(["read", "write"]);
+  // Phase 1 PR 4: default Sandbox. Production is opt-in so the safer tier
+  // is also the path of least resistance.
+  const [newKeyKind, setNewKeyKind] = useState<ApiKeyKind>("test");
   const [createdKey, setCreatedKey] = useState<ApiKeyCreated | null>(null);
   const [saveAck, setSaveAck] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -96,6 +151,36 @@ export function ApiKeyTable({ initialKeys, canMint, canRevoke }: Props) {
   const [createError, setCreateError] = useState<string | null>(null);
   const [revoking, setRevoking] = useState<string | null>(null);
   const [revokeConfirm, setRevokeConfirm] = useState<string | null>(null);
+
+  // BAA status: null = not yet fetched, undefined = fetch in progress,
+  // boolean = fetched. The tri-state lets us show a loading shimmer the
+  // first time the operator opens the Production tab without flashing
+  // the EmptyState before the fetch resolves.
+  const [baaActive, setBaaActive] = useState<boolean | null>(null);
+  const [baaLoading, setBaaLoading] = useState(false);
+
+  useEffect(() => {
+    // Only fetch when (a) the dialog is open, (b) Production is selected,
+    // and (c) we haven't already fetched. This avoids hitting the backend
+    // on every dialog mount — most operators stay in Sandbox.
+    if (!createOpen || newKeyKind !== "live" || baaActive !== null) return;
+    let cancelled = false;
+    setBaaLoading(true);
+    fetch("/api/dashboard/baa-status")
+      .then((res) => (res.ok ? res.json() : { active: false }))
+      .then((data: { active?: boolean }) => {
+        if (!cancelled) setBaaActive(Boolean(data?.active));
+      })
+      .catch(() => {
+        if (!cancelled) setBaaActive(false);
+      })
+      .finally(() => {
+        if (!cancelled) setBaaLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [createOpen, newKeyKind, baaActive]);
 
   const togglePerm = (perm: string) => {
     setNewKeyPerms((prev) =>
@@ -110,15 +195,40 @@ export function ApiKeyTable({ initialKeys, canMint, canRevoke }: Props) {
       const res = await fetch("/api/dashboard/api-keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: newKeyName, permissions: newKeyPerms }),
+        body: JSON.stringify({
+          name: newKeyName,
+          permissions: newKeyPerms,
+          kind: newKeyKind,
+        }),
       });
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        const detail =
-          typeof body?.error === "string"
-            ? body.error
-            : `Failed to create key (${res.status})`;
-        setCreateError(detail);
+        const body = (await res.json().catch(() => ({}))) as BackendErrorEnvelope;
+        setCreateError(extractErrorMessage(body));
+        // If the backend says no BAA, flip our cached state so the
+        // EmptyState renders on the next render cycle. Handles both the
+        // flat envelope (post-#201 review fix) and the legacy nested
+        // ``detail.code`` shape.
+        const code = extractErrorCode(body);
+        if (code === "baa_required" || code === "baa_expired") {
+          setBaaActive(false);
+          // Defensive re-fetch so cached client state doesn't drift from
+          // server truth. If a BAA was uploaded in another tab between the
+          // create attempt and the error response, ``/api/dashboard/baa-status``
+          // will say ``active: true`` and we correct the flip — otherwise
+          // we confirm the no-BAA EmptyState. Fire-and-forget; failure here
+          // just leaves the optimistic ``baaActive=false`` in place, which
+          // is the safer default.
+          fetch("/api/dashboard/baa-status")
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data: { active?: boolean } | null) => {
+              if (data && typeof data.active === "boolean") {
+                setBaaActive(data.active);
+              }
+            })
+            .catch(() => {
+              /* keep the pessimistic flip */
+            });
+        }
         return;
       }
       const created = (await res.json()) as ApiKeyCreated;
@@ -133,6 +243,7 @@ export function ApiKeyTable({ initialKeys, canMint, canRevoke }: Props) {
           name: created.name,
           key_prefix: created.key_prefix,
           permissions: created.permissions,
+          kind: created.kind,
           created_at: created.created_at,
           revoked_at: null,
           expires_at: created.expires_at,
@@ -151,9 +262,13 @@ export function ApiKeyTable({ initialKeys, canMint, canRevoke }: Props) {
     setCreatedKey(null);
     setNewKeyName("");
     setNewKeyPerms(["read", "write"]);
+    setNewKeyKind("test");
     setCreateError(null);
     setSaveAck(false);
     setCopied(false);
+    // Reset baaActive too so the next open re-fetches in case the operator
+    // uploaded a BAA in a different tab.
+    setBaaActive(null);
   };
 
   const handleCopy = async () => {
@@ -184,6 +299,18 @@ export function ApiKeyTable({ initialKeys, canMint, canRevoke }: Props) {
       setRevoking(null);
     }
   };
+
+  // Production tab is gated on BAA presence. Sandbox tab is always
+  // enabled. We don't disable the submit button on Sandbox, regardless
+  // of BAA state.
+  const productionBlocked =
+    newKeyKind === "live" && baaActive === false && !baaLoading;
+  const canSubmit =
+    Boolean(newKeyName.trim()) &&
+    newKeyPerms.length > 0 &&
+    !creating &&
+    !productionBlocked &&
+    !(newKeyKind === "live" && baaLoading);
 
   return (
     <div className="space-y-4">
@@ -232,6 +359,9 @@ export function ApiKeyTable({ initialKeys, canMint, canRevoke }: Props) {
                         )}
                       </Button>
                     </div>
+                    <p className="text-xs text-muted-foreground">
+                      Tier: <KindBadge kind={createdKey.kind} inline />
+                    </p>
                     <label className="flex items-center gap-2 text-sm">
                       <input
                         type="checkbox"
@@ -256,59 +386,97 @@ export function ApiKeyTable({ initialKeys, canMint, canRevoke }: Props) {
                     </DialogDescription>
                   </DialogHeader>
                   <div className="space-y-4">
-                    <div>
-                      <label className="text-sm font-medium">Name</label>
-                      <Input
-                        value={newKeyName}
-                        onChange={(e) => setNewKeyName(e.target.value)}
-                        placeholder="e.g. production-agent"
-                        className="mt-1"
-                      />
-                    </div>
-                    <div>
-                      <label className="text-sm font-medium">Permissions</label>
-                      <div className="mt-2 flex gap-2">
-                        {PERMISSIONS.map((perm) => (
-                          <Button
-                            key={perm}
-                            size="sm"
-                            variant={
-                              newKeyPerms.includes(perm) ? "default" : "outline"
-                            }
-                            onClick={() => togglePerm(perm)}
-                          >
-                            {perm}
-                          </Button>
-                        ))}
+                    <Tabs
+                      value={newKeyKind}
+                      onValueChange={(v) => setNewKeyKind(v as ApiKeyKind)}
+                    >
+                      <TabsList className="grid w-full grid-cols-2">
+                        <TabsTrigger value="test">Sandbox</TabsTrigger>
+                        <TabsTrigger value="live">Production</TabsTrigger>
+                      </TabsList>
+                    </Tabs>
+
+                    {newKeyKind === "live" && baaLoading ? (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Checking BAA status…
                       </div>
-                    </div>
-                    {createError && (
-                      <p className="text-sm text-red-400" role="alert">
-                        {createError}
-                      </p>
+                    ) : null}
+
+                    {productionBlocked ? (
+                      <EmptyState
+                        title="No active Business Associate Agreement on file"
+                        subtitle="Production keys require a signed BAA covering your customer. Upload one on the Customers page, then return here."
+                        ctaLabel="Go to Customers"
+                        ctaHref="/customers"
+                      />
+                    ) : (
+                      <>
+                        <div>
+                          <label className="text-sm font-medium">Name</label>
+                          <Input
+                            value={newKeyName}
+                            onChange={(e) => setNewKeyName(e.target.value)}
+                            placeholder={
+                              newKeyKind === "live"
+                                ? "e.g. production-agent"
+                                : "e.g. dev-laptop"
+                            }
+                            className="mt-1"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-sm font-medium">
+                            Permissions
+                          </label>
+                          <div className="mt-2 flex gap-2">
+                            {PERMISSIONS.map((perm) => (
+                              <Button
+                                key={perm}
+                                size="sm"
+                                variant={
+                                  newKeyPerms.includes(perm)
+                                    ? "default"
+                                    : "outline"
+                                }
+                                onClick={() => togglePerm(perm)}
+                              >
+                                {perm}
+                              </Button>
+                            ))}
+                          </div>
+                        </div>
+                        {newKeyKind === "live" && baaActive === true && (
+                          <p className="text-xs text-emerald-400">
+                            BAA on file — production key allowed.
+                          </p>
+                        )}
+                        {createError && (
+                          <p className="text-sm text-red-400" role="alert">
+                            {createError}
+                          </p>
+                        )}
+                      </>
                     )}
                   </div>
                   <DialogFooter>
                     <Button variant="outline" onClick={handleCloseCreate}>
                       Cancel
                     </Button>
-                    <Button
-                      onClick={handleCreate}
-                      disabled={
-                        !newKeyName.trim() ||
-                        newKeyPerms.length === 0 ||
-                        creating
-                      }
-                    >
-                      {creating ? (
-                        <>
-                          <Loader2 className="mr-1 h-4 w-4 animate-spin" />{" "}
-                          Creating…
-                        </>
-                      ) : (
-                        "Create"
-                      )}
-                    </Button>
+                    {!productionBlocked && (
+                      <Button onClick={handleCreate} disabled={!canSubmit}>
+                        {creating ? (
+                          <>
+                            <Loader2 className="mr-1 h-4 w-4 animate-spin" />{" "}
+                            Creating…
+                          </>
+                        ) : newKeyKind === "live" ? (
+                          "Create production key"
+                        ) : (
+                          "Create sandbox key"
+                        )}
+                      </Button>
+                    )}
                   </DialogFooter>
                 </>
               )}
@@ -323,6 +491,7 @@ export function ApiKeyTable({ initialKeys, canMint, canRevoke }: Props) {
             <TableHeader>
               <TableRow>
                 <TableHead>Name</TableHead>
+                <TableHead>Tier</TableHead>
                 <TableHead>Prefix</TableHead>
                 <TableHead>Permissions</TableHead>
                 <TableHead>Created</TableHead>
@@ -334,7 +503,7 @@ export function ApiKeyTable({ initialKeys, canMint, canRevoke }: Props) {
               {keys.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={canRevoke ? 6 : 5}
+                    colSpan={canRevoke ? 7 : 6}
                     className="py-8 text-center text-muted-foreground"
                   >
                     No API keys yet.
@@ -348,6 +517,9 @@ export function ApiKeyTable({ initialKeys, canMint, canRevoke }: Props) {
                     className={!key.is_active ? "opacity-50" : undefined}
                   >
                     <TableCell className="font-medium">{key.name}</TableCell>
+                    <TableCell>
+                      <KindBadge kind={key.kind} />
+                    </TableCell>
                     <TableCell className="font-mono text-xs">
                       {key.key_prefix}…
                     </TableCell>
@@ -424,5 +596,36 @@ export function ApiKeyTable({ initialKeys, canMint, canRevoke }: Props) {
         </p>
       )}
     </div>
+  );
+}
+
+function KindBadge({ kind, inline }: { kind: ApiKeyKind; inline?: boolean }) {
+  // Sandbox keys are visually de-emphasised (neutral grey) so production
+  // keys read as more weighty in the table — they're the ones an operator
+  // actually needs to be careful about.
+  if (kind === "live") {
+    return (
+      <Badge
+        className={
+          inline
+            ? "ml-1 bg-emerald-500/15 text-[10px] text-emerald-400"
+            : "bg-emerald-500/15 text-[10px] text-emerald-400"
+        }
+      >
+        Production
+      </Badge>
+    );
+  }
+  return (
+    <Badge
+      variant="outline"
+      className={
+        inline
+          ? "ml-1 text-[10px] text-muted-foreground"
+          : "text-[10px] text-muted-foreground"
+      }
+    >
+      Sandbox
+    </Badge>
   );
 }

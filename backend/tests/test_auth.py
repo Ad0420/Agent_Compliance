@@ -13,7 +13,11 @@ async def test_key_generation_produces_valid_hash(db_session, org_and_key):
     raw_key, api_key = await generate_api_key(
         db_session, org.id, "test-key", ["read"]
     )
-    assert raw_key.startswith("al_live_")
+    # Default-kind keys land in the sandbox tier (Phase 1 PR 4): the raw
+    # bearer surface visibly signals tier so a leaked key is identifiable
+    # from the first 8 chars.
+    assert raw_key.startswith("al_test_")
+    assert api_key.kind == "test"
     assert api_key.key_hash == _hash_key(raw_key)
     assert api_key.key_prefix == raw_key[:12]
 

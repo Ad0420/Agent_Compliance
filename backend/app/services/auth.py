@@ -249,9 +249,30 @@ def _hash_key(raw_key: str) -> str:
 async def generate_api_key(
     session: AsyncSession, org_id: str, name: str, permissions: list[str],
     expires_at=None,
+    kind: str = "test",
 ) -> tuple[str, APIKey]:
-    """Generate a new API key. Returns (raw_key, api_key_model)."""
-    raw_key = settings.api_key_prefix + secrets.token_urlsafe(32)
+    """Generate a new API key. Returns (raw_key, api_key_model).
+
+    ``kind`` defaults to ``'test'`` so legacy callers (and existing tests)
+    keep producing sandbox keys without code changes. Phase 1 PR 4
+    (Stream C item C1) wires the dashboard create endpoint to plumb
+    ``kind`` from the request body — BAA-gating is enforced at the
+    route layer BEFORE this function runs, so we don't re-check here.
+    The raw key prefix differentiates the tiers (``al_test_*`` vs
+    ``al_live_*``) so engineers can tell at a glance what tier a leaked
+    key belongs to. This matches the convention Stripe/Plaid/Resend use.
+    """
+    if kind not in ("test", "live"):
+        # Belt-and-braces: the create endpoint's Pydantic schema
+        # already restricts ``kind`` to the literal set, but other
+        # call sites (tests, bootstrap scripts) bypass the schema.
+        raise ValueError(f"invalid kind: {kind!r}; must be 'test' or 'live'")
+
+    # Tier-aware raw key prefix so engineers can tell at a glance whether
+    # a leaked key is sandbox or production. Stripe, Plaid, and Resend all
+    # follow this convention. The 12-char ``key_prefix`` we store in the DB
+    # picks up the tier suffix automatically.
+    raw_key = f"{settings.api_key_prefix}{kind}_" + secrets.token_urlsafe(32)
     key_hash = _hash_key(raw_key)
     key_prefix = raw_key[:12]
 
@@ -266,6 +287,7 @@ async def generate_api_key(
         key_prefix=key_prefix,
         permissions=permissions,
         expires_at=expires_at,
+        kind=kind,
     )
     session.add(api_key)
     await session.commit()
@@ -383,7 +405,19 @@ def require_permission(permission: str):
     Return tuple is ``(org_id, api_key)`` where ``api_key`` is ``None`` for
     Clerk-authenticated requests. Route handlers that need the APIKey row
     (e.g. for audit-log labels) must handle the ``None`` case.
+
+    Phase 1 PR 4 (Stream C item C2) layers a BAA freshness gate on the
+    API-key path: when the caller presents an ``api_key.kind == 'live'``
+    bearer, the dependency verifies the org has at least one active+scoped
+    BAA before returning. Sandbox keys (``kind='test'``) bypass the gate,
+    and Clerk humans browsing the dashboard bypass it entirely so an
+    operator can still upload the BAA that unblocks their own org.
     """
+    # Import locally to avoid a top-level circular: services.baa needs the
+    # ORM models which already import this module transitively. Resolving
+    # at call time keeps the import graph clean.
+    from .baa import is_org_baa_active
+
     async def _check(
         credentials: HTTPAuthorizationCredentials = Security(security),
         session: AsyncSession = Depends(get_db),
@@ -402,6 +436,31 @@ def require_permission(permission: str):
                     status_code=403,
                     detail=f"API key lacks '{permission}' permission",
                 )
+            # Live-key BAA gate. SDK PR #194 wired ``code='baa_expired'`` →
+            # ``PolicyBlock`` defensively; this is the activation moment.
+            # Response shape MUST stay in lockstep with the SDK mapping:
+            # ``{"code": "baa_expired", "detail": ..., "fix_url": ...}``.
+            # Sandbox keys (``kind='test'``) bypass — that's the whole point
+            # of the sandbox tier.
+            if api_key.kind == "live":
+                baa_active = await is_org_baa_active(session, api_key.org_id)
+                if not baa_active:
+                    # PHI-safety: we deliberately do NOT echo the BAA's
+                    # ``document_uri`` or any other agreement field here.
+                    # The dashboard can fetch the active BAA via the
+                    # customers surface if it needs the document link.
+                    raise HTTPException(
+                        status_code=403,
+                        detail={
+                            "code": "baa_expired",
+                            "detail": (
+                                "Live API keys require an active Business "
+                                "Associate Agreement on file for your "
+                                "organization."
+                            ),
+                            "fix_url": "/customers",
+                        },
+                    )
             return api_key.org_id, api_key
 
         try:

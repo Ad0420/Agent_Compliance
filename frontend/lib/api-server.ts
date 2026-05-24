@@ -87,11 +87,16 @@ export async function fetchFromVera<T = unknown>(
 // than in a client `api-client.ts` because they require the Clerk session
 // token, which is only available server-side.
 
+export type ApiKeyKind = "test" | "live";
+
 export interface DashboardApiKey {
   id: string;
   name: string;
   key_prefix: string;
   permissions: string[];
+  // Phase 1 PR 4 (Stream C item C5): tier surfaces in list + create
+  // responses so the dashboard can render a tier badge per row.
+  kind: ApiKeyKind;
   created_at: string;
   revoked_at: string | null;
   expires_at: string | null;
@@ -106,6 +111,15 @@ export interface DashboardApiKeyCreateInput {
   name: string;
   permissions?: string[];
   expires_at?: string | null;
+  // Optional on the wire — omitted defaults to "test" on the backend.
+  // Required visually in the dialog so the operator makes an explicit
+  // choice; that's enforced in the UI, not the type system.
+  kind?: ApiKeyKind;
+}
+
+export interface OrganizationBaaStatus {
+  active: boolean;
+  fix_url: string;
 }
 
 export function listDashboardApiKeys(): Promise<DashboardApiKey[]> {
@@ -125,6 +139,12 @@ export function revokeDashboardApiKey(keyId: string): Promise<unknown> {
   return fetchFromVera(`/v1/dashboard/api-keys/${encodeURIComponent(keyId)}`, {
     method: "DELETE",
   });
+}
+
+export function getOrganizationBaaStatus(): Promise<OrganizationBaaStatus> {
+  return fetchFromVera<OrganizationBaaStatus>(
+    "/v1/organizations/me/baa-status",
+  );
 }
 
 // ── Compliance dashboard helpers (Phase 4b F2) ──────────────────────────────
