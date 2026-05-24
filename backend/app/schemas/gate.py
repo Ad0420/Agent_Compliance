@@ -19,10 +19,19 @@ registered gates: ``BLOCK`` > ``REQUIRE_HITL`` > ``ALLOW``. That reduction
 will live in the evaluator once more than one gate exists.
 """
 
+import re
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+# Mirrors the tenant_id regex enforced on ``ActionRecordCreate``. Phase 2
+# gates evaluate the *proposed* action before the ledger sees it, so the
+# shape contract has to match — otherwise a PHI-shaped tenant_id could
+# pass the gate but be rejected by ``POST /v1/actions`` immediately after,
+# leaving the SDK in an unrecoverable state.
+_TENANT_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 class RulingEffect(str, Enum):
@@ -113,3 +122,21 @@ class GateEvaluateRequest(BaseModel):
     authorized_by: str = Field(..., min_length=1, max_length=500)
     input_data: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("tenant_id")
+    @classmethod
+    def _check_tenant_id_shape(cls, v: Optional[str]) -> Optional[str]:
+        """Reject malformed tenant_id at the gate boundary.
+
+        Mirrors the regex enforced on ``ActionRecordCreate.tenant_id``
+        so a payload that would be rejected by ``POST /v1/actions``
+        is also rejected by the gate — keeps the two boundaries in
+        lock-step.
+        """
+        if v is None or v == "":
+            return None
+        if not _TENANT_ID_RE.match(v):
+            raise ValueError(
+                "tenant_id must match ^[a-zA-Z0-9_-]{1,64}$"
+            )
+        return v
