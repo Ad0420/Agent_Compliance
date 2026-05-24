@@ -42,11 +42,13 @@ logger = logging.getLogger("vera")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: create all tables
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        if settings.database_url.startswith("sqlite"):
-            await conn.run_sync(install_sqlite_triggers)
+    # Local/test convenience only. Production schema changes are owned by
+    # Alembic so startup cannot silently create or drift tables.
+    if settings.environment == "development":
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            if settings.database_url.startswith("sqlite"):
+                await conn.run_sync(install_sqlite_triggers)
     logger.info("Vera API started — tables ready")
     yield
     # Shutdown: close DB connection pool

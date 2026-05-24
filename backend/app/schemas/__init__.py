@@ -16,6 +16,7 @@ from .checkpoint import (
     CheckpointVerifyAllResponse,
 )
 from .customer import (
+    BAADocumentUploadResponse,
     CustomerCreate,
     CustomerUpdate,
     CustomerResponse,
@@ -27,6 +28,7 @@ from .baa import (
     BAAScopeCreate,
     BAAScopeResponse,
 )
+from .export_job import ExportJobQueuedResponse, ExportJobResponse
 
 __all__ = [
     "ActionRecordCreate",
@@ -47,6 +49,7 @@ __all__ = [
     "CheckpointVerificationResult",
     "CheckpointListResponse",
     "CheckpointVerifyAllResponse",
+    "BAADocumentUploadResponse",
     "CustomerCreate",
     "CustomerUpdate",
     "CustomerResponse",
@@ -55,4 +58,6 @@ __all__ = [
     "BAAAgreementResponse",
     "BAAScopeCreate",
     "BAAScopeResponse",
+    "ExportJobQueuedResponse",
+    "ExportJobResponse",
 ]

@@ -2,7 +2,8 @@
 Async email alerting via Resend (https://resend.com).
 
 Gracefully skips sending if RESEND_API_KEY is not configured.
-All send functions are fire-and-forget: call with asyncio.create_task().
+Request paths should enqueue these through services.jobs so production
+deliveries survive process restarts.
 """
 import html as html_module
 import logging

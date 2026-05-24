@@ -2,7 +2,8 @@
 
 Limits requests per API key (or per IP for unauthenticated endpoints).
 Uses an in-memory store — suitable for single-instance deployments.
-For multi-instance, swap the store for Redis.
+For AWS production, prefer AWS WAF rate-based rules at the ALB/CloudFront
+edge and set RATE_LIMIT_ENABLED=false if the app-level limiter is redundant.
 """
 
 import hashlib
@@ -40,6 +41,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     def __init__(self, app, rpm: int = 0, burst: int = 0):
         super().__init__(app)
+        self.enabled = getattr(settings, "rate_limit_enabled", True)
         self.rpm = rpm or getattr(settings, "rate_limit_rpm", 120)
         self.burst = burst or getattr(settings, "rate_limit_burst", 20)
         self.window = 60.0  # 1 minute sliding window
@@ -69,7 +71,12 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 return f"jwt:{token_hash}"
             # API-key path: random suffix gives uniqueness across orgs.
             return f"key:{auth[7:23]}"
-        return f"ip:{request.client.host if request.client else 'unknown'}"
+        client_host = request.client.host if request.client else "unknown"
+        if settings.rate_limit_trust_proxy_headers:
+            forwarded = request.headers.get("x-forwarded-for")
+            if forwarded:
+                client_host = forwarded.split(",", 1)[0].strip() or client_host
+        return f"ip:{client_host}"
 
     def _is_allowed(self, key: str) -> tuple[bool, dict]:
         """Check if request is allowed. Returns (allowed, headers)."""
@@ -110,7 +117,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next) -> Response:
         # Skip rate limiting for health checks
-        if request.url.path == "/health":
+        if not self.enabled or request.url.path == "/health":
             return await call_next(request)
 
         key = self._get_key(request)

@@ -1,10 +1,8 @@
 name: Backend Migrations CI
 
-# Mirrors backend/start.sh: Railway bootstraps schema via SQLAlchemy's
-# create_all and then runs `alembic stamp b2c3d4e5f6a7 && alembic upgrade head`
-# to apply post-baseline migrations. This job exercises that exact path
-# against Postgres so we catch dialect-incompatible migrations (e.g. integer
-# defaults on BOOLEAN columns) before they take down a deploy.
+# Mirrors production startup: schema changes are owned by Alembic, not
+# SQLAlchemy create_all. This job exercises `alembic upgrade head` against
+# Postgres so dialect-incompatible migrations fail before deploy.
 
 on:
   pull_request:
@@ -47,20 +45,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r backend/requirements.txt
 
-      - name: Bootstrap schema via create_all (mirrors first-deploy path)
+      - name: Alembic upgrade head
         working-directory: backend
-        run: |
-          python - <<'PY'
-          import os
-          from sqlalchemy import create_engine
-          from app.models.base import Base
-          import app.models  # noqa: F401 — side-effect: registers tables
-          engine = create_engine(os.environ["DATABASE_URL"])
-          Base.metadata.create_all(engine)
-          PY
-
-      - name: Stamp baseline + alembic upgrade head
-        working-directory: backend
-        run: |
-          alembic stamp b2c3d4e5f6a7
-          alembic upgrade head
+        run: alembic upgrade head

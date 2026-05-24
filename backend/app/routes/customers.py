@@ -1,11 +1,12 @@
 """Customer CRUD endpoints (Phase 1 PR 2 + PR 13, Stream B item B1, Stream F item F2/F3/F4).
 
-Six endpoints, all scoped to the authenticated org:
+Seven endpoints, all scoped to the authenticated org:
 
   * ``GET    /v1/customers``                       — list with paging + filters
   * ``GET    /v1/customers/{tenant_id}``           — single Customer by tenant_id
   * ``PATCH  /v1/customers/{tenant_id}``           — update display_name + contacts
   * ``GET    /v1/customers/{tenant_id}/agents``    — AI Coverage Matrix rows (PR 13)
+  * ``POST   /v1/customers/{tenant_id}/baa/document`` — upload signed BAA PDF
   * ``POST   /v1/customers/{tenant_id}/baa``       — upload signed BAA (PR 13)
   * (``GET   /v1/customers?with_counts=1``)        — list with decision counts (PR 13)
 
@@ -17,13 +18,15 @@ from that surface gets a clear error rather than a silent ignore.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..config import settings
 from ..database import get_db
 from ..models import (
     ActionRecord,
@@ -35,6 +38,7 @@ from ..models import (
 )
 from ..schemas.customer import (
     BAAStatus,
+    BAADocumentUploadResponse,
     BAAUploadRequest,
     BAAUploadResponse,
     CustomerAgentCoverage,
@@ -46,8 +50,40 @@ from ..schemas.customer import (
 )
 from ..services.auth import require_permission
 from ..services.baa import invalidate_org_baa_cache
+from ..services.s3_documents import put_baa_pdf
 
 router = APIRouter(prefix="/customers", tags=["customers"])
+logger = logging.getLogger("vera.customers")
+
+
+async def _read_baa_pdf(file: UploadFile) -> bytes:
+    """Read and size-limit an uploaded BAA PDF."""
+    content_type = (file.content_type or "").lower()
+    filename = (file.filename or "").lower()
+    if content_type not in {"application/pdf", "application/octet-stream"}:
+        raise HTTPException(status_code=415, detail="BAA upload must be a PDF")
+    if filename and not filename.endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="BAA filename must end in .pdf")
+
+    max_bytes = settings.actionledger_baa_upload_max_bytes
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"BAA PDF exceeds max size of {max_bytes} bytes",
+            )
+        chunks.append(chunk)
+
+    body = b"".join(chunks)
+    if not body.startswith(b"%PDF-"):
+        raise HTTPException(status_code=400, detail="BAA upload is not a PDF")
+    return body
 
 
 def _naive_utc_now() -> datetime:
@@ -359,6 +395,49 @@ async def list_customer_agents(
 
 
 # ── PR 13: BAA upload (Phase 1 acceptance gate) ──────────────────────────
+
+
+@router.post(
+    "/{tenant_id}/baa/document",
+    response_model=BAADocumentUploadResponse,
+    status_code=201,
+)
+async def upload_customer_baa_document(
+    tenant_id: str,
+    file: UploadFile = File(...),
+    session: AsyncSession = Depends(get_db),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("admin")),
+):
+    """Upload a signed BAA PDF to S3 and return its document URI.
+
+    The caller then passes ``document_uri`` to POST /v1/customers/{tenant_id}/baa
+    to activate the BAA record and scope.
+    """
+    org_id, _ = auth
+    customer = await _resolve_customer_or_404(
+        session, org_id=org_id, tenant_id=tenant_id
+    )
+    body = await _read_baa_pdf(file)
+    try:
+        stored = await put_baa_pdf(
+            org_id=org_id,
+            customer_id=customer.id,
+            body=body,
+            content_type="application/pdf",
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("BAA document upload failed for org=%s", org_id)
+        raise HTTPException(status_code=503, detail="BAA document upload failed") from exc
+
+    return BAADocumentUploadResponse(
+        document_uri=stored.uri,
+        bucket=stored.bucket,
+        key=stored.key,
+        size_bytes=stored.size_bytes,
+        content_type=stored.content_type,
+    )
 
 
 @router.post(

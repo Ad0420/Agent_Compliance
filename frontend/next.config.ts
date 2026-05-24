@@ -77,6 +77,7 @@ const maturityLastUpdated = (() => {
 })();
 
 const nextConfig: NextConfig = {
+  output: "standalone",
   env: {
     NEXT_PUBLIC_MATURITY_LAST_UPDATED: maturityLastUpdated,
   },
