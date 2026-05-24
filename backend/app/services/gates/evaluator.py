@@ -2,19 +2,26 @@
 
 ``evaluate_gates`` is the single funnel that ``POST /v1/gates/evaluate``
 calls. It iterates the registered ``CLINICAL_SCRIBE_PACK``, collects
-per-gate ``Ruling`` objects, and reduces them via strictest-wins.
+per-gate ``Ruling`` objects, reduces them via strictest-wins, and
+materializes an ``Approval`` row when the winning ruling is
+``REQUIRE_HITL``.
 
 Reduction shape
 ---------------
 * ``BLOCK``         — any gate blocks → block (cites the regulation)
-* ``REQUIRE_HITL``  — no block, any gate requires HITL → HITL (a later
-  commit in this PR adds the ``Approval``-row side effect)
+* ``REQUIRE_HITL``  — no block, any gate requires HITL → HITL (creates
+  an ``Approval`` row and populates ``Ruling.review_id``)
 * ``ALLOW``         — no gate blocks or requires HITL → allow
 
 When no gate's ``applies()`` returns True for the proposed action, the
 evaluator short-circuits to a synthetic ALLOW with
 ``reason='no_gate_triggered'`` — preserving the Wave 2A behaviour that
 a non-clinical action sails through.
+
+This module owns the only call site of ``materialize_hitl_approval``
+so that all approval-row side effects flow through one chokepoint —
+keeps the contract auditable (PR A3 will layer dual ``review.*`` event
+emission on top of the same call site).
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ...packs import CLINICAL_SCRIBE_PACK
 from ...packs.base import GateContext
 from ...schemas.gate import GateEvaluateRequest, Ruling, RulingEffect
+from .hitl import materialize_hitl_approval
 from .reducer import reduce_rulings
 
 logger = logging.getLogger("vera.gates")
@@ -39,8 +47,11 @@ async def evaluate_gates(
     """Evaluate ``CLINICAL_SCRIBE_PACK`` against a proposed action.
 
     Strictest-wins reduction over the rulings from gates whose
-    ``applies()`` returned True. The next commit in this PR wires the
-    HITL-materialization side effect for ``REQUIRE_HITL`` winners.
+    ``applies()`` returned True. When the winner is ``REQUIRE_HITL``
+    we create the corresponding ``Approval`` row via
+    ``materialize_hitl_approval`` and return the ruling with
+    ``review_id`` populated so the SDK's ``@vera.gate`` decorator
+    (PR B1) can poll it.
     """
     ctx = GateContext(session=session, org_id=org_id, request=request)
 
@@ -92,5 +103,8 @@ async def evaluate_gates(
             "all_gates_triggered": [r.gate_name for r in rulings],
         },
     )
+
+    if winner.effect is RulingEffect.REQUIRE_HITL:
+        return await materialize_hitl_approval(session, org_id, request, winner)
 
     return winner

@@ -8,9 +8,9 @@ Order rationale
 ---------------
 1. ``StaleBaaGate``           — cheap (cached), often BLOCKs. Avoids
    running PHI-adjacent scans on payloads we'd refuse anyway.
+2. ``NewDiagnosisGate``       — cheap field-shape check.
 
-(Commits 4 and 5 of PR A2 extend this tuple with ``NewDiagnosisGate``
-and ``ControlledSubstanceGate``.)
+(Commit 5 of PR A2 appends ``ControlledSubstanceGate``.)
 
 The reducer's strictest-wins guarantee is order-independent, so this
 order is purely a runtime optimisation. Re-ordering at a later date
@@ -21,12 +21,14 @@ pin the documented expectation.
 from __future__ import annotations
 
 from ..base import GatePack
+from .new_diagnosis import NewDiagnosisGate
 from .stale_baa import StaleBaaGate
 
 CLINICAL_SCRIBE_PACK = GatePack(
     name="clinical_scribe",
     gates=(
         StaleBaaGate(),
+        NewDiagnosisGate(),
     ),
 )
 
