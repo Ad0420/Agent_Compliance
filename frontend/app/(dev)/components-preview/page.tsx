@@ -116,7 +116,7 @@ export default function ComponentsPreviewPage() {
           description="Dot + label and icon + label variants. Always paired with text — colour alone is never the signal."
         >
           <Row label="StatusDot">
-            <StatusDot variant="ok" label="Fully compliant" />
+            <StatusDot variant="ok" label="Chain intact" />
             <StatusDot variant="warn" label="BAA expires in 30 days" />
             <StatusDot variant="error" label="Chain integrity violation" />
             <StatusDot variant="muted" label="Not yet deployed" />
