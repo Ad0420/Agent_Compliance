@@ -10,7 +10,7 @@ from __future__ import annotations
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.schema import CreateTable
 
-from app.models import Approval
+from app.models import Approval, WebhookDelivery, WebhookDeliveryAttempt
 
 
 def test_approvals_create_table_postgres_renders_false_for_bool_default():
@@ -23,3 +23,33 @@ def test_approvals_create_table_postgres_renders_false_for_bool_default():
     assert "BOOLEAN" in bool_line, bool_line
     assert "DEFAULT false" in bool_line, bool_line
     assert "DEFAULT 0" not in bool_line, bool_line
+
+
+# ── Wave 2B PR A3 — webhook delivery tables ────────────────────────────────
+
+
+def test_webhook_deliveries_create_table_renders_on_postgres():
+    """Plain render-only — no DB connection. Catches any column-default
+    type mismatch (the same class of bug that broke A5's first push)
+    before alembic touches Postgres in CI.
+    """
+    ddl = str(
+        CreateTable(WebhookDelivery.__table__).compile(
+            dialect=postgresql.dialect()
+        )
+    )
+    # No accidental BOOLEAN columns sneaking in.
+    assert "BOOLEAN" not in ddl, ddl
+    # Composite unique index gets rendered with both columns.
+    assert "subscription_id" in ddl
+    assert "idempotency_key" in ddl
+
+
+def test_webhook_delivery_attempts_create_table_renders_on_postgres():
+    ddl = str(
+        CreateTable(WebhookDeliveryAttempt.__table__).compile(
+            dialect=postgresql.dialect()
+        )
+    )
+    assert "delivery_id" in ddl
+    assert "attempt_number" in ddl
