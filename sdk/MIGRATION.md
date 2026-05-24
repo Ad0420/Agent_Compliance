@@ -433,10 +433,10 @@ The 1.0.0 release adds the gate-evaluation HTTP call on the
 
 | Path                                              | Baseline | Regression threshold |
 |---------------------------------------------------|----------|----------------------|
-| `@vera.gate` decorator, cold call under bypass    | 5 ms     | 3x baseline = 15 ms  |
-| `@vera.gate` decorator, warm call under bypass    | 500 µs   | 3x baseline = 1.5 ms |
-| `resolve_tenant` with explicit kwarg              | 50 µs    | 3x baseline = 150 µs |
-| `resolve_tenant` from context manager             | 100 µs   | 3x baseline = 300 µs |
+| `@vera.gate` decorator, cold call under bypass    | 300 µs   | 3x baseline = 900 µs |
+| `@vera.gate` decorator, warm call under bypass    | 200 µs   | 3x baseline = 600 µs |
+| `resolve_tenant` with explicit kwarg              | 5 µs     | 3x baseline = 15 µs  |
+| `resolve_tenant` from context manager             | 5 µs     | 3x baseline = 15 µs  |
 
 The baselines are intentionally loose (3x is "catastrophic regression",
 not "micro-perf"). They're measured under `bypass_gates_cm()` so the

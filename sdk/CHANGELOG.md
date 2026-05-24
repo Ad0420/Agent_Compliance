@@ -18,9 +18,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Public surface (frozen until 2.0.0): `vera.init`, `vera.init_async`,
   `vera.init_async_awaitable`, `vera.get_client`, `vera.get_async_client`,
   `vera.VeraClient`, `vera.AsyncVeraClient`, `vera.gate`,
-  `vera.audit` (deprecated alias — removal in 2.0.0),
+  `vera.audit` (legacy alias — emits DeprecationWarning, removal in 2.0.0),
   `vera.is_bypassing_gates`, `vera.set_default_client`,
-  `vera.set_default_async_client`, `vera.async_audit` (deprecated alias),
+  `vera.set_default_async_client`,
+  `vera.async_audit` (legacy alias — codemod rewrites to `@vera.gate`,
+  removal in 2.0.0; no runtime warning today),
   `vera.Redactor`, `vera.set_default_redactor`, `vera.get_default_redactor`,
   `vera.tenant`, `vera.set_tenant`, `vera.reset_tenant`, `vera.get_tenant`,
   `vera.get_default_tenant`, `vera.set_default_tenant`, `vera.resolve_tenant`,
@@ -97,12 +99,17 @@ See the [1.0.0 migration guide](MIGRATION.md) for upgrade steps.
 ## [0.3.1] - 2026-05-24
 
 ### Added
-- `DeprecationWarning` emitted by `@vera.audit` (and `@vera.async_audit`)
-  pointing users at `@vera.gate` and `vera codemod audit-to-gate`. This
-  is a NO-OP functionally — the alias continues to capture
-  `ActionRecord`s with the legacy semantics. Purpose: give existing
-  pilots a visible warning on the 0.3 line BEFORE they upgrade to
-  1.0.0, so the move is intentional rather than surprise-on-pin.
+- `DeprecationWarning` emitted by `@vera.audit` pointing users at
+  `@vera.gate` and `vera codemod audit-to-gate`. This is a NO-OP
+  functionally — the alias continues to capture `ActionRecord`s with
+  the legacy semantics. Purpose: give existing pilots a visible
+  warning on the 0.3 line BEFORE they upgrade to 1.0.0, so the move
+  is intentional rather than surprise-on-pin. The warning fires once
+  per call site (deduped on `(filename, lineno)`) so a large codebase
+  with hundreds of `@vera.audit` call sites produces one warning per
+  site, not one per call. `@vera.async_audit` does NOT emit a
+  warning in `0.3.1` — pilots on `async_audit` should still run the
+  codemod and migrate to `@vera.gate`.
 - This release is intentionally identical to `0.3.0` plus the
   DeprecationWarning. Pilots who can't move yet should pin
   `vera-sdk>=0.3,<1`; the warning will guide them through the move

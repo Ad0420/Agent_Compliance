@@ -56,13 +56,24 @@ from vera.testing import bypass_gates_cm
 # Baselines (in microseconds) + global knobs.
 # ---------------------------------------------------------------------------
 
-# Baselines in microseconds. Loose by design — anything within 3x is
-# acceptable. These are SDK-only overhead numbers (HTTP is bypassed).
+# Baselines in microseconds. Sized to ~10x the observed median on
+# commodity dev hardware (local 2026-05-24 measurements: cold 28µs,
+# warm 20µs, tenant explicit 0.22µs, tenant ctxvar 0.09µs). The 10x
+# multiplier leaves headroom for slow shared CI runners while still
+# making the 3x REGRESSION_THRESHOLD meaningful — the previous
+# 5000µs / 500µs / 50µs / 100µs baselines were 50-1000x above actual
+# behavior, which would have let any plausible regression through.
+#
+# If you legitimately need to move a baseline UP (slow CI hardware,
+# new feature that adds work to the hot path), update the number AND
+# add a note to sdk/MIGRATION.md::Latency expectations explaining
+# why. Don't ratchet baselines silently — the whole point is that the
+# numbers are visible and reviewable.
 BASELINES_US: dict[str, float] = {
-    "gate_decorator_bypass_cold": 5000.0,
-    "gate_decorator_bypass_warm": 500.0,
-    "tenant_resolve_explicit": 50.0,
-    "tenant_resolve_context_var": 100.0,
+    "gate_decorator_bypass_cold": 300.0,
+    "gate_decorator_bypass_warm": 200.0,
+    "tenant_resolve_explicit": 5.0,
+    "tenant_resolve_context_var": 5.0,
 }
 
 # Multiplier above baseline that counts as a regression. 3x is
