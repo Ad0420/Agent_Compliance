@@ -613,6 +613,12 @@ class _AuditToGateTransformer(cst.CSTTransformer):
         Dedupe key: if the existing trailing comment already starts
         with the canonical TODO prefix, skip — running the codemod
         twice must NOT produce two TODO lines.
+
+        Comment-preservation: if the user already has a non-codemod
+        trailing comment on the line (e.g. ``# TODO: rotate this
+        key``), DO NOT clobber it. Emit the codemod TODO on a
+        separate leading comment line above the ``vera.init()`` call
+        instead. The user's comment must round-trip byte-for-byte.
         """
         if not self._pending_init_todo_for_line:
             return updated_node
@@ -624,11 +630,30 @@ class _AuditToGateTransformer(cst.CSTTransformer):
             # ``# TODO(audit-to-gate codemod): ...`` already present.
             return updated_node
 
-        # Splice the comment in as a trailing inline comment on the
-        # same line, exactly how ``# noqa`` annotations look. Keeps
+        # Dedupe check #2: a leading comment line above this statement
+        # might already carry the codemod TODO from a prior run.
+        for lead in updated_node.leading_lines:
+            if lead.comment and lead.comment.value.startswith(
+                _INIT_TODO_COMMENT.split(":", 1)[0]
+            ):
+                return updated_node
+
+        _bump(self.counters, "init_todos")
+
+        if existing_comment:
+            # User already has a trailing comment — preserve it and
+            # emit the codemod TODO as a NEW leading comment line above
+            # the ``vera.init()`` call. We keep any pre-existing leading
+            # blank lines / comments and append ours at the end so the
+            # TODO appears immediately above the call.
+            new_leading_lines = list(updated_node.leading_lines) + [
+                cst.EmptyLine(comment=cst.Comment(_INIT_TODO_COMMENT))
+            ]
+            return updated_node.with_changes(leading_lines=new_leading_lines)
+
+        # No existing trailing comment — splice ours in inline. Keeps
         # the diff minimal and lets the user delete it with one
         # keystroke once they've added ``agent_type=``.
-        _bump(self.counters, "init_todos")
         new_trailing = trailing.with_changes(
             whitespace=cst.SimpleWhitespace("  "),
             comment=cst.Comment(_INIT_TODO_COMMENT),
