@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Behavior change (backend-driven)
+- API keys minted with `kind="live"` now require an active BAA on the org.
+  Previously this field was silently dropped on the backend; now it's honored
+  and gated. Callers without a BAA get HTTP 403 `baa_required` (at mint time)
+  or `baa_expired` (per-request gate). Sandbox keys (`kind="test"`, the
+  default) are unaffected. The structured error envelope is now emitted at the
+  top level of the response body (`{"code": "baa_required", "fix_url": ...}`)
+  so the SDK's `wrap_httpx_error` dispatches to `PolicyBlock` via
+  `CODE_TO_ERROR_CLASS` without an SDK release. No client code changes
+  required — `except PolicyBlock` already catches it.
+
 ### Breaking (log surface only)
 - `VeraAuthError.code` is now `invalid_api_key` (was `auth`); `VeraTimeoutError.code`
   and `VeraNetworkError.code` are now `gate_timeout_or_network` (were `timeout` and
