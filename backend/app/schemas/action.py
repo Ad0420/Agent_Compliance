@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -12,6 +13,72 @@ _MAX_JSON_BYTES = 1_000_000  # 1 MB
 # the policy engine assigns it when a block-action policy fires; clients are
 # not allowed to claim a record was blocked themselves.
 _CLIENT_RESULT_VALUES = ("success", "failure", "partial", "pending")
+
+# ``tenant_id`` format. Matches the regex on ``Customer.tenant_id`` and is
+# tested in test_customer_schemas. Rejecting at the action boundary too
+# means we never auto-discover a Customer with an unprintable / PHI-shaped
+# tenant_id — the dashboard's display_name=tenant_id default would then
+# leak that shape to operators.
+_TENANT_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+# ── PHI-shape bridge guard for tenant_id (PR #195 review fix) ─────────
+# The base regex above permits underscored DOB / SSN shapes like
+# ``john_doe_19720314``. On first action with such a tenant_id,
+# auto-discovery sets ``display_name=tenant_id`` and the dashboard's AI
+# Coverage Matrix surfaces that string to operators — leaking the PHI
+# shape until manual rename. PR 5 lands the full heuristic from
+# policy_engine; until then this guard rejects the obvious shapes.
+#
+# Lean toward false-positive: under-blocking is a PHI risk, over-blocking
+# is a customer-visible 422 they can rename out of.
+
+# TODO(PR 5): replace with full heuristic from policy_engine
+# 9 consecutive digits anywhere (SSN-shaped).
+_SSN_RUN_RE = re.compile(r"\d{9}")
+# SSN with separators: 123-45-6789 / 123_45_6789.
+_SSN_SEPARATED_RE = re.compile(r"\d{3}[-_]\d{2}[-_]\d{4}")
+# Date with separators: 1972-03-14 / 1972_03_14 / 03-14-1972 / 03_14_1972.
+_DATE_YMD_SEP_RE = re.compile(r"\d{4}[-_]\d{2}[-_]\d{2}")
+_DATE_MDY_SEP_RE = re.compile(r"\d{2}[-_]\d{2}[-_]\d{4}")
+# 8-digit runs — checked numerically below against YYYYMMDD / MMDDYYYY.
+_EIGHT_DIGIT_RUN_RE = re.compile(r"(?<!\d)(\d{8})(?!\d)")
+
+
+def _looks_like_yyyymmdd(digits: str) -> bool:
+    """True if 8 digits parse as a plausible YYYYMMDD date (1900-2050)."""
+    y, m, d = int(digits[0:4]), int(digits[4:6]), int(digits[6:8])
+    return 1900 <= y <= 2050 and 1 <= m <= 12 and 1 <= d <= 31
+
+
+def _looks_like_mmddyyyy(digits: str) -> bool:
+    """True if 8 digits parse as a plausible MMDDYYYY date (1900-2050)."""
+    m, d, y = int(digits[0:2]), int(digits[2:4]), int(digits[4:8])
+    return 1900 <= y <= 2050 and 1 <= m <= 12 and 1 <= d <= 31
+
+
+def _detect_phi_shape(tenant_id: str) -> bool:
+    """Return True if tenant_id contains an obvious PHI-shaped substring.
+
+    Detects:
+      * SSN: 9 consecutive digits OR ``\\d{3}[-_]\\d{2}[-_]\\d{4}``
+      * Date with separator: ``\\d{4}[-_]\\d{2}[-_]\\d{2}`` or
+        ``\\d{2}[-_]\\d{2}[-_]\\d{4}``
+      * Bare 8-digit run that parses as ``YYYYMMDD`` or ``MMDDYYYY``
+        within 1900-2050.
+    """
+    if _SSN_RUN_RE.search(tenant_id):
+        return True
+    if _SSN_SEPARATED_RE.search(tenant_id):
+        return True
+    if _DATE_YMD_SEP_RE.search(tenant_id):
+        return True
+    if _DATE_MDY_SEP_RE.search(tenant_id):
+        return True
+    for match in _EIGHT_DIGIT_RUN_RE.finditer(tenant_id):
+        digits = match.group(1)
+        if _looks_like_yyyymmdd(digits) or _looks_like_mmddyyyy(digits):
+            return True
+    return False
 
 
 def _validate_json_size(v: dict | list, field_name: str) -> dict | list:
@@ -58,6 +125,26 @@ class ActionRecordCreate(BaseModel):
     reasoning: dict = Field(default_factory=dict)
     outcome: dict = Field(default_factory=dict)
     metadata: dict = Field(default_factory=dict)
+
+    @field_validator("tenant_id")
+    @classmethod
+    def check_tenant_id_format(cls, v: Optional[str]) -> Optional[str]:
+        """Reject malformed tenant_id at the API boundary (Phase 1 PR 2 B4).
+
+        Test plan: ``tenant_id="John Doe DOB 1972"`` → 422 (the regex
+        rejects whitespace and the digits-with-spaces shape that screams
+        "I'm a patient name"). ``tenant_id="cleveland_clinic"`` → 200.
+
+        Falsy values pass through as ``None`` — the field is optional on
+        the SDK side until Phase 1 PR 4 makes it required for live keys.
+        """
+        if v is None or v == "":
+            return None
+        if not _TENANT_ID_RE.match(v):
+            raise ValueError(
+                "tenant_id must match ^[a-zA-Z0-9_-]{1,64}$"
+            )
+        return v
 
     @field_validator("result")
     @classmethod

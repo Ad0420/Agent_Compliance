@@ -3,6 +3,7 @@ from .agents import router as agents_router
 from .verification import router as verification_router
 from .organizations import router as organizations_router
 from .checkpoints import router as checkpoints_router
+from .customers import router as customers_router
 from .export import router as export_router
 from .register import router as register_router
 from .policies import router as policies_router
@@ -20,6 +21,7 @@ __all__ = [
     "verification_router",
     "organizations_router",
     "checkpoints_router",
+    "customers_router",
     "export_router",
     "register_router",
     "policies_router",

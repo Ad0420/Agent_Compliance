@@ -14,6 +14,7 @@ from .routes import (
     verification_router,
     organizations_router,
     checkpoints_router,
+    customers_router,
     export_router,
     register_router,
     policies_router,
@@ -97,6 +98,7 @@ async def health_check():
 app.include_router(actions_router, prefix="/v1")
 app.include_router(agents_router, prefix="/v1")
 app.include_router(checkpoints_router, prefix="/v1")
+app.include_router(customers_router, prefix="/v1")
 app.include_router(verification_router, prefix="/v1")
 app.include_router(organizations_router, prefix="/v1")
 app.include_router(export_router, prefix="/v1")
