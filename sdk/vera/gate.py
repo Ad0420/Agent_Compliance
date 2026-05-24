@@ -526,9 +526,12 @@ def _raise_wire_shape_mismatch_422(resp: Any, body: Any) -> None:
             f"POST {GATE_EVALUATE_PATH} returned 422 (request shape rejected). "
             "Likely SDK / backend version skew — the SDK is sending the new "
             "GateEvaluateRequest body shape but the backend rejected one or "
-            "more fields. Upgrade the backend to the version that shipped "
-            "PR #212, or pin the SDK to <1.1.0 if a backend upgrade is not "
-            "possible."
+            "more fields. Upgrade the backend to the release that shipped "
+            "the Wave 2A gate-evaluate contract (PR #212), or pin the SDK "
+            "to the last pre-1.0.1 release if a backend upgrade is not "
+            "possible. See "
+            "https://docs.usevera.xyz/sdk/version-compat for the compatibility "
+            "matrix."
         ),
         status_code=422,
         request_id=rid,
