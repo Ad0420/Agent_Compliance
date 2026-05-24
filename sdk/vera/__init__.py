@@ -184,6 +184,10 @@ def init(
             binding still resolve. Validated against
             ``^[a-zA-Z0-9_-]{1,64}$``; an invalid value raises
             :class:`TenantMissingOrInvalid` before the client is built.
+            To clear a previously-registered default at runtime (e.g.
+            for test isolation, since the binding lives on a
+            module-level variable that persists across :func:`init`
+            calls), call ``vera.set_default_tenant(None)``.
         **client_kwargs: Passed through to :class:`VeraClient` (e.g.
             ``timeout``, ``batch_size``, ``redactor``).
 
