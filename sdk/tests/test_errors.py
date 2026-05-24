@@ -635,3 +635,150 @@ class TestDocsUrlRenameWarnings:
         messages = [str(w.message) for w in dep_warnings]
         assert any("VeraTimeoutError" in m for m in messages)
         assert any("VeraNetworkError" in m for m in messages)
+
+
+# ---------------------------------------------------------------------------
+# Wave 2B PR B1 — new optional attrs on PolicyBlock + PendingReview
+# ---------------------------------------------------------------------------
+
+
+class TestPolicyBlockNewAttrs:
+    """B1 adds ``gate_name`` / ``reason_detail`` / ``required_role`` to
+    ``PolicyBlock`` so the SDK can echo the new fields from the backend
+    ``Ruling`` envelope. Existing v1.0.x callers
+    (``PolicyBlock("reason", "cite")``) MUST keep working.
+    """
+
+    def test_legacy_signature_still_works_with_new_attrs_defaulting(self):
+        # The v1.0.x call shape. ``except PolicyBlock as e: e.reason`` /
+        # ``.citation`` / ``.fix_url`` / ``.retryable`` keeps working;
+        # new attrs default to falsy.
+        err = PolicyBlock(
+            "BAA expired",
+            "HIPAA § 164.504(e)",
+            fix_url="https://example.com/fix",
+            retryable=True,
+        )
+        assert err.reason == "BAA expired"
+        assert err.citation == "HIPAA § 164.504(e)"
+        assert err.fix_url == "https://example.com/fix"
+        assert err.retryable is True
+        # B1 new attrs default safely.
+        assert err.gate_name == ""
+        assert err.reason_detail is None
+        assert err.required_role is None
+
+    def test_new_attrs_populated_via_keyword(self):
+        err = PolicyBlock(
+            reason="Controlled substance detected",
+            citation="21 CFR § 1306.05",
+            fix_url="https://app.usevera.xyz/policy/cs",
+            gate_name="controlled_substance_block",
+            reason_detail="Schedule II opioid detected in prescription draft",
+            required_role="dea_authorized",
+        )
+        assert err.gate_name == "controlled_substance_block"
+        assert err.reason_detail == (
+            "Schedule II opioid detected in prescription draft"
+        )
+        assert err.required_role == "dea_authorized"
+
+    def test_reason_detail_drives_developer_reason_when_present(self):
+        err = PolicyBlock(
+            reason="block",
+            reason_detail="Outbound payload exceeded the 1 MB cap.",
+        )
+        # ``reason_detail`` is engineer-grade, so it wins over the
+        # synthesised "reason (citation=...)" string when present.
+        assert err.developer_reason == (
+            "Outbound payload exceeded the 1 MB cap."
+        )
+
+    def test_to_dict_carries_new_attrs(self):
+        err = PolicyBlock(
+            reason="x",
+            gate_name="g",
+            reason_detail="rd",
+            required_role="rr",
+        )
+        d = err.to_dict()
+        assert d["gate_name"] == "g"
+        assert d["reason_detail"] == "rd"
+        assert d["required_role"] == "rr"
+
+    def test_fix_url_appended_to_str_when_non_default(self):
+        # The new ``[fix=...]`` token in VeraError.__str__ MUST appear
+        # only when fix_url differs from the class default — otherwise
+        # existing snapshot tests for v0.3.x str(err) outputs break.
+        custom = PolicyBlock(
+            reason="r",
+            fix_url="https://app.usevera.xyz/policy/cs",
+        )
+        assert "[fix=https://app.usevera.xyz/policy/cs]" in str(custom)
+
+    def test_fix_url_not_appended_to_str_when_default(self):
+        # When fix_url is the class default (SUPPORT_URL), it's NOT
+        # appended to str() — keeps existing log/snapshot patterns stable.
+        default = PolicyBlock(reason="r")
+        assert "[fix=" not in str(default)
+
+
+class TestPendingReviewNewAttrs:
+    """B1 adds ``gate_name`` / ``reason`` / ``reason_detail`` / ``citation``
+    to ``PendingReview``.
+    """
+
+    def test_legacy_signature_still_works_with_new_attrs_defaulting(self):
+        err = PendingReview(
+            "rev-x",
+            required_role="attending_physician",
+        )
+        assert err.review_id == "rev-x"
+        assert err.required_role == "attending_physician"
+        # B1 new attrs default safely.
+        assert err.gate_name == ""
+        assert err.reason == ""
+        assert err.reason_detail is None
+        assert err.citation is None
+
+    def test_new_attrs_populated_via_keyword(self):
+        err = PendingReview(
+            review_id="rev-1",
+            required_role="attending_physician",
+            gate_name="chart_note_commit_attending_required",
+            reason="Sensitive change requires attending sign-off",
+            reason_detail="Final HPI section edited by non-attending agent",
+            citation="HIPAA § 164.524",
+        )
+        assert err.gate_name == "chart_note_commit_attending_required"
+        assert err.reason == "Sensitive change requires attending sign-off"
+        assert err.reason_detail == (
+            "Final HPI section edited by non-attending agent"
+        )
+        assert err.citation == "HIPAA § 164.524"
+
+    def test_reason_detail_drives_developer_reason_when_present(self):
+        err = PendingReview(
+            review_id="rev-1",
+            required_role="attending_physician",
+            reason_detail="Final HPI section edited by non-attending agent",
+        )
+        # Engineer-grade reason_detail wins over the synthesised
+        # "review_id=...; required_role=..." string.
+        assert err.developer_reason == (
+            "Final HPI section edited by non-attending agent"
+        )
+
+    def test_to_dict_carries_new_attrs(self):
+        err = PendingReview(
+            review_id="rev-1",
+            gate_name="g",
+            reason="r",
+            reason_detail="rd",
+            citation="c",
+        )
+        d = err.to_dict()
+        assert d["gate_name"] == "g"
+        assert d["reason"] == "r"
+        assert d["reason_detail"] == "rd"
+        assert d["citation"] == "c"

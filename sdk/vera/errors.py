@@ -175,9 +175,16 @@ class VeraError(Exception):
         self.docs_url = docs_url if docs_url is not None else _docs_url_for(self.code)
         # Preserve the v0.3.x rendered string so existing tests and log
         # patterns (request_id=..., — see docs URL) keep working.
+        # The new ``[fix=...]`` token is additive and ONLY appears when
+        # the caller customised ``fix_url`` away from the class default
+        # (i.e. the backend returned a remediation URL). Snapshot tests
+        # that match on the v0.3.x string still pass — they didn't set
+        # ``fix_url`` so the token doesn't render. Wave 2B PR B1.
         suffix = ""
         if request_id:
             suffix += f" [request_id={request_id}]"
+        if self.fix_url and self.fix_url != self.default_fix_url:
+            suffix += f" [fix={self.fix_url}]"
         suffix += f" — see {self.docs_url}"
         rendered = f"{message}{suffix}" if message else self.developer_reason + suffix
         super().__init__(rendered)
@@ -341,6 +348,13 @@ class PolicyBlock(VeraError):
         *,
         fix_url: str | None = None,
         retryable: bool = False,
+        # --- NEW in Wave 2B PR B1 (additive; all default to falsy so
+        # existing v1.0.x callers ``PolicyBlock("reason", "cite")`` and
+        # ``except PolicyBlock as e: e.reason`` keep working unchanged).
+        gate_name: str = "",
+        reason_detail: str | None = None,
+        required_role: str | None = None,
+        # ---
         user_facing_reason: str | None = None,
         developer_reason: str | None = None,
         request_id: str | None = None,
@@ -350,12 +364,21 @@ class PolicyBlock(VeraError):
         self.reason = reason
         self.citation = citation
         self.retryable = retryable
+        self.gate_name = gate_name
+        self.reason_detail = reason_detail
+        self.required_role = required_role
         # ``developer_reason`` defaults to "<reason> (citation=<citation>)"
-        # so logs make it obvious which rule fired.
-        if developer_reason is None and reason:
-            developer_reason = (
-                f"{reason} (citation={citation})" if citation else reason
-            )
+        # so logs make it obvious which rule fired. When ``reason_detail``
+        # is present, prefer it — it's the engineer-grade explanation the
+        # gate provided (the SDK already runs it through the PHI redactor
+        # in ``gate._safe_reason_detail`` before stamping it here).
+        if developer_reason is None:
+            if reason_detail:
+                developer_reason = reason_detail
+            elif reason:
+                developer_reason = (
+                    f"{reason} (citation={citation})" if citation else reason
+                )
         super().__init__(
             reason,
             request_id=request_id,
@@ -372,6 +395,9 @@ class PolicyBlock(VeraError):
             reason=self.reason,
             citation=self.citation,
             retryable=self.retryable,
+            gate_name=self.gate_name,
+            reason_detail=self.reason_detail,
+            required_role=self.required_role,
         )
         return d
 
@@ -408,6 +434,14 @@ class PendingReview(VeraError):
         webhook_url: str | None = None,
         required_role: str | None = None,
         *,
+        # --- NEW in Wave 2B PR B1 (additive; all default to falsy so
+        # ``except PendingReview as e: e.review_id`` patterns keep
+        # working unchanged on existing v1.0.x callers).
+        gate_name: str = "",
+        reason: str = "",
+        reason_detail: str | None = None,
+        citation: str | None = None,
+        # ---
         user_facing_reason: str | None = None,
         developer_reason: str | None = None,
         fix_url: str | None = None,
@@ -419,13 +453,25 @@ class PendingReview(VeraError):
         self.expected_resolution = expected_resolution
         self.webhook_url = webhook_url
         self.required_role = required_role
+        self.gate_name = gate_name
+        self.reason = reason
+        self.reason_detail = reason_detail
+        self.citation = citation
         if developer_reason is None:
-            parts = ["Gate evaluation returned REQUIRE_HITL"]
-            if review_id:
-                parts.append(f"review_id={review_id}")
-            if required_role:
-                parts.append(f"required_role={required_role}")
-            developer_reason = "; ".join(parts) + "."
+            # Prefer the gate's ``reason_detail`` when present (engineer
+            # grade per the Ruling contract; PHI-scrubbed upstream by
+            # ``gate._safe_reason_detail``). Fall through to the legacy
+            # structured "review_id=...; required_role=..." string for
+            # callers that don't supply ``reason_detail`` (back-compat).
+            if reason_detail:
+                developer_reason = reason_detail
+            else:
+                parts = ["Gate evaluation returned REQUIRE_HITL"]
+                if review_id:
+                    parts.append(f"review_id={review_id}")
+                if required_role:
+                    parts.append(f"required_role={required_role}")
+                developer_reason = "; ".join(parts) + "."
         message = f"Pending review {review_id}" if review_id else "Pending review"
         super().__init__(
             message,
@@ -448,6 +494,10 @@ class PendingReview(VeraError):
             ),
             webhook_url=self.webhook_url,
             required_role=self.required_role,
+            gate_name=self.gate_name,
+            reason=self.reason,
+            reason_detail=self.reason_detail,
+            citation=self.citation,
         )
         return d
 
