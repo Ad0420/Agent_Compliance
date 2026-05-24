@@ -210,15 +210,23 @@ class _ImportBindings:
 
 
 class _ImportCollector(cst.CSTVisitor):
-    """Scan top-level imports to build :class:`_ImportBindings`."""
+    """Scan top-level imports to build :class:`_ImportBindings`.
+
+    Important: ``vera_module_names`` starts EMPTY and is populated only
+    when we actually observe an ``import vera`` / ``import vera as X``
+    or ``from vera import ...`` statement. We must NOT pre-populate
+    ``"vera"`` unconditionally — files that do ``from myproject import
+    vera`` bind ``vera`` to an unrelated symbol; rewriting
+    ``vera.audit`` in such a file would corrupt user code.
+
+    When we DO observe ``from vera import ...``, we add ``"vera"`` to
+    the set because callers often type ``@vera.audit`` after that even
+    without an explicit ``import vera`` — but only on the
+    well-evidenced assumption the SDK is actually in scope.
+    """
 
     def __init__(self) -> None:
         self.bindings = _ImportBindings()
-        # ``vera`` is conventionally available — even when no explicit
-        # ``import vera`` exists at the top of the file, callers will
-        # often type ``@vera.audit`` after a ``from vera import ...``.
-        # We treat ``vera`` as always-in-scope to catch this.
-        self.bindings.vera_module_names.add("vera")
 
     def visit_Import(self, node: cst.Import) -> None:
         for alias in node.names:
@@ -236,6 +244,14 @@ class _ImportCollector(cst.CSTVisitor):
         module = _flatten_attr(node.module) if node.module else ""
         if module != "vera":
             return
+        # We saw a real ``from vera import ...`` — the bare name
+        # ``vera`` is plausibly in scope too (callers routinely mix
+        # ``from vera import X`` with bare ``@vera.audit`` references
+        # when ``vera`` is also imported via re-export). This matches
+        # the previous heuristic but is gated on observing a real
+        # ``vera`` reference rather than firing unconditionally.
+        self.bindings.vera_module_names.add("vera")
+
         if isinstance(node.names, cst.ImportStar):
             # ``from vera import *`` — we conservatively assume any
             # ``@audit(...)`` / ``@async_audit(...)`` references the
