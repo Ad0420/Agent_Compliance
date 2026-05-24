@@ -375,7 +375,17 @@ class _AuditToGateTransformer(cst.CSTTransformer):
         # ``async_audit`` both imported), we keep only the first to
         # avoid emitting a duplicate import alias. The second is
         # dropped since the local name is the same.
-        gate_seen_in_imports = False
+        #
+        # Pre-scan so we detect ``from vera import audit, gate`` and
+        # drop the ``audit`` rewrite outright (finding #5) — otherwise
+        # iteration order would produce ``from vera import gate,
+        # gate`` when ``audit`` happened to come before ``gate``.
+        gate_seen_in_imports = any(
+            isinstance(a.name, cst.Name)
+            and a.name.value == "gate"
+            and not a.asname
+            for a in updated_node.names
+        )
         for alias in updated_node.names:
             if (
                 isinstance(alias.name, cst.Name)
@@ -704,6 +714,19 @@ class _AuditToGateTransformer(cst.CSTTransformer):
         original_node: cst.Module,
         updated_node: cst.Module,
     ) -> cst.Module:
+        # Second pass: rewrite bare ``audit`` / ``async_audit`` Name
+        # references in non-decorator positions (finding #4). The
+        # decorator pass only handles ``@audit(...)``; bare references
+        # like ``decorated = audit('y')(fn)`` are left unbound after
+        # the import rewrite. Only fires when the original import was
+        # the SDK's (bare_audit_names is non-empty).
+        if self.bindings.bare_audit_names:
+            renamer = _BareAuditRenamer(
+                bare_audit_names=self.bindings.bare_audit_names,
+                counters=self.counters,
+            )
+            updated_node = updated_node.visit(renamer)
+
         if not self.options.wrap_callsites:
             return updated_node
         if not self._gate_decorated_funcs:
@@ -889,6 +912,101 @@ class _CallsiteWrapper(cst.CSTTransformer):
             return cst.Name(sorted(self.bindings.policy_block_names)[0])
         self.needs_pending_block_import = True
         return cst.Name("PolicyBlock")
+
+
+class _BareAuditRenamer(cst.CSTTransformer):
+    """Rename bare ``audit`` / ``async_audit`` Name references to ``gate``.
+
+    Phase 1 PR 9 finding #4. The decorator pass only catches
+    ``@audit(...)`` shapes. Non-decorator references like::
+
+        decorated = audit("x")(fn)
+        callback = async_audit
+
+    were left unbound after the import rewrite renamed ``audit`` →
+    ``gate``. This second-pass walker fixes that.
+
+    Scope rules:
+
+    * Only rewrites bare ``Name`` nodes whose value is in
+      ``bare_audit_names`` (i.e. ``from vera import audit`` was
+      observed — NOT ``from vera import audit as a``, since the alias
+      target was already renamed to ``gate`` and the local alias
+      ``a`` continues to work).
+    * Skips ``Name`` nodes inside ``Import`` / ``ImportFrom`` (the
+      import rewriter already handled those, and our rename would
+      double-translate).
+    * Skips attribute-access ``Name`` nodes (``foo.audit`` is the
+      ``foo`` part — we only want top-level Name references).
+    """
+
+    def __init__(
+        self,
+        bare_audit_names: set[str],
+        counters: dict[str, int],
+    ) -> None:
+        super().__init__()
+        self.bare_audit_names = bare_audit_names
+        self.counters = counters
+        # Depth counter so leave_Name knows to skip when inside an
+        # import statement (where the import rewriter owns the
+        # transformation).
+        self._inside_import_depth = 0
+
+    def visit_Import(self, node: cst.Import) -> None:
+        self._inside_import_depth += 1
+
+    def leave_Import(
+        self, original_node: cst.Import, updated_node: cst.Import
+    ) -> cst.Import:
+        self._inside_import_depth -= 1
+        return updated_node
+
+    def visit_ImportFrom(self, node: cst.ImportFrom) -> None:
+        self._inside_import_depth += 1
+
+    def leave_ImportFrom(
+        self,
+        original_node: cst.ImportFrom,
+        updated_node: cst.ImportFrom,
+    ) -> cst.BaseSmallStatement:
+        self._inside_import_depth -= 1
+        return updated_node
+
+    def leave_Name(
+        self, original_node: cst.Name, updated_node: cst.Name
+    ) -> cst.BaseExpression:
+        if self._inside_import_depth > 0:
+            return updated_node
+        if updated_node.value not in self.bare_audit_names:
+            return updated_node
+        _bump(self.counters, "bare_name_rewrites")
+        return cst.Name("gate")
+
+    def leave_Attribute(
+        self,
+        original_node: cst.Attribute,
+        updated_node: cst.Attribute,
+    ) -> cst.BaseExpression:
+        # The attribute portion (``.audit``) is a Name node visited by
+        # leave_Name. If the user has ``vera.audit`` or some other
+        # ``obj.audit``, that bare-name rename would corrupt the
+        # attribute access (turn it into ``vera.gate`` when it might
+        # not be the SDK's vera). Restore the original attr if the
+        # base is anything other than the bare ``Name`` we own.
+        #
+        # In practice: the decorator pass handles ``vera.audit``
+        # explicitly; everywhere else ``.audit`` is user code and must
+        # not be auto-renamed. Use the original_node's attr to
+        # restore it.
+        if (
+            isinstance(updated_node.attr, cst.Name)
+            and updated_node.attr.value == "gate"
+            and isinstance(original_node.attr, cst.Name)
+            and original_node.attr.value in self.bare_audit_names
+        ):
+            return updated_node.with_changes(attr=original_node.attr)
+        return updated_node
 
 
 def _inject_pending_block_import(module: cst.Module) -> cst.Module:
