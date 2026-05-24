@@ -40,7 +40,12 @@ FIXTURE_DIR = Path(__file__).parent / "codemod_fixtures"
 
 # Fixtures that exercise the opt-in transforms (``--wrap-callsites``).
 # Everything else runs with the default options.
-_WRAP_FIXTURES = {"with_existing_try_except", "wraps_callsite"}
+_WRAP_FIXTURES = {
+    "with_existing_try_except",
+    "wraps_callsite",
+    "wraps_callsite_from_import",
+    "wraps_callsite_no_vera_in_scope",
+}
 
 
 def _fixture_names() -> list[str]:

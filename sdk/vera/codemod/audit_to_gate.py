@@ -207,6 +207,14 @@ class _ImportBindings:
     #: Local names bound to the ``vera`` module via ``import vera`` or
     #: ``import vera as v``. Used to detect ``@<name>.audit(...)``.
     vera_module_names: set[str] = field(default_factory=set)
+    #: Local names bound to ``vera.PendingReview`` via
+    #: ``from vera import PendingReview`` (or aliased). Used by the
+    #: wrap-callsites transform to decide whether to emit qualified
+    #: ``vera.PendingReview`` or unqualified ``PendingReview`` (or
+    #: inject a fresh ``from vera import PendingReview, PolicyBlock``).
+    pending_review_names: set[str] = field(default_factory=set)
+    #: Local names bound to ``vera.PolicyBlock`` (see above).
+    policy_block_names: set[str] = field(default_factory=set)
 
 
 class _ImportCollector(cst.CSTVisitor):
@@ -244,30 +252,43 @@ class _ImportCollector(cst.CSTVisitor):
         module = _flatten_attr(node.module) if node.module else ""
         if module != "vera":
             return
-        # We saw a real ``from vera import ...`` — the bare name
-        # ``vera`` is plausibly in scope too (callers routinely mix
-        # ``from vera import X`` with bare ``@vera.audit`` references
-        # when ``vera`` is also imported via re-export). This matches
-        # the previous heuristic but is gated on observing a real
-        # ``vera`` reference rather than firing unconditionally.
-        self.bindings.vera_module_names.add("vera")
+        # Intentionally do NOT pre-populate ``vera_module_names`` from
+        # ``from vera import ...``. The bare name ``vera`` is only in
+        # scope if an explicit ``import vera`` is also present (else
+        # ``vera.X`` would NameError at runtime, which is the user's
+        # bug, not ours to silently rewrite). This matters for the
+        # wrap-callsites transform's scope-aware exception-type
+        # resolution (finding #3).
 
         if isinstance(node.names, cst.ImportStar):
             # ``from vera import *`` — we conservatively assume any
             # ``@audit(...)`` / ``@async_audit(...)`` references the
             # v0 decorator. Add the canonical names; the decorator-
-            # rewriter handles them.
+            # rewriter handles them. Also conservatively assume
+            # PendingReview / PolicyBlock are bound under their canonical
+            # names so the wrap-callsites transform emits unqualified.
             self.bindings.bare_audit_names.update(_REWRITTEN_DECORATOR_NAMES)
+            self.bindings.pending_review_names.add("PendingReview")
+            self.bindings.policy_block_names.add("PolicyBlock")
             return
         for alias in node.names:
             if not isinstance(alias.name, cst.Name):
                 continue
-            if alias.name.value not in _REWRITTEN_DECORATOR_NAMES:
-                continue
-            if alias.asname and isinstance(alias.asname.name, cst.Name):
-                self.bindings.aliased_audit_names.add(alias.asname.name.value)
-            else:
-                self.bindings.bare_audit_names.add(alias.name.value)
+            imported = alias.name.value
+            local = (
+                alias.asname.name.value
+                if alias.asname and isinstance(alias.asname.name, cst.Name)
+                else imported
+            )
+            if imported in _REWRITTEN_DECORATOR_NAMES:
+                if alias.asname and isinstance(alias.asname.name, cst.Name):
+                    self.bindings.aliased_audit_names.add(local)
+                else:
+                    self.bindings.bare_audit_names.add(local)
+            elif imported == "PendingReview":
+                self.bindings.pending_review_names.add(local)
+            elif imported == "PolicyBlock":
+                self.bindings.policy_block_names.add(local)
 
 
 def _flatten_attr(node: cst.BaseExpression) -> str:
@@ -690,8 +711,16 @@ class _AuditToGateTransformer(cst.CSTTransformer):
         wrapper = _CallsiteWrapper(
             decorated_funcs=self._gate_decorated_funcs,
             counters=self.counters,
+            bindings=self.bindings,
         )
-        return updated_node.visit(wrapper)
+        new_module = updated_node.visit(wrapper)
+        # If the wrapper had to use unqualified PendingReview /
+        # PolicyBlock but neither was bound, inject a fresh
+        # ``from vera import PendingReview, PolicyBlock`` at the top of
+        # the file (after any existing imports).
+        if wrapper.needs_pending_block_import:
+            new_module = _inject_pending_block_import(new_module)
+        return new_module
 
 
 # ---------------------------------------------------------------------------
@@ -723,11 +752,18 @@ class _CallsiteWrapper(cst.CSTTransformer):
         self,
         decorated_funcs: set[str],
         counters: dict[str, int],
+        bindings: _ImportBindings,
     ) -> None:
         super().__init__()
         self.decorated_funcs = decorated_funcs
         self.counters = counters
+        self.bindings = bindings
         self._try_depth_with_safe_except: int = 0
+        # Set by the wrap pass when we emit unqualified
+        # ``PendingReview`` / ``PolicyBlock`` but neither symbol was
+        # bound in the file. Triggers a post-pass that injects
+        # ``from vera import PendingReview, PolicyBlock`` at the top.
+        self.needs_pending_block_import: bool = False
 
     # -- track enclosing try ------------------------------------------
 
@@ -761,7 +797,9 @@ class _CallsiteWrapper(cst.CSTTransformer):
             return updated_node
 
         # Build the try/except. Preserve the original statement
-        # verbatim inside the try body.
+        # verbatim inside the try body. The except type expression is
+        # scope-sensitive — see :meth:`_pending_review_expr` and
+        # :meth:`_policy_block_expr`.
         _bump(self.counters, "wrapped_callsites")
         try_block = cst.Try(
             body=cst.IndentedBlock(
@@ -769,10 +807,7 @@ class _CallsiteWrapper(cst.CSTTransformer):
             ),
             handlers=[
                 cst.ExceptHandler(
-                    type=cst.Attribute(
-                        value=cst.Name("vera"),
-                        attr=cst.Name("PendingReview"),
-                    ),
+                    type=self._pending_review_expr(),
                     name=cst.AsName(name=cst.Name("pending")),
                     body=cst.IndentedBlock(
                         body=[
@@ -790,10 +825,7 @@ class _CallsiteWrapper(cst.CSTTransformer):
                     ),
                 ),
                 cst.ExceptHandler(
-                    type=cst.Attribute(
-                        value=cst.Name("vera"),
-                        attr=cst.Name("PolicyBlock"),
-                    ),
+                    type=self._policy_block_expr(),
                     name=cst.AsName(name=cst.Name("blocked")),
                     body=cst.IndentedBlock(
                         body=[
@@ -814,6 +846,101 @@ class _CallsiteWrapper(cst.CSTTransformer):
             leading_lines=list(updated_node.leading_lines),
         )
         return try_block
+
+    # -- scope-aware exception-type resolution -------------------------
+
+    def _pending_review_expr(self) -> cst.BaseExpression:
+        """Pick the right way to reference ``PendingReview`` for this file.
+
+        Three branches (matching :meth:`_policy_block_expr`):
+
+        * ``vera`` is bound in the file → emit qualified
+          ``vera.PendingReview`` (current behavior — correct).
+        * ``PendingReview`` is bound via ``from vera import
+          PendingReview[ as X]`` → emit the unqualified local name.
+        * Neither → emit unqualified ``PendingReview`` and flag the
+          wrapper to inject ``from vera import PendingReview,
+          PolicyBlock`` at the top of the file in a post-pass.
+        """
+        if self.bindings.vera_module_names:
+            # Prefer the canonical ``vera`` if present, else any alias.
+            base = "vera" if "vera" in self.bindings.vera_module_names else sorted(
+                self.bindings.vera_module_names
+            )[0]
+            return cst.Attribute(
+                value=cst.Name(base),
+                attr=cst.Name("PendingReview"),
+            )
+        if self.bindings.pending_review_names:
+            return cst.Name(sorted(self.bindings.pending_review_names)[0])
+        self.needs_pending_block_import = True
+        return cst.Name("PendingReview")
+
+    def _policy_block_expr(self) -> cst.BaseExpression:
+        if self.bindings.vera_module_names:
+            base = "vera" if "vera" in self.bindings.vera_module_names else sorted(
+                self.bindings.vera_module_names
+            )[0]
+            return cst.Attribute(
+                value=cst.Name(base),
+                attr=cst.Name("PolicyBlock"),
+            )
+        if self.bindings.policy_block_names:
+            return cst.Name(sorted(self.bindings.policy_block_names)[0])
+        self.needs_pending_block_import = True
+        return cst.Name("PolicyBlock")
+
+
+def _inject_pending_block_import(module: cst.Module) -> cst.Module:
+    """Inject ``from vera import PendingReview, PolicyBlock`` after last import.
+
+    Used by :class:`_CallsiteWrapper` when it emits unqualified
+    ``PendingReview`` / ``PolicyBlock`` in a file that does not bind
+    either symbol AND does not bind ``vera`` itself (e.g. ``from vera
+    import audit, PendingReview, PolicyBlock`` was NOT present and
+    neither was ``import vera``). Inserts the import immediately after
+    the last existing import statement so the rest of the module's
+    layout is preserved.
+    """
+    import_stmt = cst.SimpleStatementLine(
+        body=[
+            cst.ImportFrom(
+                module=cst.Name("vera"),
+                names=[
+                    cst.ImportAlias(name=cst.Name("PendingReview")),
+                    cst.ImportAlias(name=cst.Name("PolicyBlock")),
+                ],
+            )
+        ]
+    )
+
+    new_body = list(module.body)
+    last_import_idx = -1
+    for i, stmt in enumerate(new_body):
+        # Look for top-level Import / ImportFrom statements (wrapped in
+        # SimpleStatementLine). Skip past any other top-level statement
+        # such as a module docstring or assignment.
+        if isinstance(stmt, cst.SimpleStatementLine):
+            for inner in stmt.body:
+                if isinstance(inner, (cst.Import, cst.ImportFrom)):
+                    last_import_idx = i
+                    break
+
+    if last_import_idx >= 0:
+        new_body.insert(last_import_idx + 1, import_stmt)
+    else:
+        # No imports at all — inject at the very top, after a module
+        # docstring if present.
+        insert_at = 0
+        if new_body and isinstance(new_body[0], cst.SimpleStatementLine):
+            first = new_body[0].body
+            if first and isinstance(first[0], cst.Expr) and isinstance(
+                first[0].value, cst.SimpleString
+            ):
+                insert_at = 1
+        new_body.insert(insert_at, import_stmt)
+
+    return module.with_changes(body=new_body)
 
 
 def _try_catches_pending_or_block(node: cst.Try) -> bool:
