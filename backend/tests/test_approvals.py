@@ -61,6 +61,14 @@ async def test_request_approval_creates_pending_chain_record(db_session, org_and
     assert approval.request_record_id is not None
     assert approval.resolution_record_id is None
 
+    # Wave 2B PR A5 — schema-only columns must default cleanly when the
+    # service layer writes nothing to them.
+    assert approval.reviewed_below_threshold is False
+    assert approval.client_review_started_at is None
+    assert approval.decided_at is None
+    assert approval.webhook_sent_at is None
+    assert approval.callback_received_at is None
+
     record = await db_session.get(ActionRecord, approval.request_record_id)
     assert record is not None
     assert record.action_type == "human_approval_requested"
