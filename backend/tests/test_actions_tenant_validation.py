@@ -3,13 +3,80 @@
 v1-test-plan.md Phase 1: ``tenant_id="John Doe DOB 1972"`` → 422
 (the regex rejects whitespace and slashes); ``tenant_id="cleveland_clinic"``
 → 200.
+
+Phase 1 PR 5 (Stream C item C3) changed the behaviour of the PHI-shape
+heuristic from "always reject" (the PR #195 bridge guard) to a
+kind-aware split: live keys reject 422, test keys warn + event. The
+PHI-shape rejection tests below now exercise a LIVE-key fixture so the
+original assertion (PHI shape → 422) still holds. Test-key warning
+behaviour is exercised in ``test_actions_phi_heuristic.py``.
 """
 from __future__ import annotations
 
 import pytest
+import pytest_asyncio
+
+from app.models import (
+    BAAAgreement,
+    BAAScope,
+    ChainState,
+    Customer,
+    Organization,
+)
+from app.services import auth as auth_service
+from app.services import baa as baa_service
 
 
 HEADERS = lambda raw: {"Authorization": f"Bearer {raw}"}
+
+
+@pytest_asyncio.fixture
+async def org_and_live_key(db_session):
+    """Org + active BAA + a live API key.
+
+    The live-key BAA gate (Phase 1 PR 4 / C2) blocks every request on a
+    live key unless an active+scoped BAA exists for the org. The PHI
+    rejection tests below need to bypass that gate so the only failure
+    surface left is the PHI heuristic — so we seed an active BAA here.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    baa_service._reset_baa_freshness_cache_for_tests()
+
+    org = Organization(name="phi-live-org")
+    db_session.add(org)
+    await db_session.flush()
+    db_session.add(ChainState(org_id=org.id))
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    customer = Customer(org_id=org.id, tenant_id="baa_holder")
+    db_session.add(customer)
+    await db_session.flush()
+    baa = BAAAgreement(
+        org_id=org.id,
+        customer_id=customer.id,
+        status="active",
+        effective_at=now - timedelta(days=1),
+        expires_at=now + timedelta(days=365),
+    )
+    db_session.add(baa)
+    await db_session.flush()
+    db_session.add(
+        BAAScope(
+            baa_agreement_id=baa.id,
+            covered_services=["chart_entry"],
+            covered_agent_types=["scribe"],
+            granted_at=now,
+        )
+    )
+    await db_session.commit()
+    await db_session.refresh(org)
+
+    raw_key, api_key = await auth_service.generate_api_key(
+        db_session, org.id, "phi-live-bearer", ["read", "write"], kind="live"
+    )
+    yield org, raw_key, api_key
+    baa_service._reset_baa_freshness_cache_for_tests()
 
 
 @pytest.mark.asyncio
@@ -141,17 +208,20 @@ async def test_post_action_promoted_columns_stored_in_db(
     ],
 )
 async def test_post_action_rejects_phi_shaped_tenant_id(
-    async_client, org_and_key, phi_tenant_id
+    async_client, org_and_live_key, phi_tenant_id
 ):
-    """PR #195 review bridge guard: reject obvious DOB/SSN-shaped
-    substrings inside tenant_id until PR 5 lands the full heuristic.
+    """Regression for PR #195's bridge guard families.
 
-    The base regex (^[A-Za-z0-9_-]{1,64}$) accepts underscored DOB
-    shapes like ``john_doe_19720314``, which would land in the
-    dashboard's AI Coverage Matrix as a display_name. The bridge guard
-    raises 422 with code='phi_shape_in_tenant_id' (the same code PR 5
-    will use — forward-compat)."""
-    _, raw_key, _ = org_and_key
+    Phase 1 PR 5 replaced the bridge guard with a kind-aware production
+    heuristic: live keys still 422-reject for the same family of PHI
+    shapes the bridge owned (this is the bridge-guard regression check
+    from the PR 5 brief). Test keys now WARN + emit ``phi_shape_warning``
+    instead — exercised in ``test_actions_phi_heuristic.py``.
+
+    The structured error code (``phi_shape_in_tenant_id``) is unchanged
+    so SDK error mapping (PR #194) keeps working with no SDK-side
+    edits."""
+    _, raw_key, _ = org_and_live_key
     resp = await async_client.post(
         "/v1/actions",
         json={
@@ -169,6 +239,14 @@ async def test_post_action_rejects_phi_shaped_tenant_id(
     # dict-typed HTTPException.detail to the top level so ``code`` is at the
     # body root (was nested under ``detail`` before PR #201's review fixes).
     assert body.get("code") == "phi_shape_in_tenant_id", body
+    # The PHI value itself must NEVER appear in the error body — that's
+    # exactly the data the heuristic was trying to keep out of log sinks.
+    import json as _json
+
+    rendered = _json.dumps(body)
+    assert phi_tenant_id not in rendered, (
+        f"PHI value leaked into error body: {body!r}"
+    )
 
 
 @pytest.mark.asyncio
@@ -182,11 +260,11 @@ async def test_post_action_rejects_phi_shaped_tenant_id(
     ],
 )
 async def test_post_action_rejects_ssn_separator_tenant_id(
-    async_client, org_and_key, ssn_tenant_id
+    async_client, org_and_live_key, ssn_tenant_id
 ):
     """Sanity check: SSN-with-separator passes the base regex (digits +
-    hyphens) but the bridge guard catches it."""
-    _, raw_key, _ = org_and_key
+    hyphens) but the live-key PHI heuristic catches it."""
+    _, raw_key, _ = org_and_live_key
     resp = await async_client.post(
         "/v1/actions",
         json={
