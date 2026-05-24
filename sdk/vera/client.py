@@ -835,8 +835,10 @@ class VeraClient:
         kwarg it wins; otherwise the resolver consults the ContextVar
         (middleware / context manager) and the process-level default.
         When at least one of those produces a value we stamp ``tenant_id``
-        AND ``tenant_source`` (SDK-internal observability field) onto the
-        payload. When ``tenant=`` is explicitly passed but malformed,
+        at the top level AND ``metadata.tenant_source`` (SDK-internal
+        observability field, nested so pydantic v2 backends preserve it
+        regardless of ``extra=`` policy) onto the payload. When
+        ``tenant=`` is explicitly passed but malformed,
         :class:`TenantMissingOrInvalid` propagates — that's a programmer
         error and must surface loudly. When no tenant is resolvable at
         all we omit both fields (preserves backward-compat for call sites
@@ -877,13 +879,18 @@ class VeraClient:
         }
         if tenant_id is not None:
             payload["tenant_id"] = tenant_id
-            # tenant_source is SDK-internal observability metadata. The
-            # backend currently ignores it (Phase 1 PR 5 only validates
-            # tenant_id) but tolerates the extra field. Including it on
-            # the wire (rather than only in local logs) means the spool
-            # dump also carries provenance, which matters when replaying
-            # historical traffic during an incident.
-            payload["tenant_source"] = tenant_source
+            # tenant_source is SDK-internal observability metadata. We
+            # nest it under ``metadata`` so the backend's pydantic v2
+            # schemas (default ``extra='ignore'``) preserve it on the
+            # ``metadata`` JSON column instead of silently dropping it
+            # at the top level — and so a future schema that flips to
+            # ``extra='forbid'`` doesn't break the resolver wire shape.
+            # Including it on the wire (rather than only in local logs)
+            # means the spool dump also carries provenance, which matters
+            # when replaying historical traffic during an incident.
+            metadata = dict(payload.get("metadata") or {})
+            metadata["tenant_source"] = tenant_source
+            payload["metadata"] = metadata
         return payload
 
     def record_action(
@@ -1000,7 +1007,10 @@ class VeraClient:
         }
         if tenant_id is not None:
             payload["tenant_id"] = tenant_id
-            payload["tenant_source"] = tenant_source
+            # Nest under metadata — see _build_payload for the rationale.
+            metadata = dict(payload.get("metadata") or {})
+            metadata["tenant_source"] = tenant_source
+            payload["metadata"] = metadata
         # Redact at enqueue time so memory/disk dumps don't contain raw PHI
         # and the flush path doesn't repeat the work.
         if self._redactor is not None:

@@ -427,7 +427,13 @@ class AsyncVeraClient:
         }
         if tenant_id is not None:
             payload["tenant_id"] = tenant_id
-            payload["tenant_source"] = tenant_source
+            # Nest tenant_source under metadata so pydantic v2 backends
+            # (default ``extra='ignore'``) preserve it on the metadata
+            # JSON column rather than silently dropping it. Matches the
+            # sync client's _build_payload behaviour.
+            metadata = dict(payload.get("metadata") or {})
+            metadata["tenant_source"] = tenant_source
+            payload["metadata"] = metadata
         return payload
 
     async def record_action(
@@ -510,7 +516,10 @@ class AsyncVeraClient:
         }
         if tenant_id is not None:
             payload["tenant_id"] = tenant_id
-            payload["tenant_source"] = tenant_source
+            # Nest under metadata — see _build_payload for the rationale.
+            metadata = dict(payload.get("metadata") or {})
+            metadata["tenant_source"] = tenant_source
+            payload["metadata"] = metadata
         # Redact at enqueue time so _flush sends already-redacted payloads
         # — no double work on the flush path.
         if self._redactor is not None:

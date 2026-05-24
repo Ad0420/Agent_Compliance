@@ -75,7 +75,8 @@ def test_payload_omits_tenant_fields_when_none_resolvable():
     try:
         payload = c._build_payload(action_name="x")
         assert "tenant_id" not in payload
-        assert "tenant_source" not in payload
+        # Nothing in metadata either — we never create the bag for no reason.
+        assert "tenant_source" not in (payload.get("metadata") or {})
     finally:
         c.close()
 
@@ -85,7 +86,7 @@ def test_payload_stamps_explicit_kwarg():
     try:
         payload = c._build_payload(action_name="x", tenant="explicit_t")
         assert payload["tenant_id"] == "explicit_t"
-        assert payload["tenant_source"] == "explicit_kwarg"
+        assert payload["metadata"]["tenant_source"] == "explicit_kwarg"
     finally:
         c.close()
 
@@ -96,7 +97,7 @@ def test_payload_stamps_from_context_manager():
         with vera.tenant("ctx_t"):
             payload = c._build_payload(action_name="x")
             assert payload["tenant_id"] == "ctx_t"
-            assert payload["tenant_source"] == "context_manager"
+            assert payload["metadata"]["tenant_source"] == "context_manager"
     finally:
         c.close()
 
@@ -108,7 +109,7 @@ def test_payload_stamps_from_middleware_source():
         try:
             payload = c._build_payload(action_name="x")
             assert payload["tenant_id"] == "mw_t"
-            assert payload["tenant_source"] == "middleware"
+            assert payload["metadata"]["tenant_source"] == "middleware"
         finally:
             vera.reset_tenant(token)
     finally:
@@ -121,7 +122,7 @@ def test_payload_stamps_from_default():
         set_default_tenant("default_t")
         payload = c._build_payload(action_name="x")
         assert payload["tenant_id"] == "default_t"
-        assert payload["tenant_source"] == "default"
+        assert payload["metadata"]["tenant_source"] == "default"
     finally:
         c.close()
 
@@ -134,7 +135,7 @@ def test_payload_explicit_kwarg_beats_ctx_mgr_and_middleware():
             with vera.tenant("ctx_t"):
                 payload = c._build_payload(action_name="x", tenant="explicit_t")
                 assert payload["tenant_id"] == "explicit_t"
-                assert payload["tenant_source"] == "explicit_kwarg"
+                assert payload["metadata"]["tenant_source"] == "explicit_kwarg"
         finally:
             vera.reset_tenant(token)
     finally:
@@ -152,9 +153,25 @@ def test_payload_ctx_mgr_beats_middleware_and_default():
                 # Context manager pushed onto the same ContextVar shadows
                 # the middleware binding.
                 assert payload["tenant_id"] == "ctx_t"
-                assert payload["tenant_source"] == "context_manager"
+                assert payload["metadata"]["tenant_source"] == "context_manager"
         finally:
             vera.reset_tenant(token)
+    finally:
+        c.close()
+
+
+def test_payload_preserves_caller_metadata_when_stamping_tenant_source():
+    """Caller-supplied ``metadata`` MUST survive — we only add a key, never
+    clobber the whole bag."""
+    c = _build_client()
+    try:
+        payload = c._build_payload(
+            action_name="x",
+            tenant="explicit_t",
+            metadata={"caller_key": "caller_value"},
+        )
+        assert payload["metadata"]["caller_key"] == "caller_value"
+        assert payload["metadata"]["tenant_source"] == "explicit_kwarg"
     finally:
         c.close()
 
@@ -186,7 +203,7 @@ def test_enqueue_action_stamps_tenant_from_context():
         assert len(items) == 1
         item = items[0]
         assert item["tenant_id"] == "ctx_t"
-        assert item["tenant_source"] == "context_manager"
+        assert item["metadata"]["tenant_source"] == "context_manager"
     finally:
         c.close()
 
@@ -197,7 +214,7 @@ def test_enqueue_action_stamps_explicit_kwarg():
         c.enqueue_action(action_name="x", tenant="explicit_t")
         items = list(c._queue.queue)
         assert items[0]["tenant_id"] == "explicit_t"
-        assert items[0]["tenant_source"] == "explicit_kwarg"
+        assert items[0]["metadata"]["tenant_source"] == "explicit_kwarg"
         # ``tenant`` was popped — must NOT appear as a raw key on the payload.
         assert "tenant" not in items[0]
     finally:
@@ -210,7 +227,7 @@ def test_enqueue_action_no_tenant_when_unresolvable():
         c.enqueue_action(action_name="x")
         items = list(c._queue.queue)
         assert "tenant_id" not in items[0]
-        assert "tenant_source" not in items[0]
+        assert "tenant_source" not in (items[0].get("metadata") or {})
     finally:
         c.close()
 

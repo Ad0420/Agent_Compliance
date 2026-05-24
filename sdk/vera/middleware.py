@@ -24,6 +24,16 @@ module level but module load only fails if starlette is unavailable
 AND someone actually imports ``vera.middleware``. The rest of the SDK
 does not import this module.
 
+Install with the ``middleware`` extra to get the pinned starlette
+floor::
+
+    pip install vera-sdk[middleware]
+
+The pin is ``starlette>=0.21`` because :class:`BaseHTTPMiddleware` had
+a contextvar-isolation bug in older releases that caused per-request
+tenant bindings to leak across requests. The minimum supported version
+fixes that.
+
 Thread-pool gotcha (Codex F4)
 -----------------------------
 The middleware sets a :class:`contextvars.ContextVar`. That value

@@ -69,12 +69,18 @@ four sources, in strict precedence:
 4. Process-level default, `vera.init(default_tenant="x")` or
    `vera.set_default_tenant("x")`.
 
-When at least one source provides a value, the SDK stamps both
-`tenant_id` AND `tenant_source` (one of `explicit_kwarg`,
+When at least one source provides a value, the SDK stamps `tenant_id`
+at the top level AND `metadata.tenant_source` (one of `explicit_kwarg`,
 `context_manager`, `middleware`, `default`) onto the outgoing payload.
-The backend currently ignores `tenant_source` (extra fields are
-allowed); it's there so spool dumps and structured logs carry
-provenance.
+
+`tenant_source` is nested inside `metadata` rather than placed at the
+top level because the backend's pydantic v2 schemas default to
+`extra="ignore"` — a top-level `tenant_source` field is silently
+dropped before it ever lands on disk, and a future schema that flips
+to `extra="forbid"` would reject the field outright. Nesting under
+`metadata` (which the backend stores as a JSON column) preserves the
+provenance in the spool dump, in structured logs, and in the audit
+trail regardless of pydantic policy.
 
 When no source provides a value, the SDK omits both fields — backward
 compatible for call sites that pre-date the resolver.
@@ -85,6 +91,15 @@ malformed value raises `TenantMissingOrInvalid(reason="malformed")` —
 this is a programmer error and must surface loudly.
 
 #### FastAPI / Starlette middleware
+
+Install with the `middleware` extra to get the pinned starlette floor:
+
+```
+pip install vera-sdk[middleware]
+```
+
+The pin is `starlette>=0.21`. Older releases had a contextvar-isolation
+bug in `BaseHTTPMiddleware` that broke per-request tenant bindings.
 
 ```python
 from fastapi import FastAPI
