@@ -28,6 +28,7 @@ from ..middleware.clerk_auth import require_clerk_role
 from ..models import APIKey
 from ..schemas.api_key import APIKeyCreate, APIKeyCreateResponse, APIKeyResponse
 from ..services.auth import generate_api_key
+from ..services.baa import is_org_baa_active
 
 router = APIRouter(prefix="/v1/dashboard/api-keys", tags=["dashboard-api-keys"])
 
@@ -79,12 +80,37 @@ async def create_api_key(
     cannot recover it.
     """
     org_id = ctx["org_id"]
+    # Phase 1 PR 4 (Stream C item C1): live keys require an active BAA at
+    # mint time. ``bypass_cache=True`` because freshness matters more
+    # than latency on the mint path (humans click "create" a few times
+    # an hour) — we want the operator who *just uploaded* a BAA to see
+    # the green light immediately. SDK PR #194 maps ``code='baa_required'``
+    # → ``PolicyBlock``; emitting the structured payload here is the
+    # activation moment for that defensive mapping.
+    if data.kind == "live":
+        baa_active = await is_org_baa_active(
+            session, org_id, bypass_cache=True
+        )
+        if not baa_active:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "baa_required",
+                    "detail": (
+                        "Production API keys require an active Business "
+                        "Associate Agreement on file. Upload a signed BAA "
+                        "on the Customers page, then try again."
+                    ),
+                    "fix_url": "/customers",
+                },
+            )
     raw_key, api_key = await generate_api_key(
         session,
         org_id,
         data.name,
         data.permissions,
         expires_at=data.expires_at,
+        kind=data.kind,
     )
     return APIKeyCreateResponse(
         id=api_key.id,
@@ -92,8 +118,8 @@ async def create_api_key(
         raw_key=raw_key,
         key_prefix=api_key.key_prefix,
         permissions=api_key.permissions,
-        # Reflect the DB-assigned ``kind`` (always ``test`` in this PR;
-        # PR 4 adds a create-time input + BAA gate).
+        # Reflect the DB-assigned ``kind`` so the dashboard renders the
+        # tier badge correctly without a follow-up list refresh.
         kind=api_key.kind,
         created_at=api_key.created_at,
         expires_at=api_key.expires_at,

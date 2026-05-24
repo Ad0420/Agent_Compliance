@@ -11,8 +11,16 @@ class Settings(BaseSettings):
     secret_key: str = _DEFAULT_SECRET
     environment: str = "development"
 
-    # API key prefix for generated keys
-    api_key_prefix: str = "al_live_"
+    # API key prefix for generated keys. The tier suffix (``test`` vs
+    # ``live``) is appended by ``services.auth.generate_api_key`` so
+    # newly-minted keys look like ``al_test_<token>`` or
+    # ``al_live_<token>``. Existing pre-Phase-1-PR-4 keys all start with
+    # ``al_live_`` (the historical default) and continue to authenticate
+    # because the auth path's prefix check uses the shorter ``al_``
+    # root. The full literal default stays here for the rate-limit
+    # middleware and other call sites that only care about the bearer
+    # shape.
+    api_key_prefix: str = "al_"
 
     # Max records per batch ingest
     max_batch_size: int = 100

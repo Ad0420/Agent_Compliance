@@ -74,18 +74,25 @@ def test_customer_update_rejects_invalid_baa_status():
         CustomerUpdate(baa_status="not_a_real_status")
 
 
-# ── APIKeyCreate.kind: dropped from create path in this PR ────
+# ── APIKeyCreate.kind: accepted on create path (Phase 1 PR 4) ────
 
 
-def test_api_key_create_ignores_kind_field():
-    """Phase 1 PR 1 spec: ``kind`` is set at the ORM level only.
-    The create path does not accept it (it was misleading: silently
-    dropped pre-fix). PR 4 will re-introduce ``kind`` on the create
-    path together with BAA-gating in ``require_permission``.
+def test_api_key_create_accepts_kind_field():
+    """Phase 1 PR 4 (Stream C item C1) reintroduces ``kind`` on the
+    create path. The route handler enforces the BAA gate for
+    ``kind='live'``; the schema's job is to refuse typos before the
+    route runs."""
+    test_key = APIKeyCreate(name="k")
+    assert test_key.kind == "test"
 
-    Pydantic by default ignores extra keys, so a stray ``kind=`` from
-    a forward-compat client should not 422; it simply does not bind.
-    """
-    key = APIKeyCreate(name="k", kind="live")
-    # The field does not exist on the model.
-    assert not hasattr(key, "kind")
+    live_key = APIKeyCreate(name="k", kind="live")
+    assert live_key.kind == "live"
+
+
+def test_api_key_create_rejects_invalid_kind():
+    """A typo must 422 at the schema layer, not surface as a 500 from
+    the SQL CHECK constraint."""
+    import pytest
+
+    with pytest.raises(ValueError):
+        APIKeyCreate(name="k", kind="production")
