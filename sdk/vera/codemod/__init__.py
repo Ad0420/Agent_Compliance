@@ -16,18 +16,33 @@ the list of transformations this codemod automates.
 
 from __future__ import annotations
 
-from .audit_to_gate import (
-    CODEMOD_OPT_OUT_DIRECTIVE,
-    MigrationOptions,
-    MigrationResult,
-    migrate_file,
-    migrate_source,
-)
+try:
+    from .audit_to_gate import (
+        CODEMOD_OPT_OUT_DIRECTIVE,
+        MigrationOptions,
+        MigrationResult,
+        iter_python_files,
+        make_diff,
+        migrate_file,
+        migrate_source,
+    )
+except ImportError as _exc:  # pragma: no cover — depends on install shape
+    # LibCST is the only transitive dependency for the codemod. If it's
+    # missing we surface a friendly hint at import time instead of an
+    # opaque ``No module named 'libcst'`` deep in the stack.
+    if _exc.name and _exc.name.split(".")[0] == "libcst":
+        raise ImportError(
+            "vera.codemod requires libcst. "
+            "Install with: pip install 'vera-sdk[codemod]'"
+        ) from _exc
+    raise
 
 __all__ = [
     "CODEMOD_OPT_OUT_DIRECTIVE",
     "MigrationOptions",
     "MigrationResult",
+    "iter_python_files",
+    "make_diff",
     "migrate_file",
     "migrate_source",
 ]

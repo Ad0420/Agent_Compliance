@@ -27,12 +27,6 @@ classifiers = [
 dependencies = [
     "httpx>=0.25.0",
     "click>=8.0.0,<10.0.0",
-    # LibCST powers ``vera codemod audit-to-gate`` (Phase 1 PR 9 /
-    # Stream D8). Bundled with the SDK rather than gated behind an
-    # extra: the codemod ships alongside the breaking ``@vera.audit``
-    # → ``@vera.gate`` rename and we don't want pilots discovering
-    # they need to ``pip install vera-sdk[codemod]`` mid-migration.
-    "libcst>=1.0.0",
 ]
 
 [project.scripts]
@@ -48,6 +42,10 @@ spool = ["cryptography>=42.0.0"]
 # <0.21 had a documented contextvar-isolation bug that broke per-request
 # bindings; pin the floor so the tenant-resolver middleware behaves correctly.
 middleware = ["starlette>=0.21"]
+# Phase 1 PR 9 — LibCST powers ``vera codemod audit-to-gate``. Optional
+# because most SDK users never run the codemod (only a one-time
+# migration tool). ``pip install vera-sdk[codemod]`` pulls it in.
+codemod = ["libcst>=1.0.0"]
 all = [
     "langchain-core>=0.1.0",
     "openai>=1.0.0",
@@ -55,6 +53,7 @@ all = [
     "anthropic>=0.40.0",
     "cryptography>=42.0.0",
     "starlette>=0.21",
+    "libcst>=1.0.0",
 ]
 dev = [
     "pytest",
@@ -62,6 +61,7 @@ dev = [
     "pytest-httpx",
     "build",
     "cryptography>=42.0.0",
+    "libcst>=1.0.0",
 ]
 
 [project.entry-points.pytest11]

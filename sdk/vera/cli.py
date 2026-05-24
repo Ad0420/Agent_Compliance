@@ -25,8 +25,6 @@ from typing import Any
 import click
 
 from .client import VeraClient
-from .codemod import MigrationOptions, migrate_source
-from .codemod.audit_to_gate import iter_python_files, make_diff
 from .errors import (
     VeraAuthError,
     VeraError,
@@ -408,6 +406,24 @@ def codemod_audit_to_gate(
 
     See ``sdk/MIGRATION.md`` for the full migration narrative.
     """
+    # Lazy import — keeps libcst optional. Users who install
+    # ``vera-sdk`` (no extras) get a friendly error pointing at the
+    # extras_require knob instead of an ImportError at CLI startup.
+    try:
+        from .codemod import (
+            MigrationOptions,
+            iter_python_files,
+            make_diff,
+            migrate_source,
+        )
+    except ImportError as exc:
+        click.echo(
+            f"ERROR: vera codemod requires libcst (missing: {exc.name}).\n"
+            "Install with: pip install 'vera-sdk[codemod]'",
+            err=True,
+        )
+        sys.exit(2)
+
     options = MigrationOptions(
         wrap_callsites=wrap_callsites,
         init_todo=not no_init_todo,
