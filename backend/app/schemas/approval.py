@@ -70,6 +70,15 @@ class ApprovalResponse(BaseModel):
     requested_at: datetime
     expires_at: Optional[datetime] = None
     resolved_at: Optional[datetime] = None
+    # ── Wave 2B PR A5: HITL workflow timing ───────────────────────────
+    # System-managed; populated by downstream PRs (A3/A4/C2). NOT
+    # exposed on ApprovalCreate because clients should not be able to
+    # set decision-timing or reviewer-threshold metadata.
+    client_review_started_at: Optional[datetime] = None
+    decided_at: Optional[datetime] = None
+    webhook_sent_at: Optional[datetime] = None
+    callback_received_at: Optional[datetime] = None
+    reviewed_below_threshold: bool = False
 
 
 class ApprovalListResponse(BaseModel):
