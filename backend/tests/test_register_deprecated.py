@@ -34,10 +34,13 @@ async def test_register_returns_410(async_client):
     )
     assert resp.status_code == 410
     body = resp.json()
-    assert body["detail"]["error"] == "endpoint_removed"
-    assert "Clerk" in body["detail"]["message"]
-    assert "/dashboard/api-keys" in body["detail"]["message"]
-    assert body["detail"]["migration_url"].startswith("http")
+    # The flat-envelope handler in backend/app/main.py lifts dict-typed
+    # HTTPException.detail to the top of the body so structured envelopes
+    # match what the SDK reads. Fields live at the root, not under "detail".
+    assert body["error"] == "endpoint_removed"
+    assert "Clerk" in body["message"]
+    assert "/dashboard/api-keys" in body["message"]
+    assert body["migration_url"].startswith("http")
 
 
 @pytest.mark.asyncio

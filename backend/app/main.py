@@ -1,9 +1,11 @@
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import JSONResponse
 
 from .config import settings
 from .database import engine
@@ -78,6 +80,32 @@ app.add_middleware(ComplianceAuditMiddleware)
 # Added last so it is the outermost middleware: every response — including
 # rate-limit 429s and CORS preflights — carries an X-Request-ID header.
 app.add_middleware(RequestIDMiddleware)
+
+
+@app.exception_handler(StarletteHTTPException)
+async def _flatten_dict_detail(
+    request: Request, exc: StarletteHTTPException
+) -> JSONResponse:
+    """Flatten ``HTTPException(detail=dict(...))`` into the response body.
+
+    FastAPI's default exception handler wraps **every** ``HTTPException.detail``
+    under a top-level ``{"detail": ...}`` envelope. For structured error
+    payloads (``HTTPException(detail={"code": "baa_required", "fix_url": ...})``)
+    that produces ``{"detail": {"code": ...}}`` — the SDK's ``wrap_httpx_error``
+    reads ``body.get("code")`` from the *top level* so the nested shape silently
+    falls through to the generic 4xx mapping and a real ``PolicyBlock``
+    misclassifies as ``VeraAuthError``.
+
+    This handler lifts dict-typed ``detail`` payloads to the top level so the
+    wire envelope is ``{"code": ..., "detail": ..., "fix_url": ...}``. String
+    ``detail`` values continue to round-trip as ``{"detail": "<string>"}``
+    (preserving FastAPI's default for unstructured errors).
+    """
+    if isinstance(exc.detail, dict):
+        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+    return JSONResponse(
+        status_code=exc.status_code, content={"detail": exc.detail}
+    )
 
 
 @app.get("/health")

@@ -240,11 +240,11 @@ async def test_create_live_key_no_baa_rejected_with_baa_required_code(
     )
     assert resp.status_code == 403, resp.text
     body = resp.json()
-    # FastAPI nests our structured detail under "detail".
-    detail = body.get("detail")
-    assert isinstance(detail, dict), f"expected structured detail, got {body!r}"
-    assert detail.get("code") == "baa_required"
-    assert detail.get("fix_url") == "/customers"
+    # The flat-envelope handler lifts dict-typed HTTPException.detail to the
+    # top level so the SDK's body.get("code") dispatch sees the structured
+    # code without unwrapping a "detail" layer.
+    assert body.get("code") == "baa_required", f"expected flat envelope, got {body!r}"
+    assert body.get("fix_url") == "/customers"
 
 
 @pytest.mark.asyncio
@@ -309,7 +309,7 @@ async def test_create_live_key_baa_with_no_scope_rejected(
         headers={"Authorization": f"Bearer {admin_session['token']}"},
     )
     assert resp.status_code == 403
-    assert resp.json()["detail"]["code"] == "baa_required"
+    assert resp.json()["code"] == "baa_required"
 
 
 # ── C2: live-key per-request gate in require_permission ──────────────────────
@@ -346,10 +346,10 @@ async def test_live_key_no_baa_rejected_at_request_time(
         headers={"Authorization": f"Bearer {org_with_live_key['raw_key']}"},
     )
     assert resp.status_code == 403, resp.text
-    detail = resp.json().get("detail")
-    assert isinstance(detail, dict)
-    assert detail["code"] == "baa_expired"
-    assert detail["fix_url"] == "/customers"
+    body = resp.json()
+    # Flat envelope (see backend/app/main.py::_flatten_dict_detail).
+    assert body.get("code") == "baa_expired", f"expected flat envelope, got {body!r}"
+    assert body.get("fix_url") == "/customers"
 
 
 @pytest.mark.asyncio
@@ -378,7 +378,7 @@ async def test_live_key_expired_baa_rejected(
         headers={"Authorization": f"Bearer {org_with_live_key['raw_key']}"},
     )
     assert resp.status_code == 403
-    assert resp.json()["detail"]["code"] == "baa_expired"
+    assert resp.json()["code"] == "baa_expired"
 
 
 @pytest.mark.asyncio
@@ -409,7 +409,7 @@ async def test_live_key_terminated_baa_rejected(
         headers={"Authorization": f"Bearer {org_with_live_key['raw_key']}"},
     )
     assert resp.status_code == 403
-    assert resp.json()["detail"]["code"] == "baa_expired"
+    assert resp.json()["code"] == "baa_expired"
 
 
 @pytest.mark.asyncio
@@ -530,6 +530,60 @@ async def test_baa_cache_refreshes_after_ttl(
 
 
 @pytest.mark.asyncio
+async def test_baa_cache_ttl_boundary_is_strict_less_than(
+    org_with_live_key, db_session, monkeypatch
+):
+    """Pin down the exact TTL boundary semantics.
+
+    ``services.baa.is_org_baa_active`` uses ``(time.monotonic() - cached_at)
+    < _CACHE_TTL_SECONDS`` — strict less-than. So at the boundary:
+
+    * ``elapsed = TTL - epsilon`` → cache HIT  (no DB query)
+    * ``elapsed = TTL``           → cache MISS (DB re-query)
+
+    This guards against a future refactor that flips ``<`` to ``<=`` (which
+    would silently lengthen the staleness budget by one cache slot) or
+    reads TTL from an int that drops the fractional epsilon.
+    """
+    await _seed_active_baa(db_session, org_with_live_key["org"].id)
+
+    call_count = {"n": 0}
+    real_query = baa_service._query_active_baa
+
+    async def _counted_query(session, *, org_id, now):
+        call_count["n"] += 1
+        return await real_query(session, org_id=org_id, now=now)
+
+    monkeypatch.setattr(baa_service, "_query_active_baa", _counted_query)
+    baa_service._reset_baa_freshness_cache_for_tests()
+
+    now = [1000.0]
+    monkeypatch.setattr(baa_service.time, "monotonic", lambda: now[0])
+    ttl = baa_service._CACHE_TTL_SECONDS  # 60.0 today; read live so the test
+                                          # follows future TTL changes.
+
+    org_id = org_with_live_key["org"].id
+
+    # Populate cache.
+    assert await baa_service.is_org_baa_active(db_session, org_id)
+    assert call_count["n"] == 1
+
+    # Just-under TTL (strict-less-than → hit).
+    now[0] += ttl - 0.001
+    assert await baa_service.is_org_baa_active(db_session, org_id)
+    assert call_count["n"] == 1, (
+        "expected cache hit just under TTL boundary"
+    )
+
+    # Exactly at TTL (strict-less-than → miss; re-query DB).
+    now[0] = 1000.0 + ttl
+    assert await baa_service.is_org_baa_active(db_session, org_id)
+    assert call_count["n"] == 2, (
+        "expected cache miss exactly at TTL boundary (< is strict)"
+    )
+
+
+@pytest.mark.asyncio
 async def test_baa_cache_bypass_forces_db(
     org_with_live_key, db_session, monkeypatch
 ):
@@ -640,6 +694,64 @@ async def test_baa_required_response_does_not_leak_phi(
     assert "PHI-LEAK-CANARY" not in rendered
     assert "phi-leak-canary@example.com" not in rendered
     assert "PHI Leak Canary" not in rendered
+
+
+# ── SDK error-mapping activation (end-to-end) ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_live_key_baa_gate_403_maps_to_sdk_policy_block(
+    async_client, org_with_live_key
+):
+    """End-to-end: the backend 403 envelope MUST trigger SDK ``PolicyBlock``.
+
+    PR #194 wired ``baa_required`` / ``baa_expired`` → ``PolicyBlock``
+    defensively in ``vera.errors.CODE_TO_ERROR_CLASS``. PR #201 makes that
+    mapping fire by emitting the structured payload from the backend. This
+    test closes the loop: synthesise an httpx ``HTTPStatusError`` from the
+    real 403 response and assert ``vera.client.wrap_httpx_error`` returns
+    ``PolicyBlock`` (NOT ``VeraAuthError``).
+
+    Without the flat-envelope handler in ``backend/app/main.py``, the body
+    arrived as ``{"detail": {"code": "baa_expired", ...}}`` and the SDK's
+    top-level ``body.get("code")`` lookup missed — the 403 fell through to
+    the status-class mapping and produced ``VeraAuthError``. The headline
+    value of this PR (activating the SDK's defensive mapping) was a no-op.
+    """
+    import httpx
+
+    from vera.client import wrap_httpx_error
+    from vera.errors import PolicyBlock, VeraAuthError
+
+    resp = await async_client.get(
+        "/v1/organizations/me",
+        headers={"Authorization": f"Bearer {org_with_live_key['raw_key']}"},
+    )
+    assert resp.status_code == 403, resp.text
+    body = resp.json()
+    # Confirm the on-the-wire shape is flat — top-level ``code`` is the
+    # contract the SDK reads.
+    assert body.get("code") == "baa_expired", body
+
+    # Build an httpx.HTTPStatusError carrying the real response so
+    # wrap_httpx_error sees the same shape the SDK would in production.
+    http_resp = httpx.Response(
+        status_code=resp.status_code,
+        content=resp.content,
+        headers={"content-type": "application/json"},
+        request=httpx.Request("GET", "http://test/v1/organizations/me"),
+    )
+    status_err = httpx.HTTPStatusError(
+        "403 from gate", request=http_resp.request, response=http_resp
+    )
+
+    wrapped = wrap_httpx_error(status_err)
+    assert isinstance(wrapped, PolicyBlock), (
+        f"expected PolicyBlock from flat envelope, got {type(wrapped).__name__}"
+    )
+    # Regression guard: must NOT degrade to the generic 401/403 fallback.
+    assert not isinstance(wrapped, VeraAuthError)
+    assert wrapped.status_code == 403
 
 
 # ── kind appears in list response ────────────────────────────────────────────

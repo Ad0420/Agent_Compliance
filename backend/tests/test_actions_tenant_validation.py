@@ -163,11 +163,12 @@ async def test_post_action_rejects_phi_shaped_tenant_id(
         headers=HEADERS(raw_key),
     )
     assert resp.status_code == 422, resp.text
-    detail = resp.json().get("detail")
-    # The structured error code must travel — SDK + dashboard
-    # error handling depends on it (forward-compat with PR 5).
-    assert isinstance(detail, dict), f"expected structured detail, got {detail!r}"
-    assert detail.get("code") == "phi_shape_in_tenant_id", detail
+    body = resp.json()
+    # The structured error code must travel — SDK + dashboard error handling
+    # depends on it. The flat-envelope handler (backend/app/main.py) lifts
+    # dict-typed HTTPException.detail to the top level so ``code`` is at the
+    # body root (was nested under ``detail`` before PR #201's review fixes).
+    assert body.get("code") == "phi_shape_in_tenant_id", body
 
 
 @pytest.mark.asyncio
