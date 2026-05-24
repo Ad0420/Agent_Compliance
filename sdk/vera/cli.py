@@ -19,6 +19,7 @@ import os
 import sys
 import time
 from collections import deque
+from pathlib import Path
 from typing import Any
 
 import click
@@ -338,6 +339,188 @@ def _env_truthy(name: str) -> bool:
         "yes",
         "on",
     }
+
+
+@cli.group()
+def codemod() -> None:
+    """Mechanical source rewrites (Phase 1 PR 9 / Stream D8)."""
+
+
+@codemod.command("audit-to-gate")
+@click.argument(
+    "path",
+    type=click.Path(exists=True, file_okay=True, dir_okay=True, path_type=Path),
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Print the unified diff for each changed file; do NOT write.",
+)
+@click.option(
+    "--wrap-callsites",
+    is_flag=True,
+    help=(
+        "Wrap call sites of @vera.gate-decorated functions in a "
+        "try/except (vera.PendingReview, vera.PolicyBlock) skeleton. "
+        "Off by default because it produces opinionated diffs."
+    ),
+)
+@click.option(
+    "--no-init-todo",
+    is_flag=True,
+    help=(
+        "Skip inserting the agent_type= TODO comment on vera.init() "
+        "calls that don't already pass agent_type=."
+    ),
+)
+@click.option(
+    "--check",
+    is_flag=True,
+    help=(
+        "CI mode: exit 1 if any file would change. Implies --dry-run. "
+        "Matches the convention of ``ruff format --check``."
+    ),
+)
+@click.option(
+    "-v",
+    "--verbose",
+    is_flag=True,
+    help="Show per-file per-transform counter breakdown.",
+)
+def codemod_audit_to_gate(
+    path: Path,
+    dry_run: bool,
+    wrap_callsites: bool,
+    no_init_todo: bool,
+    check: bool,
+    verbose: bool,
+) -> None:
+    """Migrate @vera.audit usage to @vera.gate across PATH.
+
+    PATH may be a single ``.py`` file or a directory (recurses into
+    ``.py`` files, pruning ``__pycache__``, ``.git``, ``.venv``,
+    ``node_modules``, ``dist``, ``build``, and ``*.egg-info``).
+
+    Per-file opt-out: prefix the file with ``# noqa: VERA-CODEMOD`` to
+    skip it entirely.
+
+    See ``sdk/MIGRATION.md`` for the full migration narrative.
+    """
+    # Lazy import — keeps libcst optional. Users who install
+    # ``vera-sdk`` (no extras) get a friendly error pointing at the
+    # extras_require knob instead of an ImportError at CLI startup.
+    try:
+        from .codemod import (
+            MigrationOptions,
+            iter_python_files,
+            make_diff,
+            migrate_source,
+        )
+    except ImportError as exc:
+        click.echo(
+            f"ERROR: vera codemod requires libcst (missing: {exc.name}).\n"
+            "Install with: pip install 'vera-sdk[codemod]'",
+            err=True,
+        )
+        sys.exit(2)
+
+    options = MigrationOptions(
+        wrap_callsites=wrap_callsites,
+        init_todo=not no_init_todo,
+    )
+    # ``--check`` implies dry-run (we never modify in check mode).
+    effective_dry_run = dry_run or check
+
+    migrated = 0
+    skipped = 0
+    unchanged = 0
+    errors = 0
+    files_seen = 0
+
+    for file_path in iter_python_files(path):
+        files_seen += 1
+        try:
+            # Read the source up front for the diff. ``migrate_file``
+            # with ``write=False`` returns the rewritten source; we
+            # diff against the original ourselves.
+            try:
+                original = file_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError) as exc:
+                # Read errors are real errors (the file exists, we
+                # found it via the walker, but couldn't open / decode
+                # it). Surface as exit code 2 in the rollup. Syntax
+                # errors and per-file opt-outs are still "skipped"
+                # since they're expected forms of "this file can't be
+                # processed but the run is fine".
+                click.echo(
+                    f"ERROR {file_path}: read error: {exc}", err=True
+                )
+                errors += 1
+                continue
+
+            result = migrate_source(original, options=options)
+
+            if result.skipped_reason:
+                if verbose:
+                    click.echo(
+                        f"SKIP {file_path}: {result.skipped_reason}",
+                        err=True,
+                    )
+                skipped += 1
+                continue
+
+            if not result.changed:
+                if verbose:
+                    click.echo(f"UNCHANGED {file_path}")
+                unchanged += 1
+                continue
+
+            migrated += 1
+            if effective_dry_run:
+                diff = make_diff(
+                    original, result.new_source, path=str(file_path)
+                )
+                if diff:
+                    click.echo(diff, nl=False)
+            else:
+                file_path.write_text(result.new_source, encoding="utf-8")
+
+            if verbose:
+                counters_str = ", ".join(
+                    f"{k}={v}" for k, v in sorted(result.counters.items())
+                )
+                action = "WOULD MIGRATE" if effective_dry_run else "MIGRATED"
+                click.echo(
+                    f"{action} {file_path}: {counters_str}", err=True
+                )
+        except Exception as exc:  # noqa: BLE001 — never crash whole run
+            click.echo(
+                f"ERROR {file_path}: {type(exc).__name__}: {exc}",
+                err=True,
+            )
+            errors += 1
+
+    # Summary
+    click.echo("", err=True)
+    click.echo(
+        f"summary: {migrated} migrated, {unchanged} unchanged, "
+        f"{skipped} skipped, {errors} errors  "
+        f"({files_seen} .py files scanned)",
+        err=True,
+    )
+
+    # Exit codes (matching ``ruff``'s convention):
+    #   2 — read/parse errors during the run (always, regardless of --check)
+    #   1 — --check mode and at least one file would change
+    #   0 — clean run
+    # Errors take precedence: a partial failure that also surfaced a
+    # pending change should still exit 2 so CI doesn't conflate a real
+    # bug with a yet-to-be-applied migration.
+    if errors > 0:
+        sys.exit(2)
+    if check and migrated > 0:
+        sys.exit(1)
+    sys.exit(0)
 
 
 def main() -> None:

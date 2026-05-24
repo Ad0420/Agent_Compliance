@@ -62,10 +62,155 @@ the Phase 2 backend `REQUIRE_DEFERRED_REVIEW` ruling lands.
    still captured as an ActionRecord — only the policy lookup is
    short-circuited).
 
-A LibCST-based codemod (`vera codemod audit-to-gate`) is planned for
-Phase 1 to automate the syntactic rewrite. The deprecation warning
-fires per call site (deduped on `(filename, lineno)`) so the codemod
-can surface every site that needs touching from a single test run.
+### Automated migration via codemod (Phase 1 PR 9 / Stream D8)
+
+Most of the rename is mechanical. Run the bundled codemod to apply it:
+
+```bash
+# Preview the diff without writing anything.
+vera codemod audit-to-gate --dry-run path/to/your/code
+
+# Apply the migration in place.
+vera codemod audit-to-gate path/to/your/code
+
+# CI gate: exit 1 if any file would change.
+vera codemod audit-to-gate --check path/to/your/code
+
+# Opt in to the try/except scaffold around call sites (opinionated diff).
+vera codemod audit-to-gate --wrap-callsites path/to/your/code
+
+# Skip the agent_type= TODO comment insertion.
+vera codemod audit-to-gate --no-init-todo path/to/your/code
+```
+
+The codemod handles, in a single pass:
+
+1. **Imports** — `from vera import audit` → `from vera import gate`,
+   `from vera import async_audit` → `from vera import gate`, both
+   preserving any `as <alias>`. Mixed imports of both names collapse
+   to a single `from vera import gate`.
+2. **Decorators** — `@vera.audit(...)`, `@vera.async_audit(...)`,
+   `@audit(...)`, `@async_audit(...)` → `@vera.gate(...)` /
+   `@gate(...)`. Aliased imports leave the local reference untouched
+   (the import line already rebound the name).
+3. **Kwarg rename** — `action_name=` → `action_class=` on any
+   `@vera.gate(...)` decorator the codemod recognises. Positional
+   args pass through unchanged.
+4. **(Opt-in) try/except scaffold** — wraps bare call sites of
+   gate-decorated functions in a `try / except (vera.PendingReview,
+   vera.PolicyBlock)` skeleton with TODO comments. Skipped when the
+   call site is already inside a try block that catches Exception,
+   BaseException, or the two domain errors directly.
+5. **`vera.init()` agent_type TODO** — when `vera.init(...)` is
+   missing `agent_type=`, the codemod appends a trailing-comment TODO
+   pointing at this migration guide. Idempotent: re-running won't add
+   a second TODO.
+
+#### Idempotency
+
+Running the codemod twice in a row on the same source produces zero
+changes on the second run. This is asserted on every fixture in
+`sdk/tests/test_codemod.py::test_double_run_idempotent`.
+
+#### Per-file opt-out
+
+Prefix a file with `# noqa: VERA-CODEMOD` (top of file, after any
+shebang / encoding cookie) to skip it entirely.
+
+Grammar (case-insensitive, word-boundary anchored):
+
+| Form                                       | Matches? |
+|--------------------------------------------|----------|
+| `# noqa: VERA-CODEMOD`                     | yes      |
+| `# noqa: VERA-CODEMOD-AUDIT-TO-GATE`       | yes      |
+| `# noqa: VERA-CODEMOD-FUTURE-SUFFIX`       | yes      |
+| `# noqa: VERA-CODEMODISH`                  | no       |
+| `# noqa: vera-codemod`                     | yes      |
+
+The suffixed form (`VERA-CODEMOD-AUDIT-TO-GATE`) is reserved for
+forward compatibility — when future codemods ship under their own
+suffix, you'll be able to opt out of one without opting out of all.
+For now the codemod treats every match as a global opt-out.
+
+#### Exit codes (CLI / CI)
+
+The CLI matches `ruff`'s convention so wrappers can branch on rc:
+
+| Code | Meaning                                                   |
+|------|-----------------------------------------------------------|
+| 0    | Clean run — nothing pending (or `--check` saw no changes) |
+| 1    | `--check` mode and at least one file would change         |
+| 2    | Read / parse errors during the run (always wins over 1)   |
+
+#### Manual steps the codemod will NOT do
+
+* `async_audit(blocking=False)` — `@vera.gate` has no `blocking=`
+  kwarg. The codemod renames the decorator but leaves the kwarg in
+  place; the next call site invocation will raise a `TypeError`. Drop
+  the kwarg manually after migrating.
+* `try/except` body content. The wrap-callsites transform inserts
+  `raise` placeholders with TODO comments. Replace them with your
+  queueing / block-handling logic.
+* Tenant resolution. `@vera.gate` requires a tenant; call
+  `vera.init(default_tenant="<id>")` once at startup or pass
+  `tenant=` per-decorator.
+
+#### Example
+
+Before:
+
+```python
+import vera
+from vera import audit
+
+vera.init(api_key="al_live_...")
+
+
+@audit(action_name="approve_loan")
+def approve_loan(applicant_id):
+    return {"approved": True}
+
+
+@vera.audit("chart_note_finalize")
+async def finalize(note):
+    return note
+
+
+result = approve_loan("a-123")
+```
+
+After (`vera codemod audit-to-gate --wrap-callsites .`):
+
+```python
+import vera
+from vera import gate
+
+vera.init(api_key="al_live_...")  # TODO(audit-to-gate codemod): set agent_type= for new_agent_type_detected event (see MIGRATION.md)
+
+
+@gate(action_class="approve_loan")
+def approve_loan(applicant_id):
+    return {"approved": True}
+
+
+@vera.gate("chart_note_finalize")
+async def finalize(note):
+    return note
+
+
+try:
+    result = approve_loan("a-123")
+except vera.PendingReview as pending:
+    # TODO(audit-to-gate codemod): handle PendingReview (review_id=pending.review_id)
+    raise
+except vera.PolicyBlock as blocked:
+    # TODO(audit-to-gate codemod): handle PolicyBlock (reason=blocked.reason)
+    raise
+```
+
+The deprecation warning fires per call site (deduped on
+`(filename, lineno)`) so the codemod can surface every site that
+needs touching from a single test run.
 
 ## Upgrading from 0.3.x to 0.4.x
 
