@@ -6,6 +6,124 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+(no unreleased changes — next release will append entries here)
+
+## [1.0.0] - 2026-05-24
+
+### Stable release
+- First stable cut of the Vera SDK. The public API surface is now under
+  semver: no breaking changes will land until 2.0.0. `vera-sdk<1` users
+  who want to stay on the pre-rename surface should pin `vera-sdk>=0.3,<1`
+  (the final 0.3.x release is the deprecation patch, `0.3.1`).
+- Public surface (frozen until 2.0.0): `vera.init`, `vera.init_async`,
+  `vera.init_async_awaitable`, `vera.get_client`, `vera.get_async_client`,
+  `vera.VeraClient`, `vera.AsyncVeraClient`, `vera.gate`,
+  `vera.audit` (legacy alias — emits DeprecationWarning, removal in 2.0.0),
+  `vera.is_bypassing_gates`, `vera.set_default_client`,
+  `vera.set_default_async_client`,
+  `vera.async_audit` (legacy alias — codemod rewrites to `@vera.gate`,
+  removal in 2.0.0; no runtime warning today),
+  `vera.Redactor`, `vera.set_default_redactor`, `vera.get_default_redactor`,
+  `vera.tenant`, `vera.set_tenant`, `vera.reset_tenant`, `vera.get_tenant`,
+  `vera.get_default_tenant`, `vera.set_default_tenant`, `vera.resolve_tenant`,
+  `vera.copy_context_to_thread`, `vera.set_default_agent_type`,
+  `vera.get_default_agent_type`, `vera.resolve_agent_type`,
+  `vera.VeraError`, `vera.VeraAuthError`, `vera.VeraRateLimitError`,
+  `vera.VeraServerError`, `vera.VeraTimeoutError`, `vera.VeraNetworkError`,
+  `vera.VeraValidationError`, `vera.VeraClientError`, `vera.PolicyBlock`,
+  `vera.PendingReview`, `vera.WrongKeyTier`, `vera.TenantMissingOrInvalid`,
+  `vera.ReviewerCredentialsInsufficient`,
+  `vera.ApprovalRejectedError`, `vera.ApprovalTimeoutError`,
+  `vera.middleware.VeraMiddleware`,
+  `vera.testing.bypass_gates` (pytest fixture) + `vera.testing.bypass_gates_cm`
+  (context-manager form),
+  `vera.codemod` (with `[codemod]` extras).
+- `Development Status` classifier promoted from
+  `4 - Beta` → `5 - Production/Stable`.
+
+### Added (since 0.3.0)
+- `@vera.gate` decorator with synchronous Ruling routing
+  (ALLOW / REQUIRE_HITL / BLOCK) against the backend `/v1/gates/evaluate`
+  endpoint, including a 404 fallback to legacy audit-only capture so
+  the decorator ships today and auto-graduates when Phase 2 lands
+  (Phase 1 PR 8 / #203).
+- Tenant resolver with four-source precedence — explicit kwarg >
+  context manager > middleware > process default — plus
+  `vera.middleware.VeraMiddleware` for FastAPI/Starlette and
+  `vera.copy_context_to_thread` for thread-pool propagation
+  (Phase 1 PR 7 / #200).
+- 12-error catalog: 5 new branded errors (`PolicyBlock`, `PendingReview`,
+  `WrongKeyTier`, `TenantMissingOrInvalid`,
+  `ReviewerCredentialsInsufficient`) on top of the existing 7
+  transport-layer errors (`VeraError`, `VeraAuthError`,
+  `VeraRateLimitError`, `VeraServerError`, `VeraTimeoutError`,
+  `VeraNetworkError`, `VeraValidationError`) (Phase 1 PR 6 / #194).
+- `vera codemod audit-to-gate` LibCST migration tool. Renames imports,
+  decorators, and kwargs in a single pass with `--dry-run`, `--check`
+  (CI gate, exit codes match ruff), `--wrap-callsites` (opt-in
+  try/except scaffold), and a `# noqa: VERA-CODEMOD` per-file opt-out.
+  Install via `pip install vera-sdk[codemod]` (Phase 1 PR 9 / #208).
+- `vera.testing.bypass_gates` pytest fixture + `bypass_gates_cm`
+  context-manager form so pilot test suites don't need an httpx
+  `MockTransport` for every gate (Phase 1 PR 8 / #203).
+- `vera.init(agent_type=...)` kwarg + `vera.set_default_agent_type` /
+  `get_default_agent_type` / `resolve_agent_type` helpers. The
+  resolved `agent_type` is stamped onto every `@vera.gate` outgoing
+  payload (Phase 1 PR 8).
+
+### Changed (since 0.3.0)
+- `@vera.audit` is now a deprecated alias for `@vera.gate`. The
+  decorator continues to work; the first invocation per call site
+  emits a `DeprecationWarning` pointing at `@vera.gate` and the
+  `vera codemod audit-to-gate` tool. Removal scheduled for 2.0.0.
+- `libcst` is an optional extra (`[codemod]`) — saves ~15MB on
+  installs that don't run the codemod (most SDK consumers).
+- `VeraAuthError.code` renamed `auth` → `invalid_api_key`;
+  `VeraTimeoutError.code` and `VeraNetworkError.code` collapsed to
+  `gate_timeout_or_network`. Realigns the SDK with the 12-class
+  catalog documented in `docs/error-discipline.md`. Constructor
+  signatures, `except` matching, and the `VeraError` base class are
+  all unchanged — only the `code` value (and therefore the `docs_url`
+  suffix in `str(err)`) changed. A one-shot `DeprecationWarning`
+  carries the old → new mapping the first time `str(err)` runs on
+  each renamed class.
+- Backend behavior change visible in the SDK: API keys minted with
+  `kind="live"` now require an active BAA on the org. Callers without
+  one get HTTP 403 `baa_required` (at mint time) or `baa_expired`
+  (per-request gate). Routed through `wrap_httpx_error` →
+  `PolicyBlock` — `except PolicyBlock` already catches it, no client
+  code changes required.
+
+See the [1.0.0 migration guide](MIGRATION.md) for upgrade steps.
+
+## [0.3.1] - 2026-05-24
+
+### Added
+- `DeprecationWarning` emitted by `@vera.audit` pointing users at
+  `@vera.gate` and `vera codemod audit-to-gate`. This is a NO-OP
+  functionally — the alias continues to capture `ActionRecord`s with
+  the legacy semantics. Purpose: give existing pilots a visible
+  warning on the 0.3 line BEFORE they upgrade to 1.0.0, so the move
+  is intentional rather than surprise-on-pin. The warning fires once
+  per call site (deduped on `(filename, lineno)`) so a large codebase
+  with hundreds of `@vera.audit` call sites produces one warning per
+  site, not one per call. `@vera.async_audit` does NOT emit a
+  warning in `0.3.1` — pilots on `async_audit` should still run the
+  codemod and migrate to `@vera.gate`.
+- This release is intentionally identical to `0.3.0` plus the
+  DeprecationWarning. Pilots who can't move yet should pin
+  `vera-sdk>=0.3,<1`; the warning will guide them through the move
+  on their own timeline.
+
+### Deprecated
+- `@vera.audit` — renamed to `@vera.gate`. Run
+  `vera codemod audit-to-gate` to migrate automatically. Removal
+  scheduled for `2.0.0` (per the `removed_in="2.0.0"` annotation
+  on the alias and the `_AUDIT_DEPRECATION_MESSAGE` constant in
+  `vera/decorator.py`).
+
+## [Pre-1.0 changelog — historical detail kept for reference]
+
 ### Behavior change (backend-driven)
 - API keys minted with `kind="live"` now require an active BAA on the org.
   Previously this field was silently dropped on the backend; now it's honored

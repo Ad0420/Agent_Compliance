@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vera-sdk"
-version = "0.3.0"
+version = "1.0.0"
 description = "Vera — runtime trust layer SDK for AI agents (immutable audit trail, HITL approvals, policy enforcement)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["ai", "audit", "compliance", "trust", "agents", "hitl", "eu-ai-act", "gdpr"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
@@ -70,3 +70,18 @@ vera = "vera.pytest_plugin"
 [tool.setuptools.packages.find]
 include = ["vera*"]
 exclude = ["tests*"]
+
+# Phase 1 PR 10 — register custom pytest markers so the latency-regression
+# baselines and the build-artifact sanity test can be opted out of (or
+# scoped in) without polluting the default ``pytest`` run.
+#
+# Default ``pytest`` invocation runs everything EXCEPT ``slow`` (build
+# artifacts), because that test builds + pip-installs into a fresh venv
+# (30s+). Latency baselines run by default but can be skipped on slow CI
+# hardware via ``pytest -m 'not latency'`` or ``VERA_SKIP_LATENCY_TESTS=1``.
+[tool.pytest.ini_options]
+markers = [
+    "latency: latency regression baselines (skip on slow CI with -m 'not latency')",
+    "slow: slow tests including subprocess builds (default-skipped via addopts)",
+]
+addopts = "-m 'not slow'"
