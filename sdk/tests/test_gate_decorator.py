@@ -12,6 +12,7 @@ the SDK code path runs end-to-end without a real server.
 from __future__ import annotations
 
 import asyncio
+import json
 import warnings
 from unittest.mock import MagicMock
 
@@ -22,7 +23,12 @@ import vera
 from vera import VeraClient
 from vera._context import _current_tenant, set_default_tenant
 from vera.decorator import set_default_client
-from vera.errors import PendingReview, PolicyBlock, TenantMissingOrInvalid
+from vera.errors import (
+    PendingReview,
+    PolicyBlock,
+    TenantMissingOrInvalid,
+    VeraClientError,
+)
 from vera.gate import (
     GATE_EVALUATE_PATH,
     _reset_evaluate_404_warning,
@@ -640,3 +646,283 @@ def test_no_client_runs_wrapped_function_without_capturing(monkeypatch):
     # No client + no tenant resolver — function still runs (warn-once
     # contract from @vera.audit applies here too).
     assert wrapped() == 42
+
+
+# ---------------------------------------------------------------------------
+# Wave 2B PR B1 — Wire-shape (GateEvaluateRequest) capture
+# ---------------------------------------------------------------------------
+
+
+def _capture_evaluate_handler(
+    response_body: dict, status: int = 200, captured: dict | None = None
+):
+    """Variant of ``_evaluate_handler`` that captures the POST body.
+
+    The ``captured`` dict (caller-provided) is mutated in place with
+    the JSON body the SDK sent — lets assertions inspect every key
+    the wire shape carries.
+    """
+    def _h(request: httpx.Request) -> httpx.Response:
+        if request.url.path == GATE_EVALUATE_PATH and captured is not None:
+            try:
+                captured.update(json.loads(request.content))
+            except ValueError:
+                pass
+            return httpx.Response(status, json=response_body)
+        if request.url.path == GATE_EVALUATE_PATH:
+            return httpx.Response(status, json=response_body)
+        return httpx.Response(200, json={"records": []})
+
+    return _h
+
+
+def test_wire_shape_contains_required_fields():
+    """B1 — POST body MUST carry agent_name/action_type/action_name/authorized_by."""
+    client = _make_client()
+    captured: dict = {}
+    _install_transport(
+        client,
+        _capture_evaluate_handler(
+            {"effect": "allow", "reason": "", "gate_name": "test_gate"},
+            captured=captured,
+        ),
+    )
+    set_default_client(client)
+
+    @vera.gate(action_class="commit_chart_note", tenant="acme")
+    def wrapped():
+        return "ok"
+
+    wrapped()
+    # The four required fields per backend GateEvaluateRequest.
+    assert captured["agent_name"] == "test-agent"
+    assert captured["action_type"] == "function_call"
+    assert captured["action_name"] == "commit_chart_note"
+    assert captured["authorized_by"] == "api_key:al_test_…"
+    assert captured["tenant_id"] == "acme"
+    assert captured["metadata"]["tenant_source"] == "explicit_kwarg"
+    # Sanity: legacy field MUST be gone (otherwise the backend 422s on
+    # ``extra`` if it ever flips ``extra="forbid"``).
+    assert "action_class" not in captured
+    client.close()
+
+
+def test_wire_shape_authorized_by_hint_format():
+    """B1 — authorized_by is the API-key tier prefix + ellipsis, never the full key."""
+    client = _make_client()  # api_key="al_test_xxx"
+    captured: dict = {}
+    _install_transport(
+        client,
+        _capture_evaluate_handler(
+            {"effect": "allow", "reason": ""}, captured=captured
+        ),
+    )
+    set_default_client(client)
+
+    @vera.gate(action_class="x", tenant="acme")
+    def wrapped():
+        return "ok"
+
+    wrapped()
+    # 8-char hint + ellipsis with the ``api_key:`` namespace prefix;
+    # the full key is NEVER on the wire.
+    assert captured["authorized_by"] == "api_key:al_test_…"
+    assert "xxx" not in captured["authorized_by"]
+    client.close()
+
+
+def test_wire_shape_authorized_by_sdk_fallback_when_no_key():
+    """B1 — authorized_by falls back to the sentinel 'sdk' when no key configured."""
+    # Build a client with no api_key (mimics a misconfigured-but-running
+    # SDK; the client itself only logs a warning rather than refusing).
+    client = VeraClient(
+        api_url="http://example.test",
+        api_key="",
+        agent_name="test-agent",
+        flush_interval=60.0,
+        atexit_drain_timeout=0.1,
+    )
+    captured: dict = {}
+    _install_transport(
+        client,
+        _capture_evaluate_handler(
+            {"effect": "allow", "reason": ""}, captured=captured
+        ),
+    )
+    set_default_client(client)
+
+    @vera.gate(action_class="x", tenant="acme")
+    def wrapped():
+        return "ok"
+
+    wrapped()
+    assert captured["authorized_by"] == "sdk"
+    client.close()
+
+
+def test_wire_shape_omits_optional_fields_when_unset():
+    """B1 — optional kwargs default to absence, not null."""
+    client = _make_client()
+    captured: dict = {}
+    _install_transport(
+        client,
+        _capture_evaluate_handler(
+            {"effect": "allow", "reason": ""}, captured=captured
+        ),
+    )
+    set_default_client(client)
+
+    @vera.gate(action_class="x", tenant="acme")
+    def wrapped():
+        return "ok"
+
+    wrapped()
+    # Optional fields must be absent (not None) so the backend's
+    # ``Optional[str]`` defaults take over instead of carrying ``null``.
+    assert "agent_id" not in captured
+    assert "data_subject_id" not in captured
+    assert "target_system" not in captured
+    assert "target_resource" not in captured
+    assert "action_description" not in captured
+    client.close()
+
+
+def test_wire_shape_propagates_new_decorator_kwargs():
+    """B1 — new optional kwargs surface on the wire when supplied."""
+    client = _make_client()
+    captured: dict = {}
+    _install_transport(
+        client,
+        _capture_evaluate_handler(
+            {"effect": "allow", "reason": ""}, captured=captured
+        ),
+    )
+    set_default_client(client)
+
+    @vera.gate(
+        action_class="x",
+        tenant="acme",
+        agent_id="ag_123",
+        data_subject_id="patient_abc",
+        target_system="EHR",
+        target_resource="encounter:789",
+        action_description="commit chart note draft",
+    )
+    def wrapped():
+        return "ok"
+
+    wrapped()
+    assert captured["agent_id"] == "ag_123"
+    assert captured["data_subject_id"] == "patient_abc"
+    assert captured["target_system"] == "EHR"
+    assert captured["target_resource"] == "encounter:789"
+    assert captured["action_description"] == "commit chart note draft"
+    client.close()
+
+
+def test_wire_shape_agent_type_rides_in_metadata():
+    """B1 — legacy agent_type stays nested in metadata (no top-level slot)."""
+    client = _make_client()
+    captured: dict = {}
+    _install_transport(
+        client,
+        _capture_evaluate_handler(
+            {"effect": "allow", "reason": ""}, captured=captured
+        ),
+    )
+    set_default_client(client)
+
+    @vera.gate(
+        action_class="x",
+        tenant="acme",
+        agent_type="clinical_summarizer",
+    )
+    def wrapped():
+        return "ok"
+
+    wrapped()
+    # Backend GateEvaluateRequest has no top-level agent_type — it
+    # rides in metadata (and would be dropped by ``extra="ignore"``
+    # if we tried to top-level it).
+    assert "agent_type" not in captured
+    assert captured["metadata"]["agent_type"] == "clinical_summarizer"
+    client.close()
+
+
+def test_wire_shape_async_path_matches_sync():
+    """B1 — async decorator sends the same wire shape as sync."""
+    client = _make_client()
+    captured: dict = {}
+    _install_transport(
+        client,
+        _capture_evaluate_handler(
+            {"effect": "allow", "reason": ""}, captured=captured
+        ),
+    )
+    set_default_client(client)
+
+    @vera.gate(action_class="x", tenant="acme")
+    async def wrapped():
+        return "ok"
+
+    asyncio.run(wrapped())
+    assert captured["agent_name"] == "test-agent"
+    assert captured["action_type"] == "function_call"
+    assert captured["action_name"] == "x"
+    assert captured["authorized_by"] == "api_key:al_test_…"
+    client.close()
+
+
+def test_missing_agent_name_raises_actionable_error():
+    """B1 — empty client.agent_name raises with actionable copy (not a 422)."""
+    client = VeraClient(
+        api_url="http://example.test",
+        api_key="al_test_xxx",
+        agent_name="",  # explicit empty — the failure case.
+        flush_interval=60.0,
+        atexit_drain_timeout=0.1,
+    )
+    _install_transport(client, _evaluate_handler({"effect": "allow"}))
+    set_default_client(client)
+
+    @vera.gate(action_class="x", tenant="acme")
+    def wrapped():
+        return "ok"
+
+    with pytest.raises(VeraClientError) as ei:
+        wrapped()
+    assert "agent_name" in str(ei.value)
+    client.close()
+
+
+# ---------------------------------------------------------------------------
+# Wave 2B PR B1 — 404 fallback regression (new wire shape still sent)
+# ---------------------------------------------------------------------------
+
+
+def test_404_fallback_still_sends_new_wire_shape():
+    """B1 — 404 fallback fires regardless of body shape; new keys still sent."""
+    client = _make_client()
+    captured: dict = {}
+    _install_transport(
+        client,
+        _capture_evaluate_handler({}, status=404, captured=captured),
+    )
+    set_default_client(client)
+
+    @vera.gate(action_class="x", tenant="acme")
+    def wrapped():
+        return "ok"
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("always")
+        assert wrapped() == "ok"
+
+    # Wire shape regression guard: even though the backend 404s, the
+    # request the SDK SENT must carry the new keys (so the moment a
+    # post-#212 backend lands, the same code path produces a valid body).
+    assert "agent_name" in captured
+    assert "action_type" in captured
+    assert "action_name" in captured
+    assert "authorized_by" in captured
+    client.close()
