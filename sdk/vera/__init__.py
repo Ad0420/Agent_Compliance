@@ -33,6 +33,19 @@ from .decorator import (
 from .async_client import AsyncVeraClient
 from .async_decorator import async_audit, set_default_async_client
 from .redaction import Redactor
+from ._context import (
+    # Phase 1 PR 7 / Stream D3 — tenant resolver. See vera/_context.py for
+    # the precedence rules (explicit kwarg > context manager > middleware >
+    # default) and the Codex F4 thread-pool propagation helper.
+    tenant,
+    set_tenant,
+    reset_tenant,
+    get_tenant,
+    get_default_tenant,
+    set_default_tenant,
+    resolve_tenant,
+    copy_context_to_thread,
+)
 from .errors import (
     VeraError,
     VeraAuthError,
@@ -139,6 +152,7 @@ def init(
     framework: str | None = None,
     dev: bool | None = None,
     persistent_buffer_path: str | None = None,
+    default_tenant: str | None = None,
     **client_kwargs: Any,
 ) -> VeraClient:
     """Initialize Vera. Sentry-style one-call setup.
@@ -164,6 +178,16 @@ def init(
             client that prints records to stderr instead of POSTing.
         persistent_buffer_path: Durable spool path. Falls back to
             ``VERA_SPOOL_PATH`` env var. Requires ``VERA_SPOOL_KEY``.
+        default_tenant: Process-wide tenant fallback (Phase 1 PR 7).
+            Set this for single-tenant deployments so calls without an
+            explicit ``tenant=`` kwarg, context manager, or middleware
+            binding still resolve. Validated against
+            ``^[a-zA-Z0-9_-]{1,64}$``; an invalid value raises
+            :class:`TenantMissingOrInvalid` before the client is built.
+            To clear a previously-registered default at runtime (e.g.
+            for test isolation, since the binding lives on a
+            module-level variable that persists across :func:`init`
+            calls), call ``vera.set_default_tenant(None)``.
         **client_kwargs: Passed through to :class:`VeraClient` (e.g.
             ``timeout``, ``batch_size``, ``redactor``).
 
@@ -192,6 +216,13 @@ def init(
             ...
     """
     dev_active = dev if dev is not None else _env_bool("VERA_DEV", default=False)
+
+    # Phase 1 PR 7 — register the process-level tenant default BEFORE we
+    # build the client. set_default_tenant validates against the regex and
+    # raises TenantMissingOrInvalid for bad values; doing it first means a
+    # bad default doesn't leak a half-initialised client or a spool.
+    if default_tenant is not None:
+        set_default_tenant(default_tenant)
 
     # Build the new client OUTSIDE the lock. Construction is expensive
     # (httpx setup, optional spool open) and any failures here should not
@@ -386,6 +417,15 @@ __all__ = [
     "Redactor",
     "set_default_redactor",
     "get_default_redactor",
+    # Tenant resolver (Phase 1 PR 7 / Stream D3)
+    "tenant",
+    "set_tenant",
+    "reset_tenant",
+    "get_tenant",
+    "get_default_tenant",
+    "set_default_tenant",
+    "resolve_tenant",
+    "copy_context_to_thread",
     # Branded errors — transport layer (existing 7)
     "VeraError",
     "VeraAuthError",

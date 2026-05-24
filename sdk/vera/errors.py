@@ -575,6 +575,33 @@ def _looks_like_phi(value: Any) -> bool:
     return False
 
 
+def _is_likely_phi(value: Any) -> bool:
+    """Defensive over-redaction trigger: whitespace + digits is suspicious.
+
+    The strict :func:`_looks_like_phi` heuristic uses ``fullmatch`` against
+    a narrow set of single-token shapes (SSN, ISO date, ``name_1985``). It
+    does NOT fire on natural-language combinations like ``"John Doe 1972"``
+    or ``"Jane Smith DOB 03 14 1972"`` because they contain multiple words
+    with internal whitespace that the existing patterns don't anchor.
+
+    Those exact shapes are extremely common PHI leak vectors (a developer
+    accidentally passing a patient name + DOB as a tenant id). Rather than
+    teach :func:`_looks_like_phi` every variant of "PII written like a
+    sentence", we add a coarser second filter: any string containing BOTH
+    whitespace AND a digit is treated as likely-PHI and over-redacted.
+
+    Legitimate tenant ids (``acme_corp_us_east_2``, ``customer-12345``)
+    do not contain whitespace and are unaffected. Losing a diagnostic
+    string is vastly cheaper than echoing PHI into ``provided_value`` or
+    ``developer_reason``.
+    """
+    if not isinstance(value, str):
+        return False
+    has_whitespace = bool(re.search(r"\s", value))
+    has_digit = bool(re.search(r"\d", value))
+    return has_whitespace and has_digit
+
+
 class TenantMissingOrInvalid(VeraError):
     """The action requires a ``tenant_id`` but none was resolved (or it's invalid).
 
@@ -617,14 +644,22 @@ class TenantMissingOrInvalid(VeraError):
         # NEVER echo a PHI-shape value — that would defeat the purpose of the
         # heuristic (the value is the thing we're trying NOT to log).
         #
-        # Belt-and-suspenders: run the PHI-shape heuristic against
-        # ``provided_value`` regardless of the ``reason`` the caller
-        # supplied. The backend may classify an SSN-shaped value as
-        # ``tenant_malformed`` while the SDK would call it
-        # ``phi_shape_detected``; trusting the caller's reason here would
-        # leak the value. Lean toward false-positive — losing a diagnostic
-        # string is far cheaper than logging PHI.
-        if reason == TENANT_REASON_PHI_SHAPE or _looks_like_phi(provided_value):
+        # Belt-and-suspenders, layered:
+        #   1. Explicit PHI reason — always redact.
+        #   2. Strict :func:`_looks_like_phi` (SSN / DOB / ``name_1985``)
+        #      fullmatch — redact even when the backend mis-labeled the
+        #      reason as ``malformed``.
+        #   3. Defensive :func:`_is_likely_phi` (whitespace + digit) —
+        #      catches multi-word combinations like ``"John Doe 1972"``
+        #      that the strict patterns miss because they don't fullmatch
+        #      a sentence-shaped string. Lean toward false-positive:
+        #      losing a diagnostic string is cheaper than logging PHI.
+        likely_phi = _is_likely_phi(provided_value)
+        if (
+            reason == TENANT_REASON_PHI_SHAPE
+            or _looks_like_phi(provided_value)
+            or likely_phi
+        ):
             self.provided_value = None
         else:
             self.provided_value = provided_value
@@ -646,12 +681,21 @@ class TenantMissingOrInvalid(VeraError):
                 )
             elif reason == TENANT_REASON_MALFORMED:
                 # Use the post-redaction ``self.provided_value`` (None when
-                # the PHI heuristic fired) so we don't leak via developer_reason.
+                # any PHI heuristic fired) so we don't leak via developer_reason.
+                # When the defensive whitespace-and-digit heuristic tripped,
+                # emit a distinct message so the operator knows WHY the value
+                # was redacted (a generic ``(value redacted)`` would be opaque).
                 safe_value = self.provided_value
-                developer_reason = (
-                    f"tenant_id failed the ^[a-zA-Z0-9_-]{{1,64}}$ format check"
-                    + (f" (provided={safe_value!r})." if safe_value else ".")
-                )
+                if likely_phi:
+                    developer_reason = (
+                        "tenant_id failed the regex check "
+                        "(value redacted: contains whitespace + digits)"
+                    )
+                else:
+                    developer_reason = (
+                        f"tenant_id failed the ^[a-zA-Z0-9_-]{{1,64}}$ format check"
+                        + (f" (provided={safe_value!r})." if safe_value else ".")
+                    )
             else:
                 developer_reason = (
                     "No tenant_id resolved — pass tenant_id=, use the "

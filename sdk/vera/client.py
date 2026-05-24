@@ -78,6 +78,7 @@ from .errors import (
     WrongKeyTier,
 )
 from .spool import Spool, SpoolDecryptionError, SpoolDiskFullError, SpoolError
+from ._context import resolve_tenant
 
 if TYPE_CHECKING:
     from .redaction import Redactor
@@ -829,8 +830,39 @@ class VeraClient:
         normalises optional JSON blobs to empty dicts. Used by
         :meth:`record_action` and the dev-mode :class:`vera.dev.DevClient`
         subclass so the on-wire and on-sink shapes are identical.
+
+        Tenant resolution (Phase 1 PR 7): if ``tenant=`` is passed as a
+        kwarg it wins; otherwise the resolver consults the ContextVar
+        (middleware / context manager) and the process-level default.
+        When at least one of those produces a value we stamp ``tenant_id``
+        at the top level AND ``metadata.tenant_source`` (SDK-internal
+        observability field, nested so pydantic v2 backends preserve it
+        regardless of ``extra=`` policy) onto the payload. When
+        ``tenant=`` is explicitly passed but malformed,
+        :class:`TenantMissingOrInvalid` propagates — that's a programmer
+        error and must surface loudly. When no tenant is resolvable at
+        all we omit both fields (preserves backward-compat for call sites
+        that pre-date the resolver).
         """
-        return {
+        explicit_tenant = kwargs.pop("tenant", None)
+        tenant_id: str | None = None
+        tenant_source: str | None = None
+        if explicit_tenant is not None:
+            # Explicit kwarg path — malformed value MUST raise (programmer
+            # bug, not a runtime config issue).
+            tenant_id, tenant_source = resolve_tenant(explicit=explicit_tenant)
+        else:
+            try:
+                tenant_id, tenant_source = resolve_tenant()
+            except TenantMissingOrInvalid:
+                # No tenant configured anywhere — leave fields off. The
+                # backend accepts requests without ``tenant_id`` for
+                # backward-compat; downstream surfaces that REQUIRE a
+                # tenant (e.g. ``@vera.gate`` in PR 8) will resolve
+                # themselves and raise explicitly.
+                pass
+
+        payload: dict[str, Any] = {
             "action_name": action_name,
             "action_type": action_type,
             "agent_name": self.agent_name,
@@ -845,6 +877,21 @@ class VeraClient:
             "error_message": error_message,
             **kwargs,
         }
+        if tenant_id is not None:
+            payload["tenant_id"] = tenant_id
+            # tenant_source is SDK-internal observability metadata. We
+            # nest it under ``metadata`` so the backend's pydantic v2
+            # schemas (default ``extra='ignore'``) preserve it on the
+            # ``metadata`` JSON column instead of silently dropping it
+            # at the top level — and so a future schema that flips to
+            # ``extra='forbid'`` doesn't break the resolver wire shape.
+            # Including it on the wire (rather than only in local logs)
+            # means the spool dump also carries provenance, which matters
+            # when replaying historical traffic during an incident.
+            metadata = dict(payload.get("metadata") or {})
+            metadata["tenant_source"] = tenant_source
+            payload["metadata"] = metadata
+        return payload
 
     def record_action(
         self,
@@ -935,6 +982,22 @@ class VeraClient:
             self._warn_enqueue_blocked_permanent_failure_once()
             return
 
+        # Phase 1 PR 7 — resolve tenant before redaction. ``tenant=``
+        # kwarg wins; otherwise consult ContextVar (middleware / context
+        # manager) + process-level default. Missing tenant is non-fatal
+        # at this layer (backward-compat for pre-tenant call sites);
+        # malformed explicit kwarg propagates as TenantMissingOrInvalid.
+        explicit_tenant = kwargs.pop("tenant", None)
+        tenant_id: str | None = None
+        tenant_source: str | None = None
+        if explicit_tenant is not None:
+            tenant_id, tenant_source = resolve_tenant(explicit=explicit_tenant)
+        else:
+            try:
+                tenant_id, tenant_source = resolve_tenant()
+            except TenantMissingOrInvalid:
+                pass
+
         payload = {
             "agent_name": self.agent_name,
             "agent_version": self.agent_version,
@@ -942,6 +1005,12 @@ class VeraClient:
             "framework": self.framework,
             **kwargs,
         }
+        if tenant_id is not None:
+            payload["tenant_id"] = tenant_id
+            # Nest under metadata — see _build_payload for the rationale.
+            metadata = dict(payload.get("metadata") or {})
+            metadata["tenant_source"] = tenant_source
+            payload["metadata"] = metadata
         # Redact at enqueue time so memory/disk dumps don't contain raw PHI
         # and the flush path doesn't repeat the work.
         if self._redactor is not None:

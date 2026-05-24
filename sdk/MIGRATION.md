@@ -55,3 +55,88 @@ exists in 0.3.x so its presence is part of the upgrade contract)
   `record_idempotency_key` field will appear there. Server-side per-record
   dedupe will land in a subsequent backend release; the SDK change is
   additive and harmless to current consumers.
+
+### Tenant resolver (Phase 1 PR 7)
+
+The SDK now resolves a `tenant_id` for each outgoing action record from
+four sources, in strict precedence:
+
+1. Explicit `tenant=` kwarg on `record_action` / `enqueue_action` (and,
+   in PR 8, `@vera.gate`).
+2. `with vera.tenant("x"): ...` context manager.
+3. `vera.set_tenant("x", source="middleware")` — used by
+   `vera.middleware.VeraMiddleware`.
+4. Process-level default, `vera.init(default_tenant="x")` or
+   `vera.set_default_tenant("x")`.
+
+When at least one source provides a value, the SDK stamps `tenant_id`
+at the top level AND `metadata.tenant_source` (one of `explicit_kwarg`,
+`context_manager`, `middleware`, `default`) onto the outgoing payload.
+
+`tenant_source` is nested inside `metadata` rather than placed at the
+top level because the backend's pydantic v2 schemas default to
+`extra="ignore"` — a top-level `tenant_source` field is silently
+dropped before it ever lands on disk, and a future schema that flips
+to `extra="forbid"` would reject the field outright. Nesting under
+`metadata` (which the backend stores as a JSON column) preserves the
+provenance in the spool dump, in structured logs, and in the audit
+trail regardless of pydantic policy.
+
+When no source provides a value, the SDK omits both fields — backward
+compatible for call sites that pre-date the resolver.
+
+Tenant IDs are validated against `^[a-zA-Z0-9_-]{1,64}$` on the SDK
+side (matching the backend regex). An explicit `tenant=` kwarg with a
+malformed value raises `TenantMissingOrInvalid(reason="malformed")` —
+this is a programmer error and must surface loudly.
+
+#### FastAPI / Starlette middleware
+
+Install with the `middleware` extra to get the pinned starlette floor:
+
+```
+pip install vera-sdk[middleware]
+```
+
+The pin is `starlette>=0.21`. Older releases had a contextvar-isolation
+bug in `BaseHTTPMiddleware` that broke per-request tenant bindings.
+
+```python
+from fastapi import FastAPI
+from vera.middleware import VeraMiddleware
+
+app = FastAPI()
+app.add_middleware(VeraMiddleware, header="X-Tenant-ID")
+```
+
+Optional `strict=True` rejects requests with a missing or malformed
+tenant header with a 400. Default `strict=False` lets the request
+through with no tenant bound.
+
+#### Thread-pool propagation (Codex F4 gotcha)
+
+`contextvars.ContextVar` propagates automatically across
+`asyncio.create_task` AND `asyncio.to_thread`, but it does **NOT**
+propagate across `loop.run_in_executor`, `ThreadPoolExecutor.submit`,
+or any third-party background-task layer that submits a sync function
+to a worker thread without an explicit context snapshot. Use
+`vera.copy_context_to_thread`:
+
+```python
+import vera
+
+# loop.run_in_executor
+await loop.run_in_executor(None, vera.copy_context_to_thread(do_work, arg1))
+
+# concurrent.futures.ThreadPoolExecutor
+pool.submit(vera.copy_context_to_thread(do_work, arg1))
+
+# FastAPI BackgroundTasks (defense in depth; current Starlette snapshots
+# context, but historical and third-party layers do not)
+background_tasks.add_task(vera.copy_context_to_thread(do_work, arg1))
+```
+
+`copy_context_to_thread(fn, *args, **kwargs)` returns a zero-arg
+closure that runs `fn(*args, **kwargs)` inside a snapshot of the
+context taken at the moment the helper is called (not at the moment
+the worker runs).

@@ -24,10 +24,12 @@ import httpx
 
 from .client import wrap_httpx_error
 from .errors import (
+    TenantMissingOrInvalid,
     VeraAuthError,
     VeraValidationError,
 )
 from .spool import Spool, SpoolDecryptionError, SpoolDiskFullError, SpoolError
+from ._context import resolve_tenant
 
 if TYPE_CHECKING:
     from .redaction import Redactor
@@ -393,9 +395,22 @@ class AsyncVeraClient:
 
         Mirrors :meth:`vera.client.VeraClient._build_payload`. Stamps the
         client-level identity onto caller-supplied fields and normalises
-        optional JSON blobs to empty dicts.
+        optional JSON blobs to empty dicts. Tenant resolution follows
+        the same precedence as the sync client (explicit kwarg > context
+        var > process default); missing is non-fatal, malformed explicit
+        kwarg raises.
         """
-        return {
+        explicit_tenant = kwargs.pop("tenant", None)
+        tenant_id: str | None = None
+        tenant_source: str | None = None
+        if explicit_tenant is not None:
+            tenant_id, tenant_source = resolve_tenant(explicit=explicit_tenant)
+        else:
+            try:
+                tenant_id, tenant_source = resolve_tenant()
+            except TenantMissingOrInvalid:
+                pass
+        payload: dict = {
             "action_name": action_name,
             "action_type": action_type,
             "agent_name": self.agent_name,
@@ -410,6 +425,16 @@ class AsyncVeraClient:
             "error_message": error_message,
             **kwargs,
         }
+        if tenant_id is not None:
+            payload["tenant_id"] = tenant_id
+            # Nest tenant_source under metadata so pydantic v2 backends
+            # (default ``extra='ignore'``) preserve it on the metadata
+            # JSON column rather than silently dropping it. Matches the
+            # sync client's _build_payload behaviour.
+            metadata = dict(payload.get("metadata") or {})
+            metadata["tenant_source"] = tenant_source
+            payload["metadata"] = metadata
+        return payload
 
     async def record_action(
         self,
@@ -468,6 +493,20 @@ class AsyncVeraClient:
         which the decorator's broad exception handler swallowed silently —
         records never made it to the queue **or** to the wire.
         """
+        # Phase 1 PR 7 — same tenant-resolution semantics as the sync
+        # path: explicit kwarg > context var > process default; missing
+        # is silently omitted, malformed explicit kwarg raises.
+        explicit_tenant = kwargs.pop("tenant", None)
+        tenant_id: str | None = None
+        tenant_source: str | None = None
+        if explicit_tenant is not None:
+            tenant_id, tenant_source = resolve_tenant(explicit=explicit_tenant)
+        else:
+            try:
+                tenant_id, tenant_source = resolve_tenant()
+            except TenantMissingOrInvalid:
+                pass
+
         payload = {
             "agent_name": self.agent_name,
             "agent_version": self.agent_version,
@@ -475,6 +514,12 @@ class AsyncVeraClient:
             "framework": self.framework,
             **kwargs,
         }
+        if tenant_id is not None:
+            payload["tenant_id"] = tenant_id
+            # Nest under metadata — see _build_payload for the rationale.
+            metadata = dict(payload.get("metadata") or {})
+            metadata["tenant_source"] = tenant_source
+            payload["metadata"] = metadata
         # Redact at enqueue time so _flush sends already-redacted payloads
         # — no double work on the flush path.
         if self._redactor is not None:
