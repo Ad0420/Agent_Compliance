@@ -3,6 +3,70 @@
 Major and minor version transitions with breaking behavioral changes are
 documented here. Follow these guides when upgrading.
 
+## `@vera.audit` → `@vera.gate` (Phase 1 PR 8)
+
+`@vera.audit` is being renamed to `@vera.gate` as the v1 primitive.
+The new decorator adds **policy enforcement** on top of the
+audit-only capture behavior the existing `@vera.audit` provides.
+
+### What changed
+
+`@vera.audit` now emits a `DeprecationWarning` the first time each
+decorated call site is invoked. The decorator's runtime behavior is
+**unchanged** — it continues to capture an `ActionRecord` and never
+raises `PolicyBlock` / `PendingReview`, so existing pilot code keeps
+working with no behavior change.
+
+`@vera.gate` is the new primitive and adds:
+
+* `tenant=` resolution against the Phase 1 PR 7 resolver (explicit
+  kwarg > context manager > middleware > default). Missing tenant
+  raises `TenantMissingOrInvalid` — gates are tenant-scoped by design.
+* `agent_type=` per-call override of the `vera.init(agent_type=...)`
+  global. Stamped onto the outgoing ActionRecord; backend treats
+  unknown values as `unclassified`.
+* Policy routing against `POST /v1/gates/evaluate`:
+    * `ALLOW` → invoke + capture + return result (legacy audit
+      behavior).
+    * `REQUIRE_HITL` → invoke for draft, capture, raise `PendingReview`.
+    * `BLOCK` → do NOT invoke, raise `PolicyBlock`.
+
+### Phase 1 / Phase 2 bridge
+
+The backend `/v1/gates/evaluate` endpoint lands in Phase 2. Until then,
+`@vera.gate` ships with a **404 fallback**: if the endpoint isn't
+available, the decorator emits a single `UserWarning` per process and
+degrades to audit-only capture (legacy `@vera.audit` semantics). When
+Phase 2 lands the endpoint, the decorator auto-graduates to full gate
+semantics without an SDK release.
+
+### `realtime=True`
+
+The `realtime=True` kwarg is plumbed through for callers configuring
+decorators now, but raises `NotImplementedError` at call time until
+the Phase 2 backend `REQUIRE_DEFERRED_REVIEW` ruling lands.
+
+### Recommended migration
+
+1. Decide if your wrapped function needs tenant scoping. Single-tenant
+   pilots can call `vera.init(default_tenant="<id>", agent_type="<x>")`
+   once at startup and the gate decorator picks both up.
+2. Rename `@vera.audit(action_name="...")` to
+   `@vera.gate(action_class="...")`. The decorator signature is
+   otherwise the same.
+3. Wrap calls in `try / except PolicyBlock / except PendingReview`
+   where the action might be blocked or queued for review.
+4. For test suites, use the `bypass_gates` pytest fixture from
+   `vera.testing` to skip the `/v1/gates/evaluate` HTTP call in unit
+   tests (the wrapped function is still invoked and the call is
+   still captured as an ActionRecord — only the policy lookup is
+   short-circuited).
+
+A LibCST-based codemod (`vera codemod audit-to-gate`) is planned for
+Phase 1 to automate the syntactic rewrite. The deprecation warning
+fires per call site (deduped on `(filename, lineno)`) so the codemod
+can surface every site that needs touching from a single test run.
+
 ## Upgrading from 0.3.x to 0.4.x
 
 The 0.4.0 release will introduce non-blocking-by-default semantics for the

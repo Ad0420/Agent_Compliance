@@ -78,6 +78,13 @@ _current_tenant: contextvars.ContextVar[Optional[Tuple[str, TenantSource]]] = (
 # not survive being reset alongside a context-bound tenant.
 _default_tenant: Optional[str] = None
 
+# Process-level default ``agent_type`` set by ``vera.init(agent_type=...)``
+# (Phase 1 PR 8 / Stream D7). The ``@vera.gate`` decorator reads this when
+# no per-call ``agent_type=`` kwarg is supplied. Mirrors the
+# ``_default_tenant`` pattern: single fallback for the whole process,
+# explicit per-call kwarg takes precedence.
+_default_agent_type: Optional[str] = None
+
 # Tenant ID format — kept in sync with the backend regex on
 # ``POST /v1/actions`` (Phase 1 PR 5 / Stream D2). The SDK validates
 # client-side so callers see :class:`TenantMissingOrInvalid` before the
@@ -199,6 +206,50 @@ def tenant(tenant_id: str) -> Iterator[None]:
         _current_tenant.reset(token)
 
 
+# ---------------------------------------------------------------------------
+# Phase 1 PR 8 / Stream D7 — agent_type global.
+# ---------------------------------------------------------------------------
+
+
+def set_default_agent_type(agent_type: Optional[str]) -> None:
+    """Set the process-level default ``agent_type``.
+
+    Called from :func:`vera.init` when ``agent_type=`` is passed. Passing
+    ``None`` clears the default (useful for test teardown). Unlike
+    ``tenant_id``, ``agent_type`` is free-form (the backend treats unknown
+    values as ``unclassified`` per Codex X4) so we do NOT validate here —
+    the backend is the source of truth for the type taxonomy.
+    """
+    global _default_agent_type
+    _default_agent_type = agent_type
+
+
+def get_default_agent_type() -> Optional[str]:
+    """Return the process-level default ``agent_type``, or ``None``."""
+    return _default_agent_type
+
+
+def resolve_agent_type(explicit: Optional[str] = None) -> Optional[str]:
+    """Resolve the ``agent_type`` for an outgoing record.
+
+    Precedence (highest first):
+
+    1. ``explicit`` kwarg — typically the ``agent_type=`` arg on
+       ``@vera.gate``. Wins even when ``None``? No — ``None`` means
+       "no explicit override, consult the global". This mirrors the
+       tenant resolver and means a per-call ``agent_type=None`` cannot
+       be used to *unset* the global; callers should call
+       :func:`set_default_agent_type` directly for that.
+    2. Process-level default — :func:`set_default_agent_type` /
+       ``vera.init(agent_type=...)``.
+    3. ``None`` — no agent_type stamped; backend treats record as
+       ``unclassified``.
+    """
+    if explicit is not None:
+        return explicit
+    return _default_agent_type
+
+
 def resolve_tenant(explicit: Optional[str] = None) -> Tuple[str, TenantSource]:
     """Resolve the tenant for an outgoing record. Raises if none available.
 
@@ -288,4 +339,8 @@ __all__ = [
     "set_default_tenant",
     "resolve_tenant",
     "copy_context_to_thread",
+    # Phase 1 PR 8 / Stream D7 — agent_type global.
+    "set_default_agent_type",
+    "get_default_agent_type",
+    "resolve_agent_type",
 ]

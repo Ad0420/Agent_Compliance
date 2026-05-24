@@ -45,6 +45,18 @@ from ._context import (
     set_default_tenant,
     resolve_tenant,
     copy_context_to_thread,
+    # Phase 1 PR 8 / Stream D7 — agent_type global.
+    set_default_agent_type,
+    get_default_agent_type,
+    resolve_agent_type,
+)
+from .gate import (
+    # Phase 1 PR 8 / Stream D5 — the v1 @vera.gate decorator. Synchronous
+    # Ruling routing (ALLOW / REQUIRE_HITL / BLOCK) against the Phase 2
+    # /v1/gates/evaluate endpoint with 404 fallback to legacy audit-only
+    # capture so the decorator ships today and auto-graduates.
+    gate,
+    is_bypassing_gates,
 )
 from .errors import (
     VeraError,
@@ -153,6 +165,7 @@ def init(
     dev: bool | None = None,
     persistent_buffer_path: str | None = None,
     default_tenant: str | None = None,
+    agent_type: str | None = None,
     **client_kwargs: Any,
 ) -> VeraClient:
     """Initialize Vera. Sentry-style one-call setup.
@@ -188,6 +201,14 @@ def init(
             for test isolation, since the binding lives on a
             module-level variable that persists across :func:`init`
             calls), call ``vera.set_default_tenant(None)``.
+        agent_type: Process-wide ``agent_type`` fallback (Phase 1 PR 8).
+            Stamped onto every ``@vera.gate`` outgoing payload unless
+            overridden by a per-call ``agent_type=`` kwarg. Free-form;
+            the backend taxonomy maps unknown values to
+            ``unclassified`` per Codex X4. Backend (post PR #197)
+            triggers a ``new_agent_type_detected`` event on first
+            occurrence per org. To clear a previously-registered
+            global, call ``vera.set_default_agent_type(None)``.
         **client_kwargs: Passed through to :class:`VeraClient` (e.g.
             ``timeout``, ``batch_size``, ``redactor``).
 
@@ -223,6 +244,14 @@ def init(
     # bad default doesn't leak a half-initialised client or a spool.
     if default_tenant is not None:
         set_default_tenant(default_tenant)
+
+    # Phase 1 PR 8 — register the process-level agent_type default.
+    # No regex validation: ``agent_type`` is free-form on the wire and
+    # the backend handles unknown values (Codex X4 — "unclassified").
+    # We still set it BEFORE building the client so a future validation
+    # tightening would fail-fast in the same place as the tenant check.
+    if agent_type is not None:
+        set_default_agent_type(agent_type)
 
     # Build the new client OUTSIDE the lock. Construction is expensive
     # (httpx setup, optional spool open) and any failures here should not
@@ -408,6 +437,8 @@ __all__ = [
     # Decorators
     "audit",
     "async_audit",
+    "gate",
+    "is_bypassing_gates",
     "set_default_client",
     "set_default_async_client",
     # HITL approvals
@@ -426,6 +457,10 @@ __all__ = [
     "set_default_tenant",
     "resolve_tenant",
     "copy_context_to_thread",
+    # agent_type global (Phase 1 PR 8 / Stream D7)
+    "set_default_agent_type",
+    "get_default_agent_type",
+    "resolve_agent_type",
     # Branded errors — transport layer (existing 7)
     "VeraError",
     "VeraAuthError",
