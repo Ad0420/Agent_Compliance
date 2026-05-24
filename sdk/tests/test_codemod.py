@@ -36,6 +36,7 @@ from vera.codemod.audit_to_gate import (
 
 
 FIXTURE_DIR = Path(__file__).parent / "codemod_fixtures"
+DEFENSIVE_FIXTURE_DIR = FIXTURE_DIR / "defensive"
 
 
 # Fixtures that exercise the opt-in transforms (``--wrap-callsites``).
@@ -94,6 +95,44 @@ def test_fixture_idempotent(name: str) -> None:
         f"--- after second run ---\n{result.new_source}"
     )
     assert result.new_source == expected
+
+
+# ---------------------------------------------------------------------------
+# Defensive fixtures — edge cases surfaced during PR #208 review.
+# These document codemod behavior on shapes where the right answer is
+# "leave it alone" (known limitations) or "conservatively flag it"
+# (e.g. **kwargs splats). Naming convention: ``_defensive_<topic>_*``.
+# ---------------------------------------------------------------------------
+
+
+def _defensive_fixture_names() -> list[str]:
+    names: set[str] = set()
+    for f in DEFENSIVE_FIXTURE_DIR.glob("_defensive_*_before.py"):
+        names.add(f.name[: -len("_before.py")])
+    return sorted(names)
+
+
+@pytest.mark.parametrize("name", _defensive_fixture_names())
+def test_defensive_fixture_roundtrip(name: str) -> None:
+    """Each defensive fixture's ``before`` migrates to byte-equal ``after``."""
+    before = (DEFENSIVE_FIXTURE_DIR / f"{name}_before.py").read_text(encoding="utf-8")
+    expected = (DEFENSIVE_FIXTURE_DIR / f"{name}_after.py").read_text(encoding="utf-8")
+    result = migrate_source(before, options=MigrationOptions(init_todo=True))
+    assert result.new_source == expected, (
+        f"defensive fixture {name!r}: codemod output differs from expected.\n"
+        f"--- expected ---\n{expected}\n"
+        f"--- got ---\n{result.new_source}\n"
+    )
+
+
+@pytest.mark.parametrize("name", _defensive_fixture_names())
+def test_defensive_fixture_idempotent(name: str) -> None:
+    """Defensive fixtures are idempotent on the after file."""
+    expected = (DEFENSIVE_FIXTURE_DIR / f"{name}_after.py").read_text(encoding="utf-8")
+    result = migrate_source(expected, options=MigrationOptions(init_todo=True))
+    assert not result.changed, (
+        f"defensive fixture {name!r}: second run produced changes."
+    )
 
 
 # ---------------------------------------------------------------------------

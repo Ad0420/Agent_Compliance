@@ -265,6 +265,11 @@ class _ImportCollector(cst.CSTVisitor):
                 self.bindings.vera_module_names.add(local)
 
     def visit_ImportFrom(self, node: cst.ImportFrom) -> None:
+        # Relative imports (``from . import audit`` / ``from .vera
+        # import audit``) bind unrelated package-local symbols — must
+        # NOT be treated as the real Vera SDK.
+        if node.relative:
+            return
         module = _flatten_attr(node.module) if node.module else ""
         if module != "vera":
             return
@@ -378,6 +383,12 @@ class _AuditToGateTransformer(cst.CSTTransformer):
         original_node: cst.ImportFrom,
         updated_node: cst.ImportFrom,
     ) -> cst.BaseSmallStatement:
+        # Relative imports (``from . import audit`` / ``from .vera
+        # import audit``) bind unrelated package-local symbols — must
+        # NOT be rewritten (see _ImportCollector for the matching
+        # guard).
+        if updated_node.relative:
+            return updated_node
         module_name = _flatten_attr(updated_node.module) if updated_node.module else ""
         if module_name != "vera":
             return updated_node
