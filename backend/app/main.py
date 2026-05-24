@@ -21,6 +21,7 @@ from .routes import (
     register_router,
     policies_router,
     approvals_router,
+    gates_router,
     webhooks_router,
 )
 from .routes.dashboard_demo import router as dashboard_demo_router
@@ -133,6 +134,7 @@ app.include_router(export_router, prefix="/v1")
 app.include_router(register_router, prefix="/v1")
 app.include_router(policies_router, prefix="/v1")
 app.include_router(approvals_router, prefix="/v1")
+app.include_router(gates_router, prefix="/v1")
 app.include_router(webhooks_router, prefix="/v1")
 # Dashboard routes — authenticated via Clerk JWT (humans). The router defines
 # its own /v1/dashboard prefix, so no extra prefix here. Existing /v1/* routes

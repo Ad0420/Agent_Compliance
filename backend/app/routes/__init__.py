@@ -8,6 +8,7 @@ from .export import router as export_router
 from .register import router as register_router
 from .policies import router as policies_router
 from .approvals import router as approvals_router
+from .gates import router as gates_router
 from .webhooks import router as webhooks_router
 
 # routes/api_keys.py was removed in the E4 cleanup. API-key management now
@@ -26,5 +27,6 @@ __all__ = [
     "register_router",
     "policies_router",
     "approvals_router",
+    "gates_router",
     "webhooks_router",
 ]
