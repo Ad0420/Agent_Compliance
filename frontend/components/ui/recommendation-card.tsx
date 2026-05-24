@@ -12,9 +12,10 @@
  *   - Expand/collapse caret on the right; default collapsed (title + badge
  *     only)
  *
- * Per spec voice rules (CLAUDE.md): the word "regulator-ready" is preferred
- * over "court-admissible". The footer line "Recommendations are AI-generated
- * and are not regulatory advice." reinforces that boundary on every card.
+ * Per spec voice rules (CLAUDE.md): use "regulator-ready" / "evidence trail"
+ * — never the legalistic alternative the linter forbids. The footer line
+ * "Recommendations are AI-generated and are not regulatory advice."
+ * reinforces that boundary on every card.
  */
 
 import * as React from "react";
