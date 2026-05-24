@@ -41,6 +41,16 @@ from .errors import (
     VeraTimeoutError,
     VeraNetworkError,
     VeraValidationError,
+    VeraClientError,
+    # Phase 1 PR 6 / Stream D1 — five new domain errors. Wired into the
+    # httpx layer in :mod:`vera.client` so backend-emitted ``code`` strings
+    # raise the matching branded class. Consumed by ``@vera.gate``
+    # (Phase 2) and the tenant resolver (Phase 1 PR 7).
+    PolicyBlock,
+    PendingReview,
+    WrongKeyTier,
+    TenantMissingOrInvalid,
+    ReviewerCredentialsInsufficient,
 )
 
 logger = logging.getLogger("vera.init")
@@ -376,7 +386,7 @@ __all__ = [
     "Redactor",
     "set_default_redactor",
     "get_default_redactor",
-    # Branded errors
+    # Branded errors — transport layer (existing 7)
     "VeraError",
     "VeraAuthError",
     "VeraRateLimitError",
@@ -384,6 +394,13 @@ __all__ = [
     "VeraTimeoutError",
     "VeraNetworkError",
     "VeraValidationError",
+    "VeraClientError",
+    # Branded errors — domain layer (new 5, Phase 1 PR 6)
+    "PolicyBlock",
+    "PendingReview",
+    "WrongKeyTier",
+    "TenantMissingOrInvalid",
+    "ReviewerCredentialsInsufficient",
     # Back-compat aliases (deprecated)
     "ActionLedgerClient",
     "AsyncActionLedgerClient",

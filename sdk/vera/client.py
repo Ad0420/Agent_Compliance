@@ -60,6 +60,14 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from .errors import (
+    CODE_TO_ERROR_CLASS,
+    PendingReview,
+    PolicyBlock,
+    ReviewerCredentialsInsufficient,
+    TENANT_REASON_MALFORMED,
+    TENANT_REASON_MISSING,
+    TENANT_REASON_PHI_SHAPE,
+    TenantMissingOrInvalid,
     VeraAuthError,
     VeraError,
     VeraNetworkError,
@@ -67,6 +75,7 @@ from .errors import (
     VeraServerError,
     VeraTimeoutError,
     VeraValidationError,
+    WrongKeyTier,
 )
 from .spool import Spool, SpoolDecryptionError, SpoolDiskFullError, SpoolError
 
@@ -117,23 +126,203 @@ class ApprovalRejectedError(Exception):
 
 
 def _request_id_from(exc: BaseException) -> str | None:
-    """Best-effort extraction of ``X-Request-ID`` from an httpx error."""
+    """Best-effort extraction of ``X-Request-ID`` from an httpx error.
+
+    ``httpx.Headers`` is case-insensitive — a single ``.get`` handles all
+    casings the upstream proxy / app might emit.
+    """
     response = getattr(exc, "response", None)
     if response is None:
         return None
     try:
-        return response.headers.get("X-Request-ID") or response.headers.get(
-            "x-request-id"
-        )
+        return response.headers.get("X-Request-ID")
     except Exception:  # pragma: no cover — defensive
         return None
+
+
+def _parse_error_body(response: "httpx.Response | None") -> dict:
+    """Best-effort parse of a backend error envelope.
+
+    Returns ``{}`` if the body is unavailable, not JSON, or not a dict.
+    Recognised fields (any may be absent — callers MUST handle missing
+    keys):
+
+    * ``code`` — stable identifier matching ``CODE_TO_ERROR_CLASS``.
+    * ``detail`` — FastAPI's default error string; used as fallback message.
+    * Anything else — passed through so domain errors (PolicyBlock,
+      PendingReview, ...) can populate their typed fields from the
+      envelope. The backend mapping is intentionally schema-loose so the
+      SDK doesn't need to be released in lockstep with backend additions.
+    """
+    if response is None:
+        return {}
+    try:
+        body = response.json()
+    except Exception:  # pragma: no cover — body may be empty or non-json
+        return {}
+    if not isinstance(body, dict):
+        return {}
+    return body
+
+
+# Cap on ``developer_reason`` length surfaced to logs / Sentry. A 50KB HTML
+# stack-trace from a misconfigured upstream (or a reflected Authorization
+# header) would otherwise sail straight into structured logs. 2048 is enough
+# to keep a typical exception chain readable without making log lines unusable.
+_DEVELOPER_REASON_MAX_LEN = 2048
+_DEVELOPER_REASON_TRUNC_MARKER = "...[truncated]"
+
+
+def _truncate_developer_reason(reason: str | None) -> str | None:
+    """Truncate an over-long ``developer_reason`` with an explicit marker."""
+    if reason is None:
+        return None
+    if not isinstance(reason, str):
+        return reason  # leave non-strings alone for callers' typed shapes
+    if len(reason) <= _DEVELOPER_REASON_MAX_LEN:
+        return reason
+    keep = _DEVELOPER_REASON_MAX_LEN - len(_DEVELOPER_REASON_TRUNC_MARKER)
+    return reason[:keep] + _DEVELOPER_REASON_TRUNC_MARKER
+
+
+def _build_branded_error_from_code(
+    cls: type[VeraError],
+    body: dict,
+    *,
+    rid: str | None,
+    status: int,
+    fallback_message: str,
+) -> VeraError:
+    """Construct a branded error from a backend body dict.
+
+    The backend's error envelope is intentionally schema-loose (see
+    ``docs/error-discipline.md`` and Phase 2 plan). For each domain class
+    we pluck the typed fields that class accepts and forward unknown ones
+    through ``developer_reason`` / the ``detail`` fallback. New backend
+    fields land on the wire without an SDK release — the SDK simply
+    ignores anything it doesn't know about today.
+    """
+    detail = body.get("detail") if isinstance(body.get("detail"), str) else None
+    # Cap any string lifted from the body before it lands in an exception —
+    # a 50KB HTML stack-trace or reflected Authorization header would
+    # otherwise sail into Sentry / structured logs.
+    detail = _truncate_developer_reason(detail)
+    developer_reason = _truncate_developer_reason(body.get("developer_reason")) or detail or fallback_message
+    user_facing_reason = body.get("user_facing_reason")
+    fix_url = body.get("fix_url")
+
+    if cls is PolicyBlock:
+        # The PolicyBlock constructor synthesises a rich
+        # ``"<reason> (citation=<citation>)"`` developer_reason when none is
+        # explicitly supplied. Pass the backend's developer_reason ONLY if
+        # the backend explicitly emitted a non-empty one — never let the
+        # generic ``detail`` / ``fallback_message`` cascade win over the
+        # constructor's rich format. Apply truncation so an over-long
+        # backend value doesn't sail past the size cap.
+        backend_developer_reason = _truncate_developer_reason(
+            body.get("developer_reason")
+        )
+        if not backend_developer_reason:
+            backend_developer_reason = None
+        return PolicyBlock(
+            reason=body.get("reason") or detail or "policy decision: BLOCK",
+            citation=body.get("citation") or "",
+            fix_url=fix_url,
+            retryable=bool(body.get("retryable", False)),
+            user_facing_reason=user_facing_reason,
+            developer_reason=backend_developer_reason,
+            request_id=rid,
+            status_code=status,
+        )
+    if cls is PendingReview:
+        return PendingReview(
+            review_id=body.get("review_id") or "",
+            expected_resolution=body.get("expected_resolution"),
+            webhook_url=body.get("webhook_url"),
+            required_role=body.get("required_role"),
+            fix_url=fix_url,
+            user_facing_reason=user_facing_reason,
+            developer_reason=developer_reason,
+            request_id=rid,
+            status_code=status,
+        )
+    if cls is WrongKeyTier:
+        return WrongKeyTier(
+            key_kind=body.get("key_kind") or "",
+            required=body.get("required") or "",
+            endpoint=body.get("endpoint") or "",
+            fix_url=fix_url,
+            user_facing_reason=user_facing_reason,
+            developer_reason=developer_reason,
+            request_id=rid,
+            status_code=status,
+        )
+    if cls is TenantMissingOrInvalid:
+        # Map both the body's ``code`` and any explicit ``reason`` field
+        # onto the SDK enum. Backend codes like ``tenant_malformed`` /
+        # ``phi_shape_in_tenant_id`` collapse onto the SDK's three-value
+        # enum.
+        body_code = body.get("code") or ""
+        if body_code == "phi_shape_in_tenant_id" or body.get("reason") == TENANT_REASON_PHI_SHAPE:
+            reason = TENANT_REASON_PHI_SHAPE
+        elif body_code == "tenant_malformed" or body.get("reason") == TENANT_REASON_MALFORMED:
+            reason = TENANT_REASON_MALFORMED
+        else:
+            reason = TENANT_REASON_MISSING
+        return TenantMissingOrInvalid(
+            reason=reason,
+            provided_value=body.get("provided_value"),
+            fix_url=fix_url,
+            user_facing_reason=user_facing_reason,
+            developer_reason=developer_reason,
+            request_id=rid,
+            status_code=status,
+        )
+    if cls is ReviewerCredentialsInsufficient:
+        return ReviewerCredentialsInsufficient(
+            review_id=body.get("review_id") or "",
+            reviewer_role=body.get("reviewer_role") or "",
+            required_role=body.get("required_role") or "",
+            fix_url=fix_url,
+            user_facing_reason=user_facing_reason,
+            developer_reason=developer_reason,
+            request_id=rid,
+            status_code=status,
+        )
+    # Transport-layer classes (VeraAuthError, VeraValidationError, ...) —
+    # template-only path: forward user_facing_reason / developer_reason if
+    # the backend supplied them; otherwise the class defaults kick in.
+    return cls(
+        detail or fallback_message,
+        request_id=rid,
+        status_code=status,
+        user_facing_reason=user_facing_reason,
+        developer_reason=developer_reason,
+        fix_url=fix_url,
+    )
 
 
 def wrap_httpx_error(exc: Exception) -> Exception:
     """Translate an httpx error into the appropriate :mod:`vera.errors` type.
 
-    Falls through (returns the original exception unchanged) for inputs that
-    are not ``httpx`` errors so callers can re-raise without losing
+    Two-stage mapping:
+
+    1. **Body ``code`` lookup** — if the response has a JSON body with a
+       recognised ``code`` field, dispatch to the matching domain class
+       via :data:`vera.errors.CODE_TO_ERROR_CLASS`. This lets the SDK
+       surface ``PolicyBlock`` / ``PendingReview`` / ``WrongKeyTier`` /
+       ``TenantMissingOrInvalid`` / ``ReviewerCredentialsInsufficient``
+       branded errors when the backend signals them — wired defensively
+       so Phase 2 backend codes activate automatically without an SDK
+       release.
+
+    2. **Status-code fallback** — if no recognised ``code``, fall back to
+       the original status-class mapping (401/403 → VeraAuthError, 429 →
+       VeraRateLimitError, 5xx → VeraServerError, other 4xx →
+       VeraValidationError).
+
+    Falls through (returns the original exception unchanged) for inputs
+    that are not ``httpx`` errors so callers can re-raise without losing
     information about non-network bugs. All ``httpx.HTTPError`` descendants
     are guaranteed to map to a ``VeraError`` subclass — there's a catch-all
     branch at the bottom so we don't silently mis-classify new httpx error
@@ -144,19 +333,49 @@ def wrap_httpx_error(exc: Exception) -> Exception:
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         message = f"HTTP {status} from {exc.request.method} {exc.request.url}"
+        body = _parse_error_body(exc.response)
+        body_code = body.get("code") if isinstance(body.get("code"), str) else None
+
+        # Stage 1: dispatch on body code if recognised. Unknown codes fall
+        # through to the status-based mapping (so the SDK never crashes on
+        # a backend that ships a new code mid-flight).
+        if body_code:
+            cls = CODE_TO_ERROR_CLASS.get(body_code)
+            if cls is not None:
+                return _build_branded_error_from_code(
+                    cls,
+                    body,
+                    rid=rid,
+                    status=status,
+                    fallback_message=message,
+                )
+
+        # Stage 2: status-based fallback. Preserves the v0.3.x behaviour
+        # for backends that don't (yet) emit a ``code`` field.
         if status in (401, 403):
-            return VeraAuthError(message, request_id=rid, status_code=status)
+            return _build_branded_error_from_code(
+                VeraAuthError, body, rid=rid, status=status, fallback_message=message
+            )
         if status == 429:
-            return VeraRateLimitError(message, request_id=rid, status_code=status)
+            return _build_branded_error_from_code(
+                VeraRateLimitError, body, rid=rid, status=status, fallback_message=message
+            )
         if 500 <= status < 600:
-            return VeraServerError(message, request_id=rid, status_code=status)
+            return _build_branded_error_from_code(
+                VeraServerError, body, rid=rid, status=status, fallback_message=message
+            )
         if 400 <= status < 500:
-            return VeraValidationError(message, request_id=rid, status_code=status)
+            return _build_branded_error_from_code(
+                VeraValidationError, body, rid=rid, status=status, fallback_message=message
+            )
         # Out-of-band status (1xx/2xx/3xx that raise_for_status flagged) —
         # fall through to the catch-all rather than returning raw httpx.
     # 2) Timeouts.
     if isinstance(exc, httpx.TimeoutException):
-        return VeraTimeoutError(str(exc) or "request timed out", request_id=rid)
+        return VeraTimeoutError(
+            _truncate_developer_reason(str(exc)) or "request timed out",
+            request_id=rid,
+        )
     # 3) Network / transport errors. Each of these classes shows up in the
     #    field; missing any of them leaks raw httpx out of the SDK.
     if isinstance(
@@ -170,20 +389,31 @@ def wrap_httpx_error(exc: Exception) -> Exception:
             httpx.UnsupportedProtocol,
         ),
     ):
-        return VeraNetworkError(str(exc) or "network failure", request_id=rid)
+        return VeraNetworkError(
+            _truncate_developer_reason(str(exc)) or "network failure",
+            request_id=rid,
+        )
     # 4) Response decode failures — server returned junk we couldn't parse.
     if isinstance(exc, httpx.DecodingError):
         return VeraNetworkError(
-            f"response decode failed: {exc}", request_id=rid
+            _truncate_developer_reason(f"response decode failed: {exc}"),
+            request_id=rid,
         )
     # 5) Redirect loops — surface as server error since we can't reach the
     #    final destination. status_code is unknown at this layer.
     if isinstance(exc, httpx.TooManyRedirects):
-        return VeraServerError(str(exc), request_id=rid, status_code=None)
+        return VeraServerError(
+            _truncate_developer_reason(str(exc)),
+            request_id=rid,
+            status_code=None,
+        )
     # 6) Catch-all for any remaining httpx.HTTPError subclass. We'd rather
     #    map to a generic VeraError than leak raw httpx through the SDK.
     if isinstance(exc, httpx.HTTPError):
-        return VeraError(f"unhandled httpx error: {exc}", request_id=rid)
+        return VeraError(
+            _truncate_developer_reason(f"unhandled httpx error: {exc}"),
+            request_id=rid,
+        )
     # 7) Not an httpx error — return unchanged so non-network bugs aren't
     #    masked by the SDK.
     return exc
