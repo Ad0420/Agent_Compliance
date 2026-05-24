@@ -764,7 +764,12 @@ def _prompt_api_key_with_retries(*, max_attempts: int = 3) -> str:
     "key_flag",
     type=str,
     default=None,
-    help="Skip the browser flow and use this API key directly.",
+    help=(
+        "Skip the browser flow and use this API key directly. WARNING: "
+        "the key is visible in `ps`/`ps aux` and gets recorded in shell "
+        "history (`.bash_history`/`.zsh_history`) and CI logs. Prefer "
+        "`VERA_API_KEY=... vera init` or `--key -` to read from stdin."
+    ),
 )
 @click.option(
     "--env-file",
@@ -827,7 +832,19 @@ def init_cmd(
     )
 
     if key_flag is not None:
-        api_key = key_flag.strip()
+        if key_flag == "-":
+            # ``--key -`` reads the key from stdin so it doesn't leak into
+            # ps / shell history / CI logs. Use ``readline`` rather than
+            # ``read`` so trailing input (e.g. an interactive shell
+            # appending a newline) doesn't get folded into the key.
+            raw = sys.stdin.readline()
+            if not raw:
+                raise click.ClickException(
+                    "--key - was passed but stdin was empty"
+                )
+            api_key = raw.strip()
+        else:
+            api_key = key_flag.strip()
         if not _validate_api_key_shape(api_key):
             raise click.ClickException(
                 "--key value doesn't look like a Vera API key "

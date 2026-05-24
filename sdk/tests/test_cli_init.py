@@ -63,6 +63,72 @@ def test_init_help() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_init_with_key_dash_reads_stdin(tmp_path: Path) -> None:
+    """``--key -`` reads the key from stdin so it doesn't leak into
+    ps / shell history / CI logs."""
+    runner = CliRunner()
+    env_file = tmp_path / ".env"
+    api_key = "al_test_" + "s" * 32
+    result = runner.invoke(
+        cli,
+        ["init", "--key", "-", "--env-file", str(env_file)],
+        input=f"{api_key}\n",
+    )
+    assert result.exit_code == 0, result.output
+    assert env_file.exists()
+    assert api_key in env_file.read_text()
+
+
+def test_init_with_key_dash_strips_whitespace(tmp_path: Path) -> None:
+    """Surrounding whitespace on stdin is stripped before shape validation."""
+    runner = CliRunner()
+    env_file = tmp_path / ".env"
+    api_key = "al_test_" + "t" * 32
+    result = runner.invoke(
+        cli,
+        ["init", "--key", "-", "--env-file", str(env_file)],
+        input=f"   {api_key}   \n",
+    )
+    assert result.exit_code == 0, result.output
+    assert api_key in env_file.read_text()
+
+
+def test_init_with_key_dash_rejects_bad_shape(tmp_path: Path) -> None:
+    """A malformed key piped via stdin is still rejected by the shape check."""
+    runner = CliRunner()
+    env_file = tmp_path / ".env"
+    result = runner.invoke(
+        cli,
+        ["init", "--key", "-", "--env-file", str(env_file)],
+        input="not-a-vera-key\n",
+    )
+    assert result.exit_code != 0
+    assert "doesn't look like" in result.output
+    assert not env_file.exists()
+
+
+def test_init_with_key_dash_empty_stdin_errors(tmp_path: Path) -> None:
+    runner = CliRunner()
+    env_file = tmp_path / ".env"
+    result = runner.invoke(
+        cli,
+        ["init", "--key", "-", "--env-file", str(env_file)],
+        input="",
+    )
+    assert result.exit_code != 0
+    assert "stdin was empty" in result.output
+    assert not env_file.exists()
+
+
+def test_init_help_warns_about_ps_visibility() -> None:
+    """The ``--key`` help text must warn that the value leaks into ps."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["init", "--help"])
+    assert result.exit_code == 0
+    assert "ps" in result.output
+    assert "--key -" in result.output
+
+
 def test_init_with_key_flag_writes_env(tmp_path: Path) -> None:
     runner = CliRunner()
     env_file = tmp_path / ".env"
