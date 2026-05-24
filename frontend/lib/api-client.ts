@@ -23,6 +23,9 @@ import type {
   ApprovalCreateInput,
   ApprovalDecisionInput,
   ApprovalQueryParams,
+  Customer,
+  CustomerListResponse,
+  CustomerQueryParams,
 } from "./api-types";
 
 export class ApiError extends Error {
@@ -130,6 +133,15 @@ export function getAgent(id: string): Promise<Agent> {
 // Organization
 export function getOrganization(): Promise<Organization> {
   return request("/v1/organizations/me");
+}
+
+// Customers (Phase 1 PR 2 — list + per-customer fetch)
+export function getCustomers(params?: CustomerQueryParams): Promise<CustomerListResponse> {
+  return request(`/v1/customers${buildQuery(params as Record<string, string | number | undefined>)}`);
+}
+
+export function getCustomer(tenant_id: string): Promise<Customer> {
+  return request(`/v1/customers/${encodeURIComponent(tenant_id)}`);
 }
 
 export function updateAlertEmail(alert_email: string | null): Promise<Organization> {

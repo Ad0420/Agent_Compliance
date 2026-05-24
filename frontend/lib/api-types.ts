@@ -292,3 +292,54 @@ export interface ApprovalQueryParams {
   limit?: number;
   offset?: number;
 }
+
+// Customers (Phase 1 PR 2/3 — multi-tenant first-class concept)
+//
+// "Customer" in the UI means *your* customer — the audit target your AI
+// serves (hospital in medtech, bank in lending, employer in hiring). The
+// data model is generic. See dashboard-design.md §The multi-tenant model.
+export type CustomerStatus =
+  | "pending_setup"
+  | "active"
+  | "suspended"
+  | "archived";
+
+// "terminated" distinguishes a rescinded BAA from one that simply expired.
+// Matches backend backend/app/schemas/customer.py and CHECK constraint.
+export type BAAStatus =
+  | "missing"
+  | "pending"
+  | "active"
+  | "expired"
+  | "terminated";
+
+export interface Customer {
+  id: string;
+  org_id: string;
+  tenant_id: string;
+  display_name: string | null;
+  status: CustomerStatus;
+  baa_status: BAAStatus;
+  contact_email: string | null;
+  contact_name: string | null;
+  jurisdictions: string[] | null;
+  first_seen_at: string | null;
+  last_seen_at: string | null;
+  decision_count_30d: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CustomerListResponse {
+  items: Customer[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface CustomerQueryParams {
+  status?: CustomerStatus;
+  baa_status?: BAAStatus;
+  limit?: number;
+  offset?: number;
+}

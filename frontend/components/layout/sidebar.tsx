@@ -3,14 +3,16 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { Home, ShieldCheck, Settings, Scale, Key } from "lucide-react";
+import { Home, ShieldCheck, Settings, Scale, Key, Users } from "lucide-react";
 
-// PR 0c retired the legacy /dashboard, /actions, /approvals, /verification,
-// /agents, and /policies routes. PR 12 will rearrange and re-introduce
-// navigation as part of the Phase 1 IA cutover. Until then we ship only the
-// four live entries so the sidebar never renders a 404 in production.
+// PR 12 (Phase 1 Stream F item F6) introduces /home as the real landing
+// page and adds /customers as the multi-tenant first-class nav entry per
+// `dashboard-design.md` §Information architecture. Order matters: Home
+// (daily check) → Customers (the multi-tenant core) → Compliance (org-wide
+// attestations) → API Keys (SDK plumbing) → Settings (everything else).
 const NAV_ITEMS = [
   { href: "/home", label: "Home", icon: Home },
+  { href: "/customers", label: "Customers", icon: Users },
   { href: "/compliance", label: "Compliance", icon: Scale },
   { href: "/api-keys", label: "API Keys", icon: Key },
   { href: "/settings", label: "Settings", icon: Settings },
@@ -27,7 +29,12 @@ export function Sidebar() {
       </div>
       <nav className="flex-1 space-y-1 p-3">
         {NAV_ITEMS.map((item) => {
-          const isActive = pathname === item.href || (item.href !== "/home" && pathname.startsWith(item.href));
+          // /home is exact-match only — `/home` should not light up for `/homework` or any other prefix collision.
+          // For everything else, only treat the link as active for the page itself or a true child route
+          // (e.g. `/customers/123`), never for adjacent siblings like `/customers-archive`.
+          const isActive =
+            pathname === item.href ||
+            (item.href !== "/home" && pathname.startsWith(item.href + "/"));
           return (
             <Link
               key={item.href}
