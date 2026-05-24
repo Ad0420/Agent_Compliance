@@ -144,6 +144,17 @@ class MigrationResult:
 # ---------------------------------------------------------------------------
 
 
+#: Word-boundary-anchored matcher for the opt-out directive. Accepts
+#: the bare ``# noqa: VERA-CODEMOD`` AND suffixed variants like
+#: ``# noqa: VERA-CODEMOD-AUDIT-TO-GATE`` (case-insensitive on the
+#: directive token). Rejects accidental supersets like
+#: ``# noqa: VERA-CODEMODISH`` that share the prefix.
+_OPT_OUT_RE = re.compile(
+    r"#\s*noqa:\s*VERA-CODEMOD(\b|-[A-Z][A-Z0-9-]*\b)",
+    re.IGNORECASE,
+)
+
+
 def _is_opted_out(source: str) -> bool:
     """Return True if the file opts out via the codemod directive.
 
@@ -152,6 +163,11 @@ def _is_opted_out(source: str) -> bool:
     Anywhere else in the file is intentionally ignored — we don't want
     a stale comment buried in the middle of a module to silently
     disable migrations the operator forgot about.
+
+    The match is word-boundary anchored: ``# noqa: VERA-CODEMODISH``
+    does NOT match, but ``# noqa: VERA-CODEMOD`` and
+    ``# noqa: VERA-CODEMOD-AUDIT-TO-GATE`` (and other ``-SUFFIX``
+    forms) do.
     """
     for raw_line in source.splitlines()[:5]:
         line = raw_line.strip()
@@ -162,7 +178,7 @@ def _is_opted_out(source: str) -> bool:
             continue
         if line.startswith("# -*-") or line.startswith("# coding"):
             continue
-        return line.startswith(CODEMOD_OPT_OUT_DIRECTIVE)
+        return _OPT_OUT_RE.match(line) is not None
     return False
 
 

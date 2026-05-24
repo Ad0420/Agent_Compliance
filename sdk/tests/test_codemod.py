@@ -541,6 +541,117 @@ def test_import_star_treats_audit_and_async_audit_as_bound() -> None:
     assert r.new_source.count("@gate") == 2
 
 
+def test_noqa_directive_word_boundary() -> None:
+    """``# noqa: VERA-CODEMODISH`` must NOT trigger opt-out (finding #6).
+
+    The original implementation used a bare ``startswith`` check that
+    would match any string with the prefix. Word-boundary anchoring
+    accepts the bare directive and ``-SUFFIX`` forms but rejects
+    accidental supersets.
+    """
+    skipping_forms = [
+        "# noqa: VERA-CODEMOD",
+        "# noqa: VERA-CODEMOD-AUDIT-TO-GATE",
+        "# noqa: VERA-CODEMOD-FUTURE-SUFFIX",
+        "# noqa:VERA-CODEMOD",  # no space after colon
+        "# noqa: vera-codemod",  # lowercase (case-insensitive)
+    ]
+    for directive in skipping_forms:
+        src = f"{directive}\nimport vera\n\n@vera.audit('x')\ndef f():\n    pass\n"
+        r = migrate_source(src)
+        assert not r.changed, f"directive {directive!r} should opt out but did not"
+        assert r.skipped_reason is not None
+
+    not_skipping = [
+        "# noqa: VERA-CODEMODISH",  # superset of the prefix
+        "# noqa: VERA-CODEMOD123",  # not a -SUFFIX form
+        "# noqa: VERA-CODE",  # incomplete
+    ]
+    for directive in not_skipping:
+        src = f"{directive}\nimport vera\n\n@vera.audit('x')\ndef f():\n    pass\n"
+        r = migrate_source(src)
+        assert r.changed, f"directive {directive!r} should NOT opt out but did"
+
+
+def test_cli_check_exit_2_on_errors(tmp_path: Path) -> None:
+    """``--check`` exits 2 when read errors occurred (finding #7).
+
+    Errors win over the pending-changes signal so CI doesn't conflate
+    a real bug with a yet-to-be-applied migration.
+    """
+    # A directory that contains a file that will raise during reading.
+    # We simulate by making a Python file unreadable. On systems where
+    # chmod isn't honoured we fall back to assertion-skipping the test.
+    target = tmp_path / "x.py"
+    target.write_text("import vera\n@vera.audit('x')\ndef f():\n    pass\n")
+    bad = tmp_path / "bad.py"
+    bad.write_text("import vera\n@vera.audit('x')\ndef f():\n    pass\n")
+    try:
+        os.chmod(bad, 0o000)
+    except (OSError, PermissionError):
+        pytest.skip("cannot make file unreadable on this platform")
+    try:
+        # Can root still read it? If so, skip.
+        try:
+            bad.read_text()
+            pytest.skip("file still readable (running as root?)")
+        except (OSError, PermissionError):
+            pass
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["codemod", "audit-to-gate", "--check", str(tmp_path)]
+        )
+        # Exit code precedence: errors (2) > pending changes (1).
+        assert result.exit_code == 2, (
+            f"expected exit 2 when errors present in --check mode, "
+            f"got {result.exit_code}\n{result.output}"
+        )
+    finally:
+        # Restore permissions so tmp_path cleanup works.
+        try:
+            os.chmod(bad, 0o644)
+        except OSError:
+            pass
+
+
+def test_cli_exit_2_on_errors_without_check(tmp_path: Path) -> None:
+    """Without ``--check``, read errors still exit 2 (finding #7)."""
+    bad = tmp_path / "bad.py"
+    bad.write_text("import vera\n@vera.audit('x')\ndef f():\n    pass\n")
+    try:
+        os.chmod(bad, 0o000)
+    except (OSError, PermissionError):
+        pytest.skip("cannot make file unreadable on this platform")
+    try:
+        try:
+            bad.read_text()
+            pytest.skip("file still readable (running as root?)")
+        except (OSError, PermissionError):
+            pass
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["codemod", "audit-to-gate", str(tmp_path)]
+        )
+        assert result.exit_code == 2
+    finally:
+        try:
+            os.chmod(bad, 0o644)
+        except OSError:
+            pass
+
+
+def test_cli_exit_0_clean_run(tmp_path: Path) -> None:
+    """A clean run (no errors, no pending changes) exits 0 (finding #7)."""
+    target = tmp_path / "x.py"
+    target.write_text("import vera\n\n@vera.gate('x')\ndef f():\n    pass\n")
+    runner = CliRunner()
+    result = runner.invoke(
+        cli, ["codemod", "audit-to-gate", str(target)]
+    )
+    assert result.exit_code == 0
+
+
 def test_wrap_callsites_disabled_by_default() -> None:
     """Default options do NOT wrap call sites (opinionated diff is opt-in)."""
     src = textwrap.dedent(

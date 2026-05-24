@@ -430,10 +430,16 @@ def codemod_audit_to_gate(
             try:
                 original = file_path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as exc:
+                # Read errors are real errors (the file exists, we
+                # found it via the walker, but couldn't open / decode
+                # it). Surface as exit code 2 in the rollup. Syntax
+                # errors and per-file opt-outs are still "skipped"
+                # since they're expected forms of "this file can't be
+                # processed but the run is fine".
                 click.echo(
-                    f"SKIP {file_path}: read error: {exc}", err=True
+                    f"ERROR {file_path}: read error: {exc}", err=True
                 )
-                skipped += 1
+                errors += 1
                 continue
 
             result = migrate_source(original, options=options)
@@ -487,12 +493,18 @@ def codemod_audit_to_gate(
         err=True,
     )
 
+    # Exit codes (matching ``ruff``'s convention):
+    #   2 — read/parse errors during the run (always, regardless of --check)
+    #   1 — --check mode and at least one file would change
+    #   0 — clean run
+    # Errors take precedence: a partial failure that also surfaced a
+    # pending change should still exit 2 so CI doesn't conflate a real
+    # bug with a yet-to-be-applied migration.
+    if errors > 0:
+        sys.exit(2)
     if check and migrated > 0:
         sys.exit(1)
-    if errors > 0 and not check:
-        # Surface read/parse errors as exit 2 (distinct from --check's
-        # "pending changes" exit 1, matching ``ruff``'s convention).
-        sys.exit(2)
+    sys.exit(0)
 
 
 def main() -> None:

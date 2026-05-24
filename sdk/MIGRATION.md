@@ -117,6 +117,31 @@ changes on the second run. This is asserted on every fixture in
 Prefix a file with `# noqa: VERA-CODEMOD` (top of file, after any
 shebang / encoding cookie) to skip it entirely.
 
+Grammar (case-insensitive, word-boundary anchored):
+
+| Form                                       | Matches? |
+|--------------------------------------------|----------|
+| `# noqa: VERA-CODEMOD`                     | yes      |
+| `# noqa: VERA-CODEMOD-AUDIT-TO-GATE`       | yes      |
+| `# noqa: VERA-CODEMOD-FUTURE-SUFFIX`       | yes      |
+| `# noqa: VERA-CODEMODISH`                  | no       |
+| `# noqa: vera-codemod`                     | yes      |
+
+The suffixed form (`VERA-CODEMOD-AUDIT-TO-GATE`) is reserved for
+forward compatibility — when future codemods ship under their own
+suffix, you'll be able to opt out of one without opting out of all.
+For now the codemod treats every match as a global opt-out.
+
+#### Exit codes (CLI / CI)
+
+The CLI matches `ruff`'s convention so wrappers can branch on rc:
+
+| Code | Meaning                                                   |
+|------|-----------------------------------------------------------|
+| 0    | Clean run — nothing pending (or `--check` saw no changes) |
+| 1    | `--check` mode and at least one file would change         |
+| 2    | Read / parse errors during the run (always wins over 1)   |
+
 #### Manual steps the codemod will NOT do
 
 * `async_audit(blocking=False)` — `@vera.gate` has no `blocking=`
