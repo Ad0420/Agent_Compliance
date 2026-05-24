@@ -481,13 +481,98 @@ def _parse_ruling(body: dict) -> dict:
     }
 
 
+def _is_pydantic_validation_envelope(body: Any) -> bool:
+    """Return True when the response body looks like FastAPI's default 422.
+
+    FastAPI's auto-generated 422 carries
+    ``{"detail": [{"loc": [...], "msg": ..., "type": ...}, ...]}``.
+    The backend's domain errors (the Phase 1 ``code``-tagged 422s) wrap
+    differently — they emit ``{"code": "tenant_malformed", "detail": ...}``
+    with a string detail. We only want to surface the version-skew
+    error when the body looks like the pydantic envelope AND there's
+    no recognised ``code`` to dispatch on. Wave 2B PR B1.
+    """
+    if not isinstance(body, dict):
+        return False
+    detail = body.get("detail")
+    if not isinstance(detail, list) or not detail:
+        return False
+    first = detail[0]
+    if not isinstance(first, dict):
+        return False
+    # FastAPI's validation entries always carry ``loc`` + ``msg``.
+    return "loc" in first and "msg" in first
+
+
+def _raise_wire_shape_mismatch_422(resp: Any, body: Any) -> None:
+    """Raise an actionable ``VeraClientError`` on a 422 wire-shape mismatch.
+
+    Hits when a pydantic validation failure on ``GateEvaluateRequest``
+    surfaces with no recognised ``code`` — i.e. the SDK shipped a body
+    the backend doesn't accept. The default ``VeraValidationError`` copy
+    ("Server returned 4xx") is too generic for the SDK/backend version
+    skew case, which is the one operationally common cause. Point the
+    operator at the SDK version pin / backend upgrade path explicitly.
+    Wave 2B PR B1.
+    """
+    rid = None
+    try:
+        rid = resp.headers.get("X-Request-ID") or resp.headers.get("x-request-id")
+    except Exception:
+        pass
+    detail_repr = repr(body.get("detail") if isinstance(body, dict) else body)[:500]
+    raise VeraClientError(
+        message=(
+            f"POST {GATE_EVALUATE_PATH} returned 422 (request shape rejected). "
+            "Likely SDK / backend version skew — the SDK is sending the new "
+            "GateEvaluateRequest body shape but the backend rejected one or "
+            "more fields. Upgrade the backend to the version that shipped "
+            "PR #212, or pin the SDK to <1.1.0 if a backend upgrade is not "
+            "possible."
+        ),
+        status_code=422,
+        request_id=rid,
+        user_facing_reason=(
+            "Vera could not evaluate this action because the request did not "
+            "match the server's expected shape. Please contact support if "
+            "this persists."
+        ),
+        developer_reason=(
+            f"422 from {GATE_EVALUATE_PATH}; pydantic detail: {detail_repr}"
+        ),
+        fix_url="https://docs.usevera.xyz/sdk/version-compat",
+    )
+
+
+def _maybe_raise_version_skew(resp: Any) -> None:
+    """If the 422 is a pydantic envelope without a known ``code``, raise version-skew."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return  # non-JSON 422 — let wrap_httpx_error handle it generically.
+    # If the body has a ``code`` mapped to a branded SDK error, defer
+    # to wrap_httpx_error so domain exceptions keep their behaviour
+    # (TenantMissingOrInvalid, PolicyBlock, etc.).
+    if isinstance(body, dict) and isinstance(body.get("code"), str):
+        from .errors import CODE_TO_ERROR_CLASS
+
+        if body["code"] in CODE_TO_ERROR_CLASS:
+            return
+    if _is_pydantic_validation_envelope(body):
+        _raise_wire_shape_mismatch_422(resp, body)
+
+
 def _call_evaluate_sync(client: Any, body: dict) -> Optional[dict]:
     """POST ``/v1/gates/evaluate``. Returns parsed ruling, or ``None`` for 404.
 
     Raises whatever ``wrap_httpx_error`` produces on non-404 failures
     (``PolicyBlock`` / ``PendingReview`` / ``VeraAuthError`` / etc) so
     backend-emitted error envelopes surface as branded exceptions per
-    the existing transport-layer contract.
+    the existing transport-layer contract. 422 responses that look
+    like a pydantic validation failure with no recognised ``code``
+    take a dedicated B1 path: they raise a ``VeraClientError`` with
+    actionable version-skew copy instead of the generic validation
+    error.
 
     The 404 fallback is the Phase 1 / Phase 2 bridge: the backend
     endpoint doesn't exist yet, so the SDK ships with the decorator
@@ -508,6 +593,11 @@ def _call_evaluate_sync(client: Any, body: dict) -> Optional[dict]:
 
     if resp.status_code == 404:
         return None
+    if resp.status_code == 422:
+        # Inspect the body BEFORE handing off to wrap_httpx_error so
+        # we can surface the version-skew message when the 422 is a
+        # pydantic envelope without a known code. Raises on match.
+        _maybe_raise_version_skew(resp)
     try:
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -566,6 +656,8 @@ async def _call_evaluate_async(client: Any, body: dict) -> Optional[dict]:
 
     if resp.status_code == 404:
         return None
+    if resp.status_code == 422:
+        _maybe_raise_version_skew(resp)
     try:
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:

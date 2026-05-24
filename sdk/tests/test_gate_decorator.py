@@ -1141,3 +1141,99 @@ def test_reason_detail_none_handled():
         wrapped()
     assert ei.value.reason_detail is None
     client.close()
+
+
+# ---------------------------------------------------------------------------
+# Wave 2B PR B1 — 422 wire-shape mismatch handling
+# ---------------------------------------------------------------------------
+
+
+def test_422_with_pydantic_validation_envelope_raises_version_skew():
+    """B1 — pydantic 422 with no recognised `code` raises actionable version-skew error."""
+    client = _make_client()
+    _install_transport(
+        client,
+        _evaluate_handler(
+            {
+                "detail": [
+                    {
+                        "loc": ["body", "agent_name"],
+                        "msg": "field required",
+                        "type": "value_error.missing",
+                    },
+                ]
+            },
+            status=422,
+        ),
+    )
+    set_default_client(client)
+
+    @vera.gate(action_class="x", tenant="acme")
+    def wrapped():
+        return "ok"
+
+    with pytest.raises(VeraClientError) as ei:
+        wrapped()
+    # Operator-friendly: the error message must point at the
+    # version skew root cause (not the generic VeraValidationError copy).
+    msg = str(ei.value).lower()
+    assert "version skew" in msg or "pin the sdk" in msg
+    assert ei.value.status_code == 422
+    client.close()
+
+
+def test_422_with_known_code_routes_to_domain_exception():
+    """B1 — 422 carrying a known `code` keeps routing to its domain class."""
+    client = _make_client()
+    _install_transport(
+        client,
+        _evaluate_handler(
+            {
+                "code": "tenant_malformed",
+                "detail": "tenant_id failed regex",
+            },
+            status=422,
+        ),
+    )
+    set_default_client(client)
+
+    @vera.gate(action_class="x", tenant="acme")
+    def wrapped():
+        return "ok"
+
+    # The existing wrap_httpx_error path dispatches on the `code` and
+    # raises TenantMissingOrInvalid — must NOT be intercepted by the
+    # B1 version-skew path.
+    with pytest.raises(TenantMissingOrInvalid):
+        wrapped()
+    client.close()
+
+
+def test_422_async_version_skew_raises():
+    """B1 — async path also surfaces the version-skew error."""
+    client = _make_client()
+    _install_transport(
+        client,
+        _evaluate_handler(
+            {
+                "detail": [
+                    {
+                        "loc": ["body", "agent_name"],
+                        "msg": "field required",
+                        "type": "value_error.missing",
+                    },
+                ]
+            },
+            status=422,
+        ),
+    )
+    set_default_client(client)
+
+    @vera.gate(action_class="x", tenant="acme")
+    async def wrapped():
+        return "ok"
+
+    with pytest.raises(VeraClientError) as ei:
+        asyncio.run(wrapped())
+    assert ei.value.status_code == 422
+    client.close()
