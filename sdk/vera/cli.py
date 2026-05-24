@@ -8,7 +8,9 @@ Subcommands for setup, ops, and dev verification:
   (Phase 1 PR 11 / Stream E2).
 * ``vera doctor`` — diagnostic checks against config, network, auth,
   tenant resolver, spool, and SDK version (Phase 1 PR 11 / Stream E3).
-* ``vera review-status <review_id>`` — Phase 2 stub (Phase 1 PR 11 / E4).
+* ``vera review-status <review_id>`` — fetch a single approval with
+  optional ``--watch`` polling and ``--json`` machine output
+  (Wave 2B PR B3 / Phase 1 PR 11 / E4).
 * ``vera config show`` — print resolved configuration (env vars + defaults).
 * ``vera ping`` — verify the API key authenticates against Vera.
 * ``vera tail`` — tail recent records for the org.
@@ -37,14 +39,17 @@ from typing import Any
 
 import click
 
+from . import _cli_format as _fmt
 from .client import VeraClient
 from .errors import (
     VeraAuthError,
     VeraError,
     VeraNetworkError,
+    VeraRateLimitError,
     VeraServerError,
     VeraTimeoutError,
     VeraValidationError,
+    WrongKeyTier,
 )
 
 # Cap on the in-memory ``seen_ids`` cache used by ``vera tail --follow`` so
@@ -1814,30 +1819,334 @@ def doctor_cmd(as_json: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# vera review-status — Stream E4 (Phase 2 stub).
+# vera review-status — Wave 2B PR B3.
 # ---------------------------------------------------------------------------
+
+# Exit codes for ``vera review-status``. Kept as a module-level constant
+# so tests can reference them by name and shell pipelines have a stable
+# contract documented in the README/help text.
+#
+#   0  — fetched (single-shot) or reached terminal state (watch)
+#   1  — review not found (404)
+#   2  — auth / wrong-tier / network / rate-limit / server / unexpected
+#   3  — watch timeout (--timeout reached without terminal state)
+#   130 — user pressed Ctrl-C (POSIX SIGINT convention)
+REVIEW_STATUS_EXIT_OK = 0
+REVIEW_STATUS_EXIT_NOT_FOUND = 1
+REVIEW_STATUS_EXIT_TRANSPORT = 2
+REVIEW_STATUS_EXIT_WATCH_TIMEOUT = 3
+REVIEW_STATUS_EXIT_INTERRUPTED = 130
+
+
+def _is_404(exc: Exception) -> bool:
+    """Detect a 404 surfaced via the httpx wrapper's VeraValidationError.
+
+    The wrapper currently maps any 4xx-other-than-{401,403,429} to
+    :class:`VeraValidationError` with ``status_code`` carrying the HTTP
+    code. Introducing a dedicated ``VeraNotFoundError`` belongs in a
+    future error-discipline PR — for now we sniff the attribute.
+    """
+    return (
+        isinstance(exc, VeraValidationError)
+        and getattr(exc, "status_code", None) == 404
+    )
+
+
+def _fetch_with_one_retry(
+    client: VeraClient, review_id: str, *, sleep=time.sleep
+) -> dict:
+    """Call ``client.get_approval`` with a single 1s retry on transient errors.
+
+    Auth / validation / wrong-tier / rate-limit errors are NOT retried —
+    they won't self-heal in 1 second. Only network/timeout/5xx, which
+    can be a flaky DNS lookup or a brief upstream blip, get a retry.
+    ``sleep`` is a parameter so tests can inject a fake.
+    """
+    try:
+        return client.get_approval(review_id)
+    except (VeraNetworkError, VeraTimeoutError, VeraServerError):
+        sleep(1.0)
+        return client.get_approval(review_id)
+
+
+def _emit_review_status_error(exc: Exception) -> int:
+    """Render an exception to stderr and return the matching exit code.
+
+    Pure mapping function (apart from the stderr write) — keeps the
+    error-handling block in the command body short and lets tests pin
+    the message-vs-exit-code contract directly.
+    """
+    if _is_404(exc):
+        click.echo(
+            f"FAIL Review {getattr(exc, 'review_id', '')} not found. "
+            "Check the ID or your tenant scope.".replace("  ", " "),
+            err=True,
+        )
+        return REVIEW_STATUS_EXIT_NOT_FOUND
+    if isinstance(exc, WrongKeyTier):
+        # WrongKeyTier carries .key_kind / .required / .endpoint.
+        click.echo(
+            f"FAIL API key tier mismatch: your '{exc.key_kind}' key cannot "
+            f"call '{exc.endpoint}' (requires '{exc.required}').",
+            err=True,
+        )
+        click.echo(
+            "  Rotate to the correct tier in the dashboard: "
+            "https://app.usevera.xyz/settings/api-keys",
+            err=True,
+        )
+        return REVIEW_STATUS_EXIT_TRANSPORT
+    if isinstance(exc, VeraAuthError):
+        sc = getattr(exc, "status_code", None)
+        if sc == 403:
+            click.echo(
+                f"FAIL API key lacks 'read' permission for approvals: {exc}",
+                err=True,
+            )
+            click.echo(
+                "  Generate a read-capable key in the dashboard: "
+                "https://app.usevera.xyz/settings/api-keys",
+                err=True,
+            )
+        else:
+            click.echo(f"FAIL Authentication failed: {exc}", err=True)
+            click.echo(
+                "  Run `vera config show` to inspect the current key, or "
+                "`vera ping` to verify connectivity.",
+                err=True,
+            )
+        return REVIEW_STATUS_EXIT_TRANSPORT
+    if isinstance(exc, VeraRateLimitError):
+        rid = getattr(exc, "request_id", "") or ""
+        click.echo(
+            f"FAIL Rate limited{(' (' + rid + ')') if rid else ''}: "
+            f"{exc}. Retry shortly.",
+            err=True,
+        )
+        return REVIEW_STATUS_EXIT_TRANSPORT
+    if isinstance(exc, VeraServerError):
+        click.echo(
+            f"FAIL Vera service error: {exc}. "
+            "Status: https://status.usevera.xyz",
+            err=True,
+        )
+        return REVIEW_STATUS_EXIT_TRANSPORT
+    if isinstance(exc, (VeraNetworkError, VeraTimeoutError)):
+        click.echo(
+            f"FAIL {type(exc).__name__}: {exc}. (Retried once.)", err=True
+        )
+        return REVIEW_STATUS_EXIT_TRANSPORT
+    if isinstance(exc, VeraValidationError):
+        click.echo(f"FAIL {exc}", err=True)
+        return REVIEW_STATUS_EXIT_TRANSPORT
+    if isinstance(exc, VeraError):
+        click.echo(f"FAIL {type(exc).__name__}: {exc}", err=True)
+        return REVIEW_STATUS_EXIT_TRANSPORT
+    # Catch-all — unexpected exception. We surface the type and message
+    # so a maintainer can triage without a re-run.
+    click.echo(f"FAIL Unexpected error: {type(exc).__name__}: {exc}", err=True)
+    return REVIEW_STATUS_EXIT_TRANSPORT
 
 
 @cli.command(name="review-status")
 @click.argument("review_id", type=str)
-def review_status_cmd(review_id: str) -> None:
-    """Look up the status of a pending review (Phase 2 feature).
+@click.option(
+    "--watch",
+    "-w",
+    is_flag=True,
+    default=False,
+    help="Re-poll until the approval reaches a terminal state.",
+)
+@click.option(
+    "--interval",
+    type=click.FloatRange(min=0.5, max=60.0, clamp=False),
+    default=5.0,
+    show_default=True,
+    help=(
+        "Poll interval in seconds (only with --watch). Minimum 0.5s to "
+        "avoid hammering the API."
+    ),
+)
+@click.option(
+    "--timeout",
+    type=click.FloatRange(min=1.0, max=86400.0, clamp=False),
+    default=None,
+    help=(
+        "Give up after this many seconds (only with --watch). No timeout "
+        "by default. Exits with code 3 when the deadline is reached "
+        "without a terminal state."
+    ),
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    default=False,
+    help=(
+        "Emit raw ApprovalResponse JSON instead of human-formatted output. "
+        "With --watch, emits NDJSON (one object per line per poll)."
+    ),
+)
+@click.option(
+    "--no-color",
+    is_flag=True,
+    default=False,
+    envvar="NO_COLOR",
+    help=(
+        "Disable ANSI colors (auto-disabled when stdout is not a TTY or "
+        "TERM=dumb)."
+    ),
+)
+def review_status_cmd(
+    review_id: str,
+    watch: bool,
+    interval: float,
+    timeout: float | None,
+    as_json: bool,
+    no_color: bool,
+) -> None:
+    """Fetch the status of a single approval review.
 
-    Placeholder for Phase 2: the gate-evaluation backend will expose
-    ``GET /v1/reviews/<review_id>`` once HITL routing ships. The CLI
-    surface exists today so callers can wire it into scripts; the body
-    is filled in alongside the backend without changing the CLI shape.
+    Examples:
+
+    \b
+        vera review-status app_01H7XKCRJF8
+        vera review-status app_01H7XKCRJF8 --watch --interval 3
+        vera review-status app_01H7XKCRJF8 --json | jq .status
+
+    Exit codes:
+
+    \b
+        0   approval fetched (or reached terminal state under --watch)
+        1   approval not found (404)
+        2   auth, wrong-tier, network, rate-limit, or server failure
+        3   --watch --timeout reached before terminal state
+        130 user pressed Ctrl-C
+
+    Times are always rendered in UTC. Relative phrases ("3m ago",
+    "in 7m") are computed from your local clock.
     """
-    click.echo(f"vera review-status {review_id}")
-    click.echo(
-        "  → Phase 2 feature — review-status lookup ships with the "
-        "gate-evaluation backend."
-    )
-    click.echo(
-        "    For Phase 1, pending reviews appear in the dashboard at "
-        "/compliance/reviews (when populated)."
-    )
-    sys.exit(0)
+    # Cross-flag warnings — emit on stderr so JSON pipelines aren't
+    # polluted. These don't fail the command; they just nudge.
+    if (interval != 5.0) and not watch:
+        click.echo(
+            "WARN --interval has no effect without --watch", err=True
+        )
+    if (timeout is not None) and not watch:
+        click.echo(
+            "WARN --timeout has no effect without --watch", err=True
+        )
+
+    # Lightweight pre-flight: no API key → fail fast with a hint. The
+    # constructor would just warn and continue; we want a clear error
+    # before any network round-trip.
+    if not os.environ.get("VERA_API_KEY", "").strip():
+        click.echo("FAIL No VERA_API_KEY configured.", err=True)
+        click.echo("", err=True)
+        click.echo(
+            "  Set it: export VERA_API_KEY=al_live_...", err=True
+        )
+        click.echo(
+            "  Or run: vera config show     # to inspect current state",
+            err=True,
+        )
+        click.echo(
+            "  Or:     vera ping             # to verify connectivity",
+            err=True,
+        )
+        click.echo("", err=True)
+        click.echo(
+            "  Generate a key at https://app.usevera.xyz/settings/api-keys",
+            err=True,
+        )
+        sys.exit(REVIEW_STATUS_EXIT_TRANSPORT)
+
+    color_enabled = _fmt.should_use_color(no_color)
+    headless = not color_enabled  # color disabled === headless for layout
+
+    try:
+        client = VeraClient()
+    except Exception as e:  # noqa: BLE001 — construct can raise various shapes
+        sys.exit(_emit_review_status_error(e))
+
+    start = time.monotonic()
+
+    try:
+        while True:
+            try:
+                approval = _fetch_with_one_retry(client, review_id)
+            except Exception as exc:  # noqa: BLE001 — single sink
+                # Attach the review_id so the 404 message can include it.
+                try:
+                    setattr(exc, "review_id", review_id)
+                except Exception:
+                    pass
+                sys.exit(_emit_review_status_error(exc))
+
+            status = approval.get("status")
+            terminal = status in _fmt.TERMINAL_STATES
+            elapsed = time.monotonic() - start
+
+            if as_json:
+                if watch:
+                    click.echo(
+                        _fmt.render_status_ndjson(approval), nl=False
+                    )
+                else:
+                    click.echo(_fmt.render_status_json(approval), nl=False)
+                # Force flush so downstream `jq -c` / `tee` sees each
+                # poll immediately, not at process exit.
+                try:
+                    sys.stdout.flush()
+                except Exception:
+                    pass
+            else:
+                if watch and not headless:
+                    # Clear screen + scrollback so each frame replaces
+                    # the previous one cleanly.
+                    click.echo(_fmt.TERMINAL_CLEAR, nl=False)
+                elif watch and headless:
+                    # Headless: print a divider so successive frames
+                    # are visually separable in a log file.
+                    click.echo(_fmt.HEADLESS_FRAME_DIVIDER, nl=False)
+                footer = (
+                    _fmt.render_watch_footer(interval, elapsed)
+                    if watch
+                    else None
+                )
+                click.echo(
+                    _fmt.render_status_human(
+                        approval,
+                        color=color_enabled,
+                        watch_footer=footer,
+                    ),
+                    nl=False,
+                )
+
+            if not watch or terminal:
+                break
+
+            if timeout is not None and elapsed >= timeout:
+                click.echo(
+                    f"FAIL Watch timeout: {review_id} did not resolve "
+                    f"within {timeout:g}s "
+                    f"(last status: {status or 'unknown'}).",
+                    err=True,
+                )
+                sys.exit(REVIEW_STATUS_EXIT_WATCH_TIMEOUT)
+
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        click.echo("", err=True)
+        click.echo("(interrupted)", err=True)
+        sys.exit(REVIEW_STATUS_EXIT_INTERRUPTED)
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+    sys.exit(REVIEW_STATUS_EXIT_OK)
 
 
 def main() -> None:
