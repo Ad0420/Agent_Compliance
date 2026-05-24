@@ -10,6 +10,7 @@ function formatCurrency(n: number): string {
   if (n >= 1_000_000_000) return `$${(n / 1_000_000_000).toFixed(n >= 10_000_000_000 ? 0 : 1)}B`;
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
   if (n >= 1_000) return `$${(n / 1_000).toFixed(0)}K`;
+  // copy-allow: string-helper return value; rendering surface owns the tabular-nums treatment, not this formatter
   return `$${n.toLocaleString()}`;
 }
 
@@ -52,6 +53,7 @@ function MultiplierSlider({ payload }: { payload: MultiplierPayload }) {
       <div className="r2-scale__header">{`MULTIPLIER · ${payload.unit}`}</div>
       <div className="r2-scale-mult__total">{formatCurrency(count * payload.per)}</div>
       <div className="r2-scale-mult__formula">
+        {/* copy-allow: .r2-scale-mult__formula uses var(--mono) — monospace fonts are already tabular by construction */}
         {`${count.toLocaleString()} ${noun}${count === 1 ? "" : "s"} × ${formatCurrency(payload.per)}`}
       </div>
       <input
@@ -64,10 +66,15 @@ function MultiplierSlider({ payload }: { payload: MultiplierPayload }) {
         onChange={(e) => setCount(parseInt(e.target.value, 10))}
         aria-label={`${noun} count`}
       />
+      {/* copy-allow: .r2-scale-mult__ticks uses var(--mono) — already digit-aligned */}
       <div className="r2-scale-mult__ticks">
+        {/* copy-allow: see parent .r2-scale-mult__ticks (mono font) */}
         <span>{(1).toLocaleString()}</span>
+        {/* copy-allow: see parent .r2-scale-mult__ticks (mono font) */}
         <span>{payload.defaultCount.toLocaleString()}</span>
+        {/* copy-allow: see parent .r2-scale-mult__ticks (mono font) */}
         <span>{mid.toLocaleString()}</span>
+        {/* copy-allow: see parent .r2-scale-mult__ticks (mono font) */}
         <span>{max.toLocaleString()}</span>
       </div>
       <p className="r2-scale-mult__caption">{payload.label}</p>

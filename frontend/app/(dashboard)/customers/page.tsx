@@ -144,9 +144,10 @@ export default function CustomersPage() {
         <h1 className="font-display text-4xl font-normal leading-tight text-[color:var(--ink)]">
           Customers
         </h1>
-        <p className="text-[13px] text-[color:var(--ink-2)]">
+        <p className="text-[13px] text-[color:var(--ink-2)] tabular-nums">
           {isLoading
             ? "Loading…"
+            // copy-allow: parent <p> sets className="tabular-nums"
             : `${customers.length} customer${customers.length === 1 ? "" : "s"} · ${totalDecisions.toLocaleString()} decision${
                 totalDecisions === 1 ? "" : "s"
               } last 30 days`}
@@ -399,6 +400,7 @@ function CustomerRow({ customer }: { customer: Customer }) {
         {customer.last_seen_at ? formatRelativeTime(customer.last_seen_at) : "—"}
       </td>
       <td className="px-4 py-3 text-[color:var(--ink)]">
+        {/* copy-allow: parent <table> at line 304 sets [font-feature-settings:'tnum'] on every cell */}
         {(customer.decision_count_30d ?? 0).toLocaleString()}
       </td>
       <td className="px-4 py-3">

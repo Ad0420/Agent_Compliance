@@ -285,7 +285,7 @@ export default function ComponentsPreviewPage() {
             <Checkbox
               error
               label="Required field"
-              description="You must accept the terms before continuing."
+              description="Accept the terms before continuing."
             />
           </Row>
           <Row label="Attestation">
@@ -309,7 +309,7 @@ export default function ComponentsPreviewPage() {
                 onChange={() => {}}
                 error
                 attestation="I am authorised to attest that the compliance posture below accurately reflects this deployment as of today's date."
-                context="You must attest before generating the audit PDF."
+                context="Attestation is required before generating the audit PDF."
               />
             </div>
           </Row>
