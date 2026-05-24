@@ -1,4 +1,3 @@
-import Link from "next/link";
 import {
   Table,
   TableBody,
@@ -68,7 +67,7 @@ export function RecentRecordsTable({
         <div>
           <CardTitle className="text-base">Recent high-risk activity</CardTitle>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Failed or blocked actions, surfaced first. Click a row for the full record.
+            Failed or blocked actions, surfaced first.
           </p>
         </div>
         <Badge variant="outline" className="text-xs">
@@ -96,51 +95,38 @@ export function RecentRecordsTable({
             </TableHeader>
             <TableBody>
               {records.map((r) => {
-                const href = `/actions/${r.id}`;
+                // /actions/<id> deep links were retired with the legacy
+                // dashboard in PR 0c. The Phase 4 audit-trail PDF surfaces
+                // per-record evidence; until then we render the row as
+                // plain cells with a truncated id (via the Seq column tooltip)
+                // so users can correlate against backend logs.
                 const ts = r.action_timestamp ?? r.recorded_at ?? null;
                 return (
-                  <TableRow key={r.id} className="cursor-pointer hover:bg-accent/40">
-                    <TableCell className="font-mono text-xs text-muted-foreground">
-                      <Link href={href} className="block">
-                        #{r.sequence_number ?? "—"}
-                      </Link>
+                  <TableRow key={r.id} className="hover:bg-accent/40">
+                    <TableCell
+                      className="font-mono text-xs text-muted-foreground"
+                      title={r.id}
+                    >
+                      #{r.sequence_number ?? "—"}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
-                      <Link href={href} className="block">
-                        {ts ? formatDate(ts) : "—"}
-                      </Link>
+                      {ts ? formatDate(ts) : "—"}
                     </TableCell>
-                    <TableCell className="text-sm">
-                      <Link href={href} className="block">
-                        {r.agent_name ?? "—"}
-                      </Link>
-                    </TableCell>
-                    <TableCell className="text-sm">
-                      <Link href={href} className="block">
-                        {r.action_name ?? "—"}
-                      </Link>
+                    <TableCell className="text-sm">{r.agent_name ?? "—"}</TableCell>
+                    <TableCell className="text-sm">{r.action_name ?? "—"}</TableCell>
+                    <TableCell>
+                      <RiskTierBadge tier={deriveRisk(r.result ?? null)} />
                     </TableCell>
                     <TableCell>
-                      <Link href={href} className="block">
-                        <RiskTierBadge tier={deriveRisk(r.result ?? null)} />
-                      </Link>
-                    </TableCell>
-                    <TableCell>
-                      <Link href={href} className="block">
-                        <ResultBadge result={r.result} />
-                      </Link>
+                      <ResultBadge result={r.result} />
                     </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground max-w-[120px] truncate">
-                      <Link href={href} className="block">
-                        {r.data_subject_id
-                          ? truncateHash(r.data_subject_id, 6)
-                          : "—"}
-                      </Link>
+                      {r.data_subject_id
+                        ? truncateHash(r.data_subject_id, 6)
+                        : "—"}
                     </TableCell>
                     <TableCell className="font-mono text-xs text-muted-foreground">
-                      <Link href={href} className="block">
-                        {r.record_hash ? truncateHash(r.record_hash) : "—"}
-                      </Link>
+                      {r.record_hash ? truncateHash(r.record_hash) : "—"}
                     </TableCell>
                   </TableRow>
                 );

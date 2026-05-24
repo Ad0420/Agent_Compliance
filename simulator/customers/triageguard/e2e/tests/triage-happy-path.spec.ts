@@ -114,7 +114,9 @@ test.describe("TriageGuard triage — happy path", () => {
     ).toBeVisible({ timeout: 30_000 });
 
     // ── Beat 8: audit-trail deep link opens in a new tab and points
-    // at /actions/<record-id> on the Vera dashboard ──
+    // at /compliance on the Vera dashboard. (PR 0c retired /actions/; the
+    // record id rides along as a `?record=` query param so the future
+    // single-record view can pick it up.) ──
     const auditLink = page.getByRole("link", {
       name: /View audit trail/i,
     });
@@ -122,6 +124,6 @@ test.describe("TriageGuard triage — happy path", () => {
     await expect(auditLink).toHaveAttribute("target", "_blank");
     const href = await auditLink.getAttribute("href");
     expect(href).not.toBeNull();
-    expect(href!).toContain("/actions/");
+    expect(href!).toContain("/compliance");
   });
 });

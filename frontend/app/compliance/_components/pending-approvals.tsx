@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -25,16 +24,11 @@ export function PendingApprovals({
         <div>
           <CardTitle className="text-base">Pending HITL approvals</CardTitle>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Human-in-the-loop decisions waiting on a reviewer. The Approvals
-            page is where reviewers actually decide.
+            Human-in-the-loop decisions waiting on a reviewer.
           </p>
         </div>
-        <Link
-          href="/approvals"
-          className="text-xs text-emerald-400 hover:underline"
-        >
-          View all approvals →
-        </Link>
+        {/* The legacy /approvals page was retired in PR 0c. The Phase 2
+            Review queue (PR set TBD) supersedes it. */}
       </CardHeader>
       <CardContent className="p-0">
         {approvals.length === 0 ? (
@@ -85,12 +79,15 @@ export function PendingApprovals({
                       </span>
                     </TableCell>
                     <TableCell className="text-right">
-                      <Link
-                        href={`/approvals?focus=${encodeURIComponent(a.id)}`}
-                        className="text-xs text-emerald-400 hover:underline"
+                      {/* Detail-view destination ships with the Phase 2 Review
+                          queue. Until then we surface the approval id so users
+                          can correlate against backend logs. */}
+                      <span
+                        className="text-xs text-muted-foreground font-mono"
+                        title={a.id}
                       >
-                        View details
-                      </Link>
+                        {a.id.slice(0, 8)}
+                      </span>
                     </TableCell>
                   </TableRow>
                 );

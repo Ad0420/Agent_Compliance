@@ -3,15 +3,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { LayoutDashboard, List, ShieldCheck, Bot, Settings, Scale, Shield, UserCheck, Key } from "lucide-react";
+import { Home, ShieldCheck, Settings, Scale, Key } from "lucide-react";
 
+// PR 0c retired the legacy /dashboard, /actions, /approvals, /verification,
+// /agents, and /policies routes. PR 12 will rearrange and re-introduce
+// navigation as part of the Phase 1 IA cutover. Until then we ship only the
+// four live entries so the sidebar never renders a 404 in production.
 const NAV_ITEMS = [
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/actions", label: "Actions", icon: List },
-  { href: "/approvals", label: "Approvals", icon: UserCheck },
-  { href: "/verification", label: "Verification", icon: ShieldCheck },
-  { href: "/agents", label: "Agents", icon: Bot },
-  { href: "/policies", label: "Policies", icon: Shield },
+  { href: "/home", label: "Home", icon: Home },
   { href: "/compliance", label: "Compliance", icon: Scale },
   { href: "/api-keys", label: "API Keys", icon: Key },
   { href: "/settings", label: "Settings", icon: Settings },
@@ -28,7 +27,7 @@ export function Sidebar() {
       </div>
       <nav className="flex-1 space-y-1 p-3">
         {NAV_ITEMS.map((item) => {
-          const isActive = pathname === item.href || (item.href !== "/dashboard" && pathname.startsWith(item.href));
+          const isActive = pathname === item.href || (item.href !== "/home" && pathname.startsWith(item.href));
           return (
             <Link
               key={item.href}

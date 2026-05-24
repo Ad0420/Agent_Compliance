@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -48,12 +47,9 @@ export function ViolationsList({
             Triggered policy checks the team should review.
           </p>
         </div>
-        <Link
-          href="/policies"
-          className="text-xs text-emerald-400 hover:underline"
-        >
-          Manage policies →
-        </Link>
+        {/* The legacy /policies management page was retired in PR 0c. Policy
+            authoring is deferred per dashboard-design-system.md — v1 ships
+            with the pack-only model. */}
       </CardHeader>
       <CardContent className="p-0">
         {violations.length === 0 ? (
@@ -104,13 +100,17 @@ export function ViolationsList({
                       </Badge>
                     </TableCell>
                     <TableCell className="text-right">
+                      {/* /actions/<id> deep links were retired with the legacy
+                          dashboard in PR 0c. The Phase 4 audit-trail PDF
+                          surfaces per-record evidence; until then we expose
+                          the truncated record id so users can correlate. */}
                       {v.record_id ? (
-                        <Link
-                          href={`/actions/${v.record_id}`}
-                          className="text-xs text-emerald-400 hover:underline"
+                        <span
+                          className="text-xs text-muted-foreground font-mono"
+                          title={v.record_id}
                         >
-                          Investigate →
-                        </Link>
+                          {v.record_id.slice(0, 8)}
+                        </span>
                       ) : (
                         <span className="text-xs text-muted-foreground">—</span>
                       )}

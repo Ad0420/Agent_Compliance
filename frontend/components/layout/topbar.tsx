@@ -43,8 +43,8 @@ export function Topbar() {
             follow-up PR. */}
         <OrganizationSwitcher
           hidePersonal
-          afterCreateOrganizationUrl="/dashboard"
-          afterSelectOrganizationUrl="/dashboard"
+          afterCreateOrganizationUrl="/home"
+          afterSelectOrganizationUrl="/home"
         />
         {/* Sign-out redirect target comes from NEXT_PUBLIC_CLERK_SIGN_IN_URL
             (=/login). In Clerk v7 UserButton doesn't take a per-instance
