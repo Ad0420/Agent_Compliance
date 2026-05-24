@@ -1252,10 +1252,17 @@ def _doctor_check_auth() -> dict[str, Any]:
                 "details": {"org_id": org_id_masked, "url": url},
             }
         if resp.status_code in (401, 403):
-            # Try to surface a branded error code (PR #201's envelope).
+            # Try to surface a branded error code. PR #201's
+            # ``_flatten_dict_detail`` exception handler lifts dict-typed
+            # ``HTTPException.detail`` to the TOP LEVEL of the response —
+            # the wire shape is ``{"code": "baa_required", "fix_url": ...,
+            # "detail": ...}``, NOT ``{"error": {"code": ...}}``. Read
+            # ``code`` from the top level to match the contract.
             err_code = ""
             try:
-                err_code = (resp.json().get("error") or {}).get("code", "")
+                body = resp.json()
+                if isinstance(body, dict):
+                    err_code = body.get("code", "") or ""
             except Exception:
                 err_code = ""
             hint = ""
@@ -1288,8 +1295,17 @@ def _doctor_check_auth() -> dict[str, Any]:
 
 
 def _doctor_check_tenant() -> dict[str, Any]:
-    """Check 4: tenant resolver returns a value (INFO if None)."""
+    """Check 4: tenant resolver returns a value (INFO if None).
+
+    Catches only :class:`TenantMissingOrInvalid` with ``reason='missing'``
+    as INFO ("no tenant configured"). Malformed / PHI-shape values, plus
+    any unrelated exception (import error, AttributeError) bubble up to
+    the outer doctor handler at :func:`doctor_cmd` and classify as FAIL —
+    a programming error masquerading as INFO would silently mask real
+    breakage.
+    """
     from . import _context
+    from .errors import TENANT_REASON_MISSING, TenantMissingOrInvalid
 
     # Read env var; the resolver doesn't consult env directly, so we
     # register the env-derived tenant as the process default for this
@@ -1301,12 +1317,15 @@ def _doctor_check_tenant() -> dict[str, Any]:
         if env_tenant:
             try:
                 _context.set_default_tenant(env_tenant)
-            except Exception as exc:
+            except TenantMissingOrInvalid as exc:
                 return {
                     "name": "tenant",
                     "status": _DOCTOR_STATUS_FAIL,
                     "message": f"VERA_TENANT_ID rejected by resolver: {exc}",
-                    "details": {"tenant_id": env_tenant},
+                    "details": {
+                        "tenant_id": env_tenant,
+                        "reason": getattr(exc, "reason", None),
+                    },
                 }
         try:
             tenant_id, source = _context.resolve_tenant()
@@ -1316,22 +1335,49 @@ def _doctor_check_tenant() -> dict[str, Any]:
                 "message": f"resolved to {tenant_id!r} (source={source})",
                 "details": {"tenant_id": tenant_id, "source": source},
             }
-        except Exception:
+        except TenantMissingOrInvalid as exc:
+            if getattr(exc, "reason", None) == TENANT_REASON_MISSING:
+                return {
+                    "name": "tenant",
+                    "status": _DOCTOR_STATUS_INFO,
+                    "message": (
+                        "no tenant configured — set VERA_TENANT_ID, "
+                        "vera.init(default_tenant=...), or use vera.tenant()"
+                    ),
+                    "details": {},
+                }
+            # Malformed or PHI-shape is a real failure, not an INFO.
             return {
                 "name": "tenant",
-                "status": _DOCTOR_STATUS_INFO,
-                "message": (
-                    "no tenant configured — set VERA_TENANT_ID, "
-                    "vera.init(default_tenant=...), or use vera.tenant()"
-                ),
-                "details": {},
+                "status": _DOCTOR_STATUS_FAIL,
+                "message": f"tenant resolver rejected stored tenant: {exc}",
+                "details": {"reason": getattr(exc, "reason", None)},
             }
+        # Any other exception (programming error in the resolver, missing
+        # import, AttributeError, ...) is deliberately NOT caught here —
+        # the outer doctor handler classifies it as FAIL, which is the
+        # honest answer.
     finally:
         _context.set_default_tenant(previous_default)
 
 
 def _doctor_check_spool() -> dict[str, Any]:
-    """Check 5: spool path writable + sentinel readable (if used)."""
+    """Check 5: spool path writable + passphrase sentinel validates.
+
+    If ``VERA_SPOOL_PATH`` is unset, returns INFO (spool is opt-in).
+    Otherwise:
+
+    1. Verify the parent dir exists / is writable. Fail fast if not.
+    2. If ``VERA_SPOOL_KEY`` is set, instantiate :class:`vera.spool.Spool`.
+       The constructor exercises ``_init_passphrase_sentinel`` — either
+       writes a fresh sentinel (new spool) or decrypts the stored one
+       (existing spool). A mismatched passphrase or corrupt sentinel
+       raises :class:`vera.spool.SpoolPassphraseError`, surfaced as FAIL.
+    3. If ``VERA_SPOOL_KEY`` is NOT set, fall back to the original
+       fs-perms-only check and WARN that the sentinel can't be verified
+       without a passphrase (the spool would fail-closed at SDK boot
+       anyway, but the doctor flags it now so the operator sees it).
+    """
     spool_path = os.environ.get("VERA_SPOOL_PATH", "").strip()
     if not spool_path:
         return {
@@ -1341,7 +1387,7 @@ def _doctor_check_spool() -> dict[str, Any]:
             "details": {},
         }
     parent = Path(spool_path).parent
-    if not parent.exists():
+    if parent and not parent.exists():
         # Try to create — failure means we can't even initialize the spool.
         try:
             parent.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -1352,7 +1398,7 @@ def _doctor_check_spool() -> dict[str, Any]:
                 "message": f"cannot create spool parent {parent}: {exc}",
                 "details": {"path": spool_path},
             }
-    if not os.access(parent, os.W_OK):
+    if parent and not os.access(parent, os.W_OK):
         return {
             "name": "spool",
             "status": _DOCTOR_STATUS_FAIL,
@@ -1366,12 +1412,77 @@ def _doctor_check_spool() -> dict[str, Any]:
             "message": f"spool file {spool_path} is not readable",
             "details": {"path": spool_path},
         }
-    return {
-        "name": "spool",
-        "status": _DOCTOR_STATUS_PASS,
-        "message": f"spool path {spool_path} OK",
-        "details": {"path": spool_path, "exists": Path(spool_path).exists()},
-    }
+
+    passphrase = os.environ.get("VERA_SPOOL_KEY", "")
+    if not passphrase:
+        return {
+            "name": "spool",
+            "status": _DOCTOR_STATUS_WARN,
+            "message": (
+                f"spool path {spool_path} writable, but VERA_SPOOL_KEY "
+                "is unset — sentinel cannot be verified and the spool "
+                "will refuse to start at SDK boot"
+            ),
+            "details": {
+                "path": spool_path,
+                "exists": Path(spool_path).exists(),
+            },
+        }
+
+    # Exercise the passphrase sentinel by constructing the Spool. The
+    # constructor writes a fresh sentinel on first open and decrypts the
+    # stored one on subsequent opens — a typo / rotated key surfaces here
+    # as ``SpoolPassphraseError`` instead of waiting for the first
+    # production write to crash.
+    try:
+        from .spool import Spool, SpoolPassphraseError
+    except ImportError as exc:
+        return {
+            "name": "spool",
+            "status": _DOCTOR_STATUS_FAIL,
+            "message": (
+                f"cannot import vera.spool: {exc} — install "
+                "`vera-sdk[spool]` (cryptography)"
+            ),
+            "details": {"path": spool_path},
+        }
+
+    spool: Any = None
+    try:
+        spool = Spool(spool_path, passphrase=passphrase)
+        return {
+            "name": "spool",
+            "status": _DOCTOR_STATUS_PASS,
+            "message": f"spool path {spool_path} OK (sentinel verified)",
+            "details": {
+                "path": spool_path,
+                "exists": True,
+                "sentinel": "verified",
+            },
+        }
+    except SpoolPassphraseError as exc:
+        return {
+            "name": "spool",
+            "status": _DOCTOR_STATUS_FAIL,
+            "message": (
+                f"spool passphrase sentinel mismatch: {exc} — check "
+                "VERA_SPOOL_KEY hasn't been rotated"
+            ),
+            "details": {"path": spool_path},
+        }
+    except Exception as exc:  # noqa: BLE001 — surface as FAIL, not crash
+        return {
+            "name": "spool",
+            "status": _DOCTOR_STATUS_FAIL,
+            "message": f"could not open spool {spool_path}: {exc}",
+            "details": {"path": spool_path},
+        }
+    finally:
+        if spool is not None:
+            try:
+                spool.close()
+            except Exception:
+                pass
 
 
 def _doctor_check_sdk_version() -> dict[str, Any]:

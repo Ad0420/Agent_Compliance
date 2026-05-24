@@ -104,17 +104,101 @@ def test_check_tenant_fail_malformed(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result["status"] == "FAIL"
 
 
+def test_check_tenant_fail_when_resolver_raises_unrelated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A programming error in ``resolve_tenant`` (RuntimeError, ImportError,
+    AttributeError, ...) must NOT be silently classified as INFO. The
+    outer doctor handler turns it into FAIL — that's the honest answer."""
+    from vera import _context
+
+    def _explode(*_args, **_kwargs):
+        raise RuntimeError("simulated resolver internals bug")
+
+    monkeypatch.setattr(_context, "resolve_tenant", _explode)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["doctor", "--json"])
+    parsed = json.loads(result.output.strip())
+    tenant_check = next(c for c in parsed["checks"] if c["name"] == "tenant")
+    assert tenant_check["status"] == "FAIL"
+    assert "raised unexpectedly" in tenant_check["message"]
+
+
+def test_check_tenant_fail_on_phi_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If ``resolve_tenant`` raises ``TenantMissingOrInvalid`` with a
+    non-missing reason (malformed / phi_shape_detected), classify as
+    FAIL rather than INFO."""
+    from vera import _context
+    from vera.errors import (
+        TENANT_REASON_PHI_SHAPE,
+        TenantMissingOrInvalid,
+    )
+
+    def _phi(*_args, **_kwargs):
+        raise TenantMissingOrInvalid(reason=TENANT_REASON_PHI_SHAPE)
+
+    monkeypatch.setattr(_context, "resolve_tenant", _phi)
+    result = cli_mod._doctor_check_tenant()
+    assert result["status"] == "FAIL"
+    assert result["details"]["reason"] == TENANT_REASON_PHI_SHAPE
+
+
 def test_check_spool_info_when_unset() -> None:
     result = cli_mod._doctor_check_spool()
     assert result["status"] == "INFO"
 
 
-def test_check_spool_pass_writable(
+def test_check_spool_warn_when_path_set_but_no_passphrase(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """``VERA_SPOOL_PATH`` set but no ``VERA_SPOOL_KEY`` → WARN.
+
+    The spool would fail-closed at SDK boot anyway; doctor flags it now.
+    """
     monkeypatch.setenv("VERA_SPOOL_PATH", str(tmp_path / "spool.db"))
+    monkeypatch.delenv("VERA_SPOOL_KEY", raising=False)
     result = cli_mod._doctor_check_spool()
-    assert result["status"] == "PASS"
+    assert result["status"] == "WARN"
+    assert "VERA_SPOOL_KEY" in result["message"]
+
+
+def test_check_spool_pass_writes_sentinel(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Fresh spool path + passphrase → constructor writes the sentinel
+    and returns PASS. Sentinel file should exist after the check."""
+    pytest.importorskip("cryptography")
+    spool_path = tmp_path / "spool.db"
+    monkeypatch.setenv("VERA_SPOOL_PATH", str(spool_path))
+    monkeypatch.setenv("VERA_SPOOL_KEY", "test-passphrase-1234567890")
+    result = cli_mod._doctor_check_spool()
+    assert result["status"] == "PASS", result["message"]
+    assert "sentinel verified" in result["message"]
+    assert spool_path.exists()
+
+
+def test_check_spool_fails_on_wrong_passphrase(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Existing spool + mismatched passphrase → SpoolPassphraseError → FAIL."""
+    pytest.importorskip("cryptography")
+    spool_path = tmp_path / "spool.db"
+
+    # Bootstrap the spool with passphrase A.
+    from vera.spool import Spool
+
+    s = Spool(str(spool_path), passphrase="passphrase-A-original")
+    s.close()
+    assert spool_path.exists()
+
+    # Doctor opens it with passphrase B — sentinel decrypt fails.
+    monkeypatch.setenv("VERA_SPOOL_PATH", str(spool_path))
+    monkeypatch.setenv("VERA_SPOOL_KEY", "passphrase-B-different")
+    result = cli_mod._doctor_check_spool()
+    assert result["status"] == "FAIL"
+    assert "sentinel" in result["message"].lower()
 
 
 def test_check_sdk_version_pass() -> None:
@@ -195,17 +279,85 @@ def test_check_auth_fail_401(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_check_auth_baa_required_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """PR #201 flat envelope: ``{"code": "baa_required", ...}`` at top level.
+
+    The previous implementation read ``body.error.code`` (a nested shape
+    that never appears on the wire), so the BAA hint silently never
+    fired. Now reads ``body.code`` directly.
+    """
     monkeypatch.setenv("VERA_API_KEY", "al_live_" + "x" * 32)
     monkeypatch.setenv("VERA_API_URL", "https://mock.example")
     transport = httpx.MockTransport(
         lambda req: httpx.Response(
-            403, json={"error": {"code": "baa_required"}}
+            403,
+            json={
+                "code": "baa_required",
+                "fix_url": "/customers",
+                "detail": "Customer has not signed BAA",
+            },
         )
     )
     _patch_httpx(monkeypatch, transport)
     result = cli_mod._doctor_check_auth()
     assert result["status"] == "FAIL"
-    assert "BAA" in result["message"]
+    assert "BAA gate blocked this live key" in result["message"]
+    assert result["details"]["error_code"] == "baa_required"
+
+
+def test_check_auth_baa_expired_hint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``baa_expired`` triggers the same friendly hint as ``baa_required``."""
+    monkeypatch.setenv("VERA_API_KEY", "al_live_" + "x" * 32)
+    monkeypatch.setenv("VERA_API_URL", "https://mock.example")
+    transport = httpx.MockTransport(
+        lambda req: httpx.Response(
+            403,
+            json={
+                "code": "baa_expired",
+                "fix_url": "/customers",
+                "detail": "BAA expired 2025-01-01",
+            },
+        )
+    )
+    _patch_httpx(monkeypatch, transport)
+    result = cli_mod._doctor_check_auth()
+    assert result["status"] == "FAIL"
+    assert "BAA gate blocked this live key" in result["message"]
+
+
+def test_check_auth_unknown_code_falls_through(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-BAA code is surfaced in a ``(code: ...)`` suffix, no BAA hint."""
+    monkeypatch.setenv("VERA_API_KEY", "al_live_" + "x" * 32)
+    monkeypatch.setenv("VERA_API_URL", "https://mock.example")
+    transport = httpx.MockTransport(
+        lambda req: httpx.Response(
+            403, json={"code": "rate_limited", "detail": "slow down"}
+        )
+    )
+    _patch_httpx(monkeypatch, transport)
+    result = cli_mod._doctor_check_auth()
+    assert result["status"] == "FAIL"
+    assert "BAA" not in result["message"]
+    assert "rate_limited" in result["message"]
+
+
+def test_check_auth_non_json_body_doesnt_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 401 with a plaintext (non-JSON) body should still FAIL gracefully."""
+    monkeypatch.setenv("VERA_API_KEY", "al_test_" + "x" * 32)
+    monkeypatch.setenv("VERA_API_URL", "https://mock.example")
+    transport = httpx.MockTransport(
+        lambda req: httpx.Response(
+            401, content=b"<html>not json</html>",
+            headers={"content-type": "text/html"},
+        )
+    )
+    _patch_httpx(monkeypatch, transport)
+    result = cli_mod._doctor_check_auth()
+    assert result["status"] == "FAIL"
+    assert "401" in result["message"]
 
 
 def test_check_auth_no_key_fails() -> None:
