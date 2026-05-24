@@ -926,3 +926,218 @@ def test_404_fallback_still_sends_new_wire_shape():
     assert "action_name" in captured
     assert "authorized_by" in captured
     client.close()
+
+
+# ---------------------------------------------------------------------------
+# Wave 2B PR B1 — Ruling routing end-to-end (new exception attrs)
+# ---------------------------------------------------------------------------
+
+
+def test_lowercase_effect_allow_routes_correctly():
+    """B1 — #212 ships effect=allow (lowercase); the SDK normalises and routes."""
+    client = _make_client()
+    _install_transport(
+        client,
+        _evaluate_handler({
+            "effect": "allow",
+            "reason": "",
+            "gate_name": "stub_allow",
+        }),
+    )
+    set_default_client(client)
+
+    @vera.gate(action_class="x", tenant="acme")
+    def wrapped():
+        return 99
+
+    assert wrapped() == 99
+    items = list(client._queue.queue)
+    assert items[0]["result"] == "success"
+    client.close()
+
+
+def test_require_hitl_carries_full_ruling_attrs():
+    """B1 — PendingReview exposes gate_name/reason/reason_detail/citation."""
+    client = _make_client()
+    _install_transport(
+        client,
+        _evaluate_handler({
+            "effect": "require_hitl",
+            "review_id": "rev_123",
+            "required_role": "attending_physician",
+            "reason": "sensitive_change_attending_required",
+            "reason_detail": (
+                "Final HPI section edited by non-attending agent"
+            ),
+            "citation": "HIPAA § 164.524",
+            "gate_name": "chart_note_commit_attending_required",
+            "fix_url": "https://app.usevera.xyz/reviews/rev_123",
+        }),
+    )
+    set_default_client(client)
+
+    @vera.gate(action_class="commit", tenant="acme")
+    def commit():
+        return "draft"
+
+    with pytest.raises(PendingReview) as ei:
+        commit()
+    assert ei.value.review_id == "rev_123"
+    assert ei.value.required_role == "attending_physician"
+    assert ei.value.reason == "sensitive_change_attending_required"
+    assert ei.value.reason_detail == (
+        "Final HPI section edited by non-attending agent"
+    )
+    assert ei.value.citation == "HIPAA § 164.524"
+    assert ei.value.gate_name == "chart_note_commit_attending_required"
+    assert ei.value.fix_url == "https://app.usevera.xyz/reviews/rev_123"
+    client.close()
+
+
+def test_block_carries_full_ruling_attrs():
+    """B1 — PolicyBlock exposes gate_name/reason_detail/required_role."""
+    client = _make_client()
+    _install_transport(
+        client,
+        _evaluate_handler({
+            "effect": "block",
+            "reason": "controlled_substance_detected",
+            "reason_detail": (
+                "Schedule II opioid detected in prescription draft"
+            ),
+            "citation": "21 CFR § 1306.05",
+            "gate_name": "controlled_substance_block",
+            "required_role": "dea_authorized",
+            "fix_url": "https://app.usevera.xyz/policy/cs",
+            "retryable": False,
+        }),
+    )
+    set_default_client(client)
+
+    spy = MagicMock()
+
+    @vera.gate(action_class="prescribe", tenant="acme")
+    def prescribe():
+        spy()
+
+    with pytest.raises(PolicyBlock) as ei:
+        prescribe()
+    spy.assert_not_called()
+    assert ei.value.reason == "controlled_substance_detected"
+    assert ei.value.reason_detail == (
+        "Schedule II opioid detected in prescription draft"
+    )
+    assert ei.value.citation == "21 CFR § 1306.05"
+    assert ei.value.gate_name == "controlled_substance_block"
+    assert ei.value.required_role == "dea_authorized"
+    assert ei.value.fix_url == "https://app.usevera.xyz/policy/cs"
+    assert ei.value.retryable is False
+    client.close()
+
+
+# ---------------------------------------------------------------------------
+# Wave 2B PR B1 — Defensive PHI redaction on reason_detail
+# ---------------------------------------------------------------------------
+
+
+def test_reason_detail_phi_shape_redacted_on_pending_review():
+    """B1 — backend leaking PHI-shaped reason_detail must NOT reach the customer."""
+    client = _make_client()
+    _install_transport(
+        client,
+        _evaluate_handler({
+            "effect": "require_hitl",
+            "review_id": "rev_x",
+            "reason": "sensitive_edit",
+            # Whitespace + digits → likely PHI (defensive heuristic trips).
+            "reason_detail": "John Doe 1972-03-14",
+        }),
+    )
+    set_default_client(client)
+
+    @vera.gate(action_class="x", tenant="acme")
+    def wrapped():
+        return "draft"
+
+    with pytest.raises(PendingReview) as ei:
+        wrapped()
+    assert ei.value.reason_detail == (
+        "(redacted: reason_detail matched PHI-shape heuristic)"
+    )
+    assert "John Doe" not in str(ei.value)
+    assert "1972-03-14" not in str(ei.value)
+    client.close()
+
+
+def test_reason_detail_phi_shape_redacted_on_policy_block():
+    """B1 — PHI redaction also runs on BLOCK rulings."""
+    client = _make_client()
+    _install_transport(
+        client,
+        _evaluate_handler({
+            "effect": "block",
+            "reason": "policy_violation",
+            "reason_detail": "Patient 12345 admitted",  # whitespace + digits
+        }),
+    )
+    set_default_client(client)
+
+    @vera.gate(action_class="x", tenant="acme")
+    def wrapped():
+        return "ok"
+
+    with pytest.raises(PolicyBlock) as ei:
+        wrapped()
+    assert ei.value.reason_detail == (
+        "(redacted: reason_detail matched PHI-shape heuristic)"
+    )
+    assert "12345" not in str(ei.value)
+    client.close()
+
+
+def test_reason_detail_safe_value_kept_verbatim():
+    """B1 — diagnostic strings without PHI shape survive the redactor."""
+    client = _make_client()
+    safe_detail = "Outbound payload exceeded the size cap"
+    _install_transport(
+        client,
+        _evaluate_handler({
+            "effect": "block",
+            "reason": "payload_too_large",
+            "reason_detail": safe_detail,
+        }),
+    )
+    set_default_client(client)
+
+    @vera.gate(action_class="x", tenant="acme")
+    def wrapped():
+        return "ok"
+
+    with pytest.raises(PolicyBlock) as ei:
+        wrapped()
+    # No digits in the string, so the defensive whitespace+digit
+    # heuristic does NOT trip. Diagnostic info is preserved.
+    assert ei.value.reason_detail == safe_detail
+    client.close()
+
+
+def test_reason_detail_none_handled():
+    """B1 — when the backend omits reason_detail, the attr is None (not redacted)."""
+    client = _make_client()
+    _install_transport(
+        client,
+        _evaluate_handler({
+            "effect": "block",
+            "reason": "no_detail",
+        }),
+    )
+    set_default_client(client)
+
+    @vera.gate(action_class="x", tenant="acme")
+    def wrapped():
+        return "ok"
+
+    with pytest.raises(PolicyBlock) as ei:
+        wrapped()
+    assert ei.value.reason_detail is None
+    client.close()

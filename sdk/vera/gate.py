@@ -442,20 +442,35 @@ def _capture_action(
 
 
 def _parse_ruling(body: dict) -> dict:
-    """Coerce the backend response into the dict the decorator consumes.
+    """Coerce the backend ``Ruling`` envelope into the dict the decorator routes on.
 
-    Flat envelope per PR #201:
-    ``{effect, reason, citation, review_id?, fix_url?, required_role?,
-       expected_resolution?, webhook_url?, retryable?}``.
+    Contract per backend ``app/schemas/gate.py::Ruling`` (Wave 2A PR #212):
+      * ``effect``        — ``"allow" | "require_hitl" | "block"`` (lowercase)
+      * ``reason``        — machine-readable reason code
+      * ``reason_detail`` — human-readable explanation, NEVER PHI
+                            (SDK defensively redacts via ``_safe_reason_detail``)
+      * ``citation``      — optional regulatory citation
+      * ``gate_name``     — identifier of the gate that produced the ruling
+      * ``review_id``     — present iff ``effect == "require_hitl"``
+      * ``fix_url``       — dashboard URL for remediation / review
+      * ``required_role`` — reviewer role required (HITL paths)
+      * ``retryable``     — defaults False on the wire
 
-    Unknown fields are preserved on the returned dict so they're
-    available for logging / future use without an SDK release.
+    Legacy compatibility: tests + the legacy #201 envelope sent
+    ``effect: "ALLOW"`` (uppercase); #212 sends ``effect: "allow"``
+    (lowercase per the new schema). The SDK normalises by upper-casing
+    once on entry so the dispatch table stays case-stable across both
+    shapes. Forward-compat: extras are preserved as ``_raw`` for
+    logging / future routing (B2's ``REQUIRE_DEFERRED_REVIEW`` will
+    consume the same envelope).
     """
     effect = str(body.get("effect") or "").upper()
     return {
         "effect": effect,
         "reason": body.get("reason") or "",
+        "reason_detail": body.get("reason_detail") or None,
         "citation": body.get("citation") or "",
+        "gate_name": body.get("gate_name") or "",
         "review_id": body.get("review_id"),
         "fix_url": body.get("fix_url"),
         "required_role": body.get("required_role"),
@@ -569,23 +584,43 @@ async def _call_evaluate_async(client: Any, body: dict) -> Optional[dict]:
 
 
 def _build_pending_review(ruling: dict) -> PendingReview:
-    """Construct a :class:`PendingReview` from a parsed REQUIRE_HITL ruling."""
+    """Construct a :class:`PendingReview` from a parsed REQUIRE_HITL ruling.
+
+    The new B1 attributes (``gate_name``, ``reason``, ``reason_detail``,
+    ``citation``) are populated from the Ruling envelope. ``reason_detail``
+    runs through :func:`_safe_reason_detail` first so any PHI-shaped
+    string the backend ever leaked is replaced with a sentinel before
+    reaching the customer's ``except`` handler.
+    """
     return PendingReview(
         review_id=ruling.get("review_id") or "",
         expected_resolution=ruling.get("expected_resolution"),
         webhook_url=ruling.get("webhook_url"),
         required_role=ruling.get("required_role"),
         fix_url=ruling.get("fix_url"),
+        gate_name=ruling.get("gate_name") or "",
+        reason=ruling.get("reason") or "",
+        reason_detail=_safe_reason_detail(ruling.get("reason_detail")),
+        citation=ruling.get("citation") or None,
     )
 
 
 def _build_policy_block(ruling: dict) -> PolicyBlock:
-    """Construct a :class:`PolicyBlock` from a parsed BLOCK ruling."""
+    """Construct a :class:`PolicyBlock` from a parsed BLOCK ruling.
+
+    The new B1 attributes (``gate_name``, ``reason_detail``,
+    ``required_role``) are populated from the Ruling envelope.
+    ``reason_detail`` runs through :func:`_safe_reason_detail` first
+    so any PHI-shaped string is redacted at the boundary.
+    """
     return PolicyBlock(
         reason=ruling.get("reason") or "Gate evaluation returned BLOCK.",
         citation=ruling.get("citation") or "",
         fix_url=ruling.get("fix_url"),
         retryable=ruling.get("retryable", False),
+        gate_name=ruling.get("gate_name") or "",
+        reason_detail=_safe_reason_detail(ruling.get("reason_detail")),
+        required_role=ruling.get("required_role"),
     )
 
 
