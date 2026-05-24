@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
-from typing import Optional
-from sqlalchemy import String, DateTime, Text, func
+from typing import Any, Optional
+from sqlalchemy import JSON, String, DateTime, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base
 
@@ -43,6 +43,22 @@ class Organization(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now()
+    )
+    # Phase 1 PR 14 (Stream F item F5) — 5-question onboarding wizard.
+    # ``wizard_answers`` is a JSON blob whose shape is validated server-side
+    # by ``app/schemas/wizard.py``. Nullable: rows created before the
+    # p6j7k8l9m0n1 migration have NULL; rows whose org has opened the wizard
+    # but not completed have a partial dict; rows whose org submitted with
+    # ``completed=true`` have all five keys populated and ``wizard_completed_at``
+    # stamped. Generic ``sa.JSON()`` (not ``JSONB``) keeps SQLite compat.
+    wizard_answers: Mapped[Optional[dict[str, Any]]] = mapped_column(
+        JSON, nullable=True
+    )
+    # Stamped when the org submits the final wizard step. Distinguishes
+    # "in-progress" from "done" without parsing the JSON blob. Phase 5's
+    # template-generation work reads this to gate template downloads.
+    wizard_completed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
     )
 
     # Relationships
