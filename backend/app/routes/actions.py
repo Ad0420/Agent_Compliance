@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -16,11 +17,14 @@ from ..schemas.action import (
     ActionRecordResponse,
     ActionRecordBatchCreate,
     ActionRecordListResponse,
-    _detect_phi_shape,
 )
 from ..services.auth import require_permission
 from ..services.chain import build_and_insert_record, build_and_insert_batch
 from ..services.hashing import canonicalize
+from ..services.phi_detector import PHIDetection, detect_phi_shape
+from ..services.webhooks import dispatch_event
+
+logger = logging.getLogger("vera.actions.phi")
 
 router = APIRouter(prefix="/actions", tags=["actions"])
 
@@ -55,24 +59,35 @@ def _validate_idempotency_key(key: str) -> None:
         )
 
 
-# TODO(PR 5): replace with full heuristic from policy_engine.
-# Until PR 5 lands the full kind-aware (live key blocks, test key warns)
-# heuristic, the schema's base regex would still let DOB / SSN shapes
-# slip through (``john_doe_19720314`` matches ``^[A-Za-z0-9_-]+$``). On
-# first action, auto-discovery sets ``display_name=tenant_id`` which
-# surfaces that shape in the AI Coverage Matrix. We reject obvious
-# shapes uniformly (kind-aware behavior lands with PR 4 + PR 5).
-def _reject_phi_shape_in_tenant_id(tenant_id: Optional[str]) -> None:
-    """Raise 422 with code='phi_shape_in_tenant_id' if shape looks PHI-y.
+# ── PHI-shape heuristic (Phase 1 PR 5, Stream C item C3) ─────────────────
+# Replaces the PR #195 bridge guard. Live keys reject with 422; sandbox
+# keys (and Clerk humans, who have no api_key.kind) warn + emit
+# ``phi_shape_warning`` so customers can see the contamination during
+# integration. The 422 ``code`` value (``phi_shape_in_tenant_id``)
+# matches what the bridge emitted, so the SDK error mapping (PR #194)
+# and dashboard handling stay stable.
 
-    Forward-compat: emits the same error code PR 5 will use, so SDK +
-    dashboard error handling does not need to change when the full
-    heuristic ships.
+
+def _is_live_key(api_key: APIKey | None) -> bool:
+    """True if this request is authenticated by an ``al_live_*`` API key.
+
+    Clerk-authenticated humans browsing the dashboard come through with
+    ``api_key is None``; treat them as test-equivalent so an operator
+    debugging a PHI-shape contamination can still issue calls without
+    being locked out by their own warning.
     """
-    if not tenant_id:
-        return
-    if not _detect_phi_shape(tenant_id):
-        return
+    return api_key is not None and api_key.kind == "live"
+
+
+def _reject_phi_for_live(detection: PHIDetection) -> None:
+    """Raise 422 with code='phi_shape_in_tenant_id' for a live-key hit.
+
+    ``pattern_name`` is included in ``developer_reason`` so engineers
+    can tell why their call failed; the customer-facing message is
+    deliberately generic. The flagged value itself is NOT echoed back —
+    that's exactly the data the heuristic was trying to keep out of
+    log/error sinks.
+    """
     raise HTTPException(
         status_code=422,
         detail={
@@ -82,8 +97,96 @@ def _reject_phi_shape_in_tenant_id(tenant_id: Optional[str]) -> None:
                 "identifier instead. See "
                 "docs.usevera.xyz/customers/tenant-id-guidance."
             ),
+            "user_facing_reason": (
+                "Your tenant_id looks like personal health information. "
+                "Use an opaque identifier instead."
+            ),
+            "developer_reason": (
+                f"tenant_id matched PHI-shape pattern "
+                f"'{detection.pattern_name}' (severity={detection.severity}). "
+                f"The value is not echoed for PHI safety."
+            ),
+            "fix_url": "/customers",
+            "docs_url": "docs.usevera.xyz/customers/tenant-id-guidance",
         },
     )
+
+
+async def _emit_phi_warning(
+    session: AsyncSession,
+    org_id: str,
+    tenant_id: str,
+    detection: PHIDetection,
+) -> None:
+    """Log a PHI-safe warning + emit ``phi_shape_warning`` webhook event.
+
+    Idempotency choice: ONCE PER ACTION (event-per-occurrence). A
+    customer with a misconfigured pipeline will get one event per
+    incoming action, which is exactly what they want to see during
+    debugging. Once-per-customer dedup would need persistent state
+    we don't have today (Phase 2 dashboard banner will own that).
+
+    PHI safety:
+      * Logs ``pattern_name`` + ``tenant_id_length`` only; never the
+        value itself. The detector module already promises not to echo
+        the value, but this is defense-in-depth at the log sink.
+      * The webhook payload schema is strictly the documented four
+        fields plus ``event_type`` — no display_name, no contact, no
+        action metadata, no record_id.
+    """
+    logger.warning(
+        "phi_shape_warning: org=%s tenant_id_length=%s pattern=%s severity=%s",
+        org_id,
+        len(tenant_id),
+        detection.pattern_name,
+        detection.severity,
+    )
+
+    payload = {
+        "event_type": "phi_shape_warning",
+        "org_id": org_id,
+        "tenant_id_length": len(tenant_id),
+        "pattern_name": detection.pattern_name,
+        "severity": detection.severity,
+        "detected_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        await dispatch_event(session, org_id, "phi_shape_warning", payload)
+    except Exception:
+        # ``dispatch_event`` already swallows delivery errors internally;
+        # this belt-and-braces try is for the read-subscriptions DB step
+        # so an unrelated DB hiccup never bubbles into the action route.
+        logger.exception(
+            "phi_shape_warning dispatch failed for org=%s — "
+            "action insert is unaffected",
+            org_id,
+        )
+
+
+def _check_phi_shape_pre_insert(
+    api_key: APIKey | None,
+    tenant_id: Optional[str],
+) -> Optional[PHIDetection]:
+    """Run the PHI detector before any DB write.
+
+    Returns the ``PHIDetection`` when a match fires (so the caller
+    can decide whether to emit a warning event AFTER the insert),
+    or ``None`` when no PHI shape was detected.
+
+    Live keys raise the 422 directly here — the request never reaches
+    the chain advance, so the malformed tenant_id never gets persisted
+    into ActionRecord or seeds an auto-discovered Customer row.
+
+    Sync — the detector itself is pure-Python regex work; no I/O.
+    """
+    if not tenant_id:
+        return None
+    detection = detect_phi_shape(tenant_id)
+    if not detection.matched:
+        return None
+    if _is_live_key(api_key):
+        _reject_phi_for_live(detection)
+    return detection
 
 
 def _request_hash(payload: dict) -> str:
@@ -316,21 +419,44 @@ async def create_action(
     auth: tuple[str, APIKey | None] = Depends(require_permission("write")),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
-    org_id, _ = auth
+    org_id, api_key = auth
 
-    # Bridge guard until PR 5 lands the full PHI heuristic.
-    _reject_phi_shape_in_tenant_id(data.tenant_id)
+    # Phase 1 PR 5 — full PHI-shape heuristic (Stream C item C3).
+    # Live keys reject with 422 before any DB write; test keys / Clerk
+    # humans warn + emit ``phi_shape_warning`` AFTER a successful insert
+    # so a rolled-back transaction never produces a phantom event.
+    phi_detection = _check_phi_shape_pre_insert(api_key, data.tenant_id)
 
     async def do_work() -> dict:
         return await _create_action_impl(session, org_id, data)
 
-    return await _run_with_idempotency(
+    response = await _run_with_idempotency(
         session=session,
         org_id=org_id,
         idempotency_key=idempotency_key,
         payload_for_hash=data.model_dump(mode="json"),
         do_work=do_work,
     )
+
+    # Emit AFTER the insert lands and committed. Two skip cases:
+    #   * response.status_code != 200 — a policy-block 409 (the chain
+    #     captured the attempt with result=blocked, but there's no value
+    #     in additionally warning that the tenant_id was PHI-shaped) or
+    #     an idempotency 409 (different body for same key).
+    #   * idempotency replay where the cached body returns 200 — we
+    #     CANNOT distinguish a replay from a fresh write at this layer,
+    #     so a client retrying with the same Idempotency-Key WILL see a
+    #     duplicate event. Documented in the PR description as a
+    #     once-per-action consequence; the alternative (suppress on
+    #     replay) needs idempotency layer changes that aren't in scope.
+    if phi_detection is not None and response.status_code == 200:
+        # ``data.tenant_id`` is guaranteed non-None at this point because
+        # ``_check_phi_shape_pre_insert`` early-returns on empty input.
+        await _emit_phi_warning(
+            session, org_id, data.tenant_id, phi_detection
+        )
+
+    return response
 
 
 @router.post("/batch")
@@ -340,24 +466,39 @@ async def create_action_batch(
     auth: tuple[str, APIKey | None] = Depends(require_permission("write")),
     idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
-    org_id, _ = auth
+    org_id, api_key = auth
 
-    # Bridge guard until PR 5 lands the full PHI heuristic. Check every
-    # record's tenant_id — any single PHI-shaped value rejects the whole
-    # batch (the batch is atomic anyway; partial acceptance would lie).
+    # Phase 1 PR 5 — Stream C item C3. Check every record's tenant_id
+    # before writing. For live keys, ANY PHI-shaped value rejects the
+    # whole batch (the batch is atomic — partial acceptance would lie).
+    # For test keys we collect each (tenant_id, detection) pair and
+    # emit one warning event per offending record AFTER the batch commits.
+    phi_hits: list[tuple[str, PHIDetection]] = []
     for record in data.records:
-        _reject_phi_shape_in_tenant_id(record.tenant_id)
+        detection = _check_phi_shape_pre_insert(
+            api_key, record.tenant_id
+        )
+        if detection is not None:
+            # ``record.tenant_id`` non-None here for the same reason as
+            # the single-record path.
+            phi_hits.append((record.tenant_id, detection))
 
     async def do_work() -> list[dict]:
         return await _create_batch_impl(session, org_id, data)
 
-    return await _run_with_idempotency(
+    response = await _run_with_idempotency(
         session=session,
         org_id=org_id,
         idempotency_key=idempotency_key,
         payload_for_hash=data.model_dump(mode="json"),
         do_work=do_work,
     )
+
+    if phi_hits and response.status_code == 200:
+        for tenant_id, detection in phi_hits:
+            await _emit_phi_warning(session, org_id, tenant_id, detection)
+
+    return response
 
 
 def _escape_like(s: str) -> str:
