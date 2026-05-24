@@ -343,3 +343,53 @@ export interface CustomerQueryParams {
   limit?: number;
   offset?: number;
 }
+
+// Onboarding wizard (Phase 1 PR 14, Stream F item F5).
+// Shapes mirror backend/app/schemas/wizard.py. Slugs are stable on the
+// wire — UI labels live in components/wizard/questions.ts.
+
+export type WizardAgentType =
+  | "scribe"
+  | "receptionist"
+  | "prior_auth"
+  | "triage"
+  | "other";
+
+export type WizardDecisionVolume =
+  | "lt_10k"
+  | "10k_100k"
+  | "100k_1m"
+  | "gt_1m";
+
+export type WizardReviewChannel =
+  | "in_app_webhook"
+  | "slack"
+  | "vera_dashboard"
+  | "multiple";
+
+// Allow-listed jurisdiction tokens (server enforces the same set).
+export type WizardJurisdiction = "us_federal" | "us_ca" | "other_state";
+
+export interface WizardPrivacyOfficer {
+  name: string;
+  email: string;
+}
+
+export interface WizardAnswers {
+  agent_type: WizardAgentType | null;
+  agent_type_other: string | null;
+  jurisdictions: WizardJurisdiction[] | null;
+  decision_volume: WizardDecisionVolume | null;
+  channel: WizardReviewChannel | null;
+  privacy_officer: WizardPrivacyOfficer | null;
+}
+
+export interface WizardAnswersResponse {
+  answers: WizardAnswers | null;
+  completed_at: string | null;
+}
+
+export interface WizardAnswersSubmission {
+  answers: Partial<WizardAnswers>;
+  completed: boolean;
+}
