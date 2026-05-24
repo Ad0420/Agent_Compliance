@@ -79,6 +79,14 @@ class Approval(Base):
     # The Alembic migration `q7k8l9m0n1o2_add_approval_workflow_timing`
     # is the source of truth for indexes; `index=True` is intentionally
     # omitted here to keep autogenerate diffs clean.
+    #
+    # NAMING NOTE: ``decided_at`` here is the ROW-LEVEL decision timestamp
+    # (set once when the approval terminates). It is distinct from the
+    # per-vote ``decided_at`` inside ``Approval.decisions`` (each signed
+    # vote carries its own timestamp; see ``services/approvals.py``).
+    # PR A4 must set ``approval.decided_at`` from the SAME ``_now()``
+    # value passed into ``_decision_signature_bytes`` so the row-level
+    # timestamp matches the chain-anchored vote signature.
     client_review_started_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True
     )
