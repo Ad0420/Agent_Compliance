@@ -61,6 +61,9 @@ export interface ActionQueryParams {
   result?: string;
   authorized_by?: string;
   data_subject_id?: string;
+  // Phase 1 PR 13: per-customer filter used by the Customer detail page's
+  // decisions stream. Backend uses the indexed ``tenant_id`` column.
+  tenant_id?: string;
   start_date?: string;
   end_date?: string;
   search?: string;
@@ -340,6 +343,11 @@ export interface CustomerListResponse {
 export interface CustomerQueryParams {
   status?: CustomerStatus;
   baa_status?: BAAStatus;
+  // Phase 1 PR 13: opt into batched decision_count_30d rollup. Default
+  // off so the Home page's tiny list stays cheap; the full Customers
+  // list (`/customers`) passes `with_counts=1` so each row shows
+  // accurate 30-day activity without N+1 fetches.
+  with_counts?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -392,4 +400,59 @@ export interface WizardAnswersResponse {
 export interface WizardAnswersSubmission {
   answers: Partial<WizardAnswers>;
   completed: boolean;
+}
+
+// AI Coverage Matrix per-customer agent rows (Phase 1 PR 13, Stream F item F4).
+// Backed by GET /v1/customers/{tenant_id}/agents. The Phase 1 placeholder
+// columns (`hitl_gate_count`, `pdf_included`, `posture_included`) are
+// surfaced today so the dashboard contract stays stable when Phase 2/4
+// actually populates them — only the values change.
+export type CustomerAgentSource = "auto_discovered" | "declared" | "csv_import";
+export type CustomerAgentConfidence = "low" | "medium" | "high";
+export type CustomerAgentLifecycle = "active" | "retired";
+export type CustomerAgentCoverageLevel = "covered" | "partial" | "none";
+
+export interface CustomerAgentCoverage {
+  id: string;
+  agent_type: string;
+  agent_id: string | null;
+  source: CustomerAgentSource;
+  confidence: CustomerAgentConfidence;
+  status: CustomerAgentLifecycle;
+  first_seen_at: string;
+  last_seen_at: string;
+  coverage: CustomerAgentCoverageLevel;
+  has_capture: boolean;
+  hitl_gate_count: number;
+  pdf_included: boolean;
+  posture_included: boolean;
+}
+
+export interface CustomerAgentsResponse {
+  items: CustomerAgentCoverage[];
+  total: number;
+}
+
+// BAA upload contract (Phase 1 PR 13, Phase 1 acceptance gate).
+// Phase 1 ships the wire contract with a pre-signed document_uri; a
+// follow-up will wire the actual multipart-to-S3 path. The acceptance
+// gate ("one BAA upload completes setup") is met by the schema change +
+// freshness-cache invalidation.
+export interface BAAUploadInput {
+  document_uri: string;
+  effective_at?: string | null;
+  expires_at?: string | null;
+  signed_at?: string | null;
+  is_unrestricted?: boolean;
+  covered_services?: string[];
+  covered_agent_types?: string[];
+}
+
+export interface BAAUploadResponse {
+  agreement_id: string;
+  scope_id: string;
+  customer_baa_status: BAAStatus;
+  customer_status: CustomerStatus;
+  effective_at: string | null;
+  expires_at: string | null;
 }

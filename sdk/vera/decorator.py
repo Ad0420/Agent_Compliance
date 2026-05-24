@@ -1,12 +1,71 @@
 import functools
 import logging
+import sys
 import time
 import traceback
+import warnings
 
 from .redaction import Redactor
 
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 PR 8 / Stream D6 — @vera.audit deprecation alias machinery.
+# ---------------------------------------------------------------------------
+#
+# ``@vera.audit`` is being renamed to ``@vera.gate`` as the v1 primitive.
+# To avoid breaking pilot code already using ``@vera.audit`` (and to keep
+# the on-wire ActionRecord shape stable for users who can't migrate
+# immediately), the audit decorator stays — but it emits a
+# ``DeprecationWarning`` once per call site (file:line) the first time
+# each decorated function is *called*.
+#
+# Why dedupe at call site rather than once per process? A monorepo with
+# hundreds of ``@vera.audit`` call sites should give the operator one
+# warning per call site so the codemod knows which lines to touch — not
+# one warning for the first site, silence for the rest. Conversely, a
+# tight loop calling one wrapped function 10k times should warn ONCE,
+# not 10k times.
+#
+# Dedupe key: ``(filename, lineno)`` of the decoration site (captured at
+# decoration time, not at call time, since the call-time frame is the
+# wrapper itself which is always the same line).
+
+_audit_warned_sites: set[tuple[str, int]] = set()
+
+_AUDIT_DEPRECATION_MESSAGE = (
+    "@vera.audit is deprecated and will be removed in v2.0.0. "
+    "Use @vera.gate(action_class=...) instead. "
+    "@vera.audit forwards to legacy capture-only semantics (no policy "
+    "enforcement, no tenant required); @vera.gate adds policy routing "
+    "and tenant stamping. See https://docs.usevera.xyz/migrations/audit-to-gate."
+)
+
+
+def _warn_audit_deprecated_once_per_site(site: tuple[str, int]) -> None:
+    """Emit a per-call-site DeprecationWarning for ``@vera.audit``.
+
+    ``site`` is ``(filename, lineno)`` captured at *decoration* time
+    (not call time — the call-time frame is the wrapper body which is
+    always the same line in this file). Dedupe at the decoration-site
+    level means a tight loop warns once, but a monorepo with N
+    ``@vera.audit`` decorators warns N times so the codemod knows
+    every site to touch.
+    """
+    if site in _audit_warned_sites:
+        return
+    _audit_warned_sites.add(site)
+    # stacklevel=3 — caller of the wrapper -> wrapper -> _warn — so the
+    # filename:lineno surfaces at the user's call site instead of inside
+    # ``vera.decorator``.
+    warnings.warn(_AUDIT_DEPRECATION_MESSAGE, DeprecationWarning, stacklevel=3)
+
+
+def _reset_audit_deprecation_warnings() -> None:
+    """Reset the call-site dedupe set. Intended for tests."""
+    _audit_warned_sites.clear()
 
 
 # Module-level client reference — set by the user
@@ -93,9 +152,26 @@ def audit(
             ``Redactor(...)`` to customise per-decorator.
     """
 
+    # Capture decoration-site frame so the DeprecationWarning dedupes
+    # per call-site rather than per process. We walk the stack ONCE at
+    # decoration time so the per-call hot path stays cheap; the result
+    # is closed over in the wrapper.
+    try:
+        # Frame 0: this line. Frame 1: caller of ``audit(...)`` —
+        # typically the ``def decorator(func):`` block inside the
+        # caller's module that the ``@audit(...)`` syntax invokes.
+        _decoration_frame = sys._getframe(1)
+        _decoration_site = (
+            _decoration_frame.f_code.co_filename,
+            _decoration_frame.f_lineno,
+        )
+    except Exception:  # pragma: no cover — defensive, _getframe always works in CPython
+        _decoration_site = ("<unknown>", 0)
+
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
+            _warn_audit_deprecated_once_per_site(_decoration_site)
             effective_client = client or _default_client
             if effective_client is None:
                 # No client configured — warn once, then run the function

@@ -28,6 +28,14 @@ import pytest
 
 from .decorator import set_default_client
 from .dev import _StderrSink, build_dev_client
+# Re-export the Phase 1 PR 8 / Stream D10 ``bypass_gates`` fixture
+# through the pytest11 entry point so customer test suites get it
+# automatically without an explicit ``from vera.testing import ...``
+# in their conftest. Pattern matches ``vera_sdk_recording`` above —
+# the auto-registered plugin is the discovery surface; ``vera.testing``
+# stays available for callers who want to import the context-manager
+# form (``bypass_gates_cm``) directly.
+from .testing import bypass_gates  # noqa: F401 — re-export as pytest fixture
 
 
 @pytest.fixture

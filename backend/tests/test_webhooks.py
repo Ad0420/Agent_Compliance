@@ -673,6 +673,8 @@ def test_allowed_event_types_is_complete():
             # Phase 1 PR 3 — auto-discovery signals.
             "new_agent_type_detected",
             "cross_org_tenant_collision",
+            # Phase 1 PR 5 — PHI-shape heuristic (Stream C item C3).
+            "phi_shape_warning",
         }
     )
 

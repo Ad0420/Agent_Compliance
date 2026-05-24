@@ -24,10 +24,13 @@ import type {
   ApprovalDecisionInput,
   ApprovalQueryParams,
   Customer,
+  CustomerAgentsResponse,
   CustomerListResponse,
   CustomerQueryParams,
   WizardAnswersResponse,
   WizardAnswersSubmission,
+  BAAUploadInput,
+  BAAUploadResponse,
 } from "./api-types";
 
 export class ApiError extends Error {
@@ -137,13 +140,52 @@ export function getOrganization(): Promise<Organization> {
   return request("/v1/organizations/me");
 }
 
-// Customers (Phase 1 PR 2 — list + per-customer fetch)
+// Customers (Phase 1 PR 2 — list + per-customer fetch; PR 13 — agents + BAA upload)
 export function getCustomers(params?: CustomerQueryParams): Promise<CustomerListResponse> {
-  return request(`/v1/customers${buildQuery(params as Record<string, string | number | undefined>)}`);
+  // ``with_counts`` is a boolean; URLSearchParams stringifies booleans
+  // verbatim ("true"/"false") and FastAPI's query-param coercion accepts
+  // both. Passing the raw boolean through buildQuery keeps the call sites
+  // ergonomic.
+  return request(
+    `/v1/customers${buildQuery(params as Record<string, string | number | undefined>)}`,
+  );
 }
 
 export function getCustomer(tenant_id: string): Promise<Customer> {
   return request(`/v1/customers/${encodeURIComponent(tenant_id)}`);
+}
+
+export function getCustomerAgents(
+  tenant_id: string,
+): Promise<CustomerAgentsResponse> {
+  return request(`/v1/customers/${encodeURIComponent(tenant_id)}/agents`);
+}
+
+export interface CustomerPatchInput {
+  display_name?: string | null;
+  contact_email?: string | null;
+  contact_name?: string | null;
+  jurisdictions?: string[] | null;
+}
+
+export function patchCustomer(
+  tenant_id: string,
+  input: CustomerPatchInput,
+): Promise<Customer> {
+  return request(`/v1/customers/${encodeURIComponent(tenant_id)}`, {
+    method: "PATCH",
+    body: JSON.stringify(input),
+  });
+}
+
+export function uploadCustomerBaa(
+  tenant_id: string,
+  input: BAAUploadInput,
+): Promise<BAAUploadResponse> {
+  return request(`/v1/customers/${encodeURIComponent(tenant_id)}/baa`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export function updateAlertEmail(alert_email: string | null): Promise<Organization> {
