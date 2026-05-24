@@ -145,6 +145,276 @@ def test_strict_rules_inactive_by_default(tmp_path: Path) -> None:
     assert blocking == []
 
 
+# ---------------------------------------------------------------------------
+# tabular-nums-missing — same-line and ±_TABULAR_NUMS_WINDOW behavior
+# ---------------------------------------------------------------------------
+
+
+def test_tabular_nums_same_line_classname_suppresses(tmp_path: Path) -> None:
+    """A ``tabular-nums`` className on the SAME line as the
+    ``.toLocaleString()`` rendering must NOT trigger the rule. This is
+    the headline fix for the rule's previous behaviour where any
+    ``{...toLocaleString()...}`` expression flagged regardless of the
+    wrapping treatment."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '<span className="tabular-nums">{count.toLocaleString()}</span>\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert not any(v.rule_id == "tabular-nums-missing" for v in blocking), (
+        f"tabular-nums on same line should suppress; got {ids_of(blocking)}"
+    )
+
+
+def test_tabular_nums_parent_classname_within_window_suppresses(tmp_path: Path) -> None:
+    """A ``tabular-nums`` className on a parent JSX element within the
+    ±3 line window suppresses the rule. This catches the typical
+    pattern of a parent block with the className and the child rendering
+    the number 1-3 lines later."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '<p className="tabular-nums">\n'
+        '  {isLoading\n'
+        '    ? "Loading…"\n'
+        '    : `${count.toLocaleString()} foo`}\n'
+        '</p>\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert not any(v.rule_id == "tabular-nums-missing" for v in blocking), (
+        f"parent tabular-nums within window should suppress; got {ids_of(blocking)}"
+    )
+
+
+def test_tabular_nums_distant_parent_still_flags(tmp_path: Path) -> None:
+    """When the parent ``tabular-nums`` className sits MORE than
+    ``_TABULAR_NUMS_WINDOW`` lines above the rendering, the rule still
+    fires. This is the documented v1 limitation — distant parents need
+    ``# copy-allow``. The test guards against a future change that
+    silently widens the window."""
+
+    blank_padding = "\n" * 10  # well beyond ±3 window
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '<table className="tabular-nums">\n'
+        + blank_padding
+        + '<td>{count.toLocaleString()}</td>\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert any(v.rule_id == "tabular-nums-missing" for v in blocking), (
+        "distant parent should NOT suppress — heuristic is bounded window"
+    )
+
+
+def test_tabular_nums_no_anchor_flags(tmp_path: Path) -> None:
+    """No tabular-nums anchor anywhere in the window → rule fires."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '<p>foo</p>\n<p>{count.toLocaleString()}</p>\n<p>bar</p>\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert any(v.rule_id == "tabular-nums-missing" for v in blocking)
+
+
+def test_tabular_nums_tnum_class_suppresses(tmp_path: Path) -> None:
+    """The Tailwind arbitrary-value ``[font-feature-settings:'tnum']``
+    counts as a tabular-nums anchor."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '<span className="[font-feature-settings:\'tnum\']">'
+        '{count.toLocaleString()}</span>\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert not any(v.rule_id == "tabular-nums-missing" for v in blocking)
+
+
+def test_tabular_nums_mono_var_suppresses(tmp_path: Path) -> None:
+    """``var(--mono)`` on the same line counts as a tabular anchor —
+    monospace fonts are already digit-aligned by construction."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '<span style={{fontFamily: "var(--mono)"}}>'
+        '{count.toLocaleString()}</span>\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert not any(v.rule_id == "tabular-nums-missing" for v in blocking)
+
+
+# ---------------------------------------------------------------------------
+# date-no-year — Intl.DateTimeFormat coverage
+# ---------------------------------------------------------------------------
+
+
+def test_intl_datetimeformat_without_year_flags(tmp_path: Path) -> None:
+    """``new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" })``
+    omits the year and must be flagged at strict tier."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        'new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" })\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert any(v.rule_id == "date-no-year" for v in blocking)
+
+
+def test_intl_datetimeformat_with_year_clean(tmp_path: Path) -> None:
+    """``Intl.DateTimeFormat`` with ``year: "numeric"`` is clean."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        'new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short", day: "numeric" })\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert not any(v.rule_id == "date-no-year" for v in blocking)
+
+
+# ---------------------------------------------------------------------------
+# recommendation-language — code-comment context filter
+# ---------------------------------------------------------------------------
+
+
+def test_recommendation_in_jsx_text_flags(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '<p>You should attest before continuing.</p>\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert any(v.rule_id == "recommendation-language" for v in blocking)
+
+
+def test_recommendation_in_line_comment_does_not_flag(tmp_path: Path) -> None:
+    """``// you should refactor this`` is engineer-to-engineer code
+    chatter, not user-facing copy. The rule must not fire."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '// you should refactor this someday\n'
+        'const x = 1;\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert not any(v.rule_id == "recommendation-language" for v in blocking)
+
+
+def test_recommendation_in_jsdoc_does_not_flag(tmp_path: Path) -> None:
+    """JSDoc ``* You should call init() first`` is a code comment in
+    a code file — the rule must not fire."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        '/**\n'
+        ' * Helper that does X.\n'
+        ' * You should call init() first.\n'
+        ' */\n'
+        'function helper() {}\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert not any(v.rule_id == "recommendation-language" for v in blocking)
+
+
+def test_recommendation_in_inline_trailing_comment_does_not_flag(tmp_path: Path) -> None:
+    """A trailing ``// you should X`` after code must not flag."""
+
+    write(
+        tmp_path,
+        "frontend/page.tsx",
+        'const x = 1; // you should refactor this someday\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert not any(v.rule_id == "recommendation-language" for v in blocking)
+
+
+def test_recommendation_in_markdown_bullet_flags(tmp_path: Path) -> None:
+    """In a markdown source, a ``- You should X`` bullet is the
+    user-facing copy itself. The rule must fire (CLAUDE.md and
+    similar docs are exactly the target surface)."""
+
+    write(
+        tmp_path,
+        "frontend/notes.md",
+        "Recommendations:\n- You should attest first.\n",
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert any(v.rule_id == "recommendation-language" for v in blocking)
+
+
+def test_recommendation_jsdoc_in_markdown_flags(tmp_path: Path) -> None:
+    """A line starting with ``*`` in a markdown file is a list bullet,
+    not a JSDoc continuation — the rule must still fire."""
+
+    write(
+        tmp_path,
+        "frontend/notes.md",
+        "* You should attest first.\n",
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"], strict=True)
+    blocking = [v for v in violations if not v.allowed and not v.warning]
+    assert any(v.rule_id == "recommendation-language" for v in blocking)
+
+
+# ---------------------------------------------------------------------------
+# Reason-length validation for # copy-allow
+# ---------------------------------------------------------------------------
+
+
+def test_short_reason_does_not_suppress(tmp_path: Path) -> None:
+    """A ``copy-allow: x`` marker (reason shorter than the minimum)
+    must NOT silence the rule. Auditability requires real text in the
+    reason field."""
+
+    write(
+        tmp_path,
+        "frontend/x.tsx",
+        '<p>court-admissible</p>  // copy-allow: x\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"])
+    blocking = [v for v in violations if not v.allowed]
+    assert any(v.rule_id == "court-admissible" for v in blocking), (
+        "1-char reason should not pass the min-length gate"
+    )
+
+
+def test_meaningful_reason_suppresses(tmp_path: Path) -> None:
+    """A reason at the minimum length (8 chars) is accepted as a real
+    suppression."""
+
+    write(
+        tmp_path,
+        "frontend/x.tsx",
+        '<p>court-admissible</p>  // copy-allow: rule def\n',
+    )
+    violations = ccv.scan_paths([tmp_path / "frontend"])
+    blocking = [v for v in violations if not v.allowed]
+    assert blocking == []
+
+
 @pytest.mark.parametrize(
     "snippet,expected_id",
     [
