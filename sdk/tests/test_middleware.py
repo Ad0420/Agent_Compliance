@@ -7,22 +7,30 @@ Covers:
 * Malformed header in non-strict mode → handler sees ``None``.
 * Missing / malformed header in strict mode → 400 response.
 * Per-request reset: tenant does NOT leak across requests.
+
+This entire module skips when starlette is not installed — the SDK
+core depends only on httpx, and ``vera.middleware`` raises at import
+time without starlette. We use module-level ``pytest.importorskip``
+BEFORE importing ``vera.middleware`` so collection succeeds on
+starlette-less environments.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from vera._context import (
+# Skip the whole module if starlette / httpx-test client are not installed.
+# These MUST run before the ``vera.middleware`` import below; that module
+# raises ImportError at module-load time when starlette is missing.
+pytest.importorskip("starlette")
+pytest.importorskip("starlette.testclient")
+
+from vera._context import (  # noqa: E402
     _current_tenant,
     get_tenant,
     set_default_tenant,
 )
-from vera.middleware import VeraMiddleware
-
-# Skip the whole module if starlette / httpx-test client are not installed.
-pytest.importorskip("starlette")
-pytest.importorskip("starlette.testclient")
+from vera.middleware import VeraMiddleware  # noqa: E402
 
 from starlette.applications import Starlette  # noqa: E402
 from starlette.responses import JSONResponse  # noqa: E402
