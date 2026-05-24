@@ -1,10 +1,18 @@
 import asyncio
+import os
+
+# Force synchronous webhook dispatch in tests so the in-memory SQLite
+# connection isn't contended by background ``asyncio.create_task`` work
+# mid-test. Set BEFORE importing ``app.*`` so ``services.webhooks``
+# sees it at module load. Production never sets this.
+os.environ.setdefault("VERA_WEBHOOK_SYNC_DISPATCH", "1")
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import StaticPool
 
 from app.models import Base, Customer, Organization, ChainState, APIKey
 from app.services.auth import generate_api_key
@@ -25,6 +33,14 @@ async def db_engine():
     engine = create_async_engine(
         "sqlite+aiosqlite:///:memory:",
         connect_args={"check_same_thread": False},
+        # StaticPool keeps a single shared in-memory DB connection
+        # across ALL sessions. Without it, aiosqlite gives each session
+        # its own (separate, empty) memory DB and tests see no fixture
+        # data. With Wave 2B PR A3's fire-and-forget background tasks
+        # this also serialises the savepoint usage so two concurrent
+        # ``begin_nested()`` calls don't trip
+        # "cannot release savepoint - SQL statements in progress".
+        poolclass=StaticPool,
         echo=False,
     )
 
@@ -72,7 +88,14 @@ async def _patch_async_session_local_for_webhooks(db_engine, monkeypatch):
     Autouse so every test gets the redirect without explicit setup —
     matches the spirit of the in-memory ``db_engine`` fixture itself.
     Individual tests can still ``patch(...)`` to override.
+
+    Also drains any leftover background tasks at teardown so a
+    fire-and-forget task from the prior test doesn't race the next
+    test's transaction (which trips ``cannot release savepoint - SQL
+    statements in progress`` on CI's slower Python 3.12 runner).
     """
+    import asyncio as _asyncio
+
     session_factory = async_sessionmaker(
         db_engine, class_=AsyncSession, expire_on_commit=False
     )
@@ -91,6 +114,39 @@ async def _patch_async_session_local_for_webhooks(db_engine, monkeypatch):
     except Exception:
         pass
     yield
+    # Drain any in-flight webhook delivery tasks BEFORE the next test
+    # opens a session. Lingering background tasks holding the same
+    # in-memory engine connection can collide with the next test's
+    # ``begin_nested()`` SAVEPOINT (see chain._get_or_create_agent),
+    # producing ``cannot release savepoint - SQL statements in
+    # progress`` on CI's Python 3.12 runner where the scheduler is
+    # different enough from 3.11 that the prior test's tasks are still
+    # mid-flight when the next test starts.
+    try:
+        inflight = list(
+            getattr(_webhooks_module, "_inflight_tasks", set())
+        )
+        if inflight:
+            await _asyncio.wait(
+                inflight, timeout=5.0,
+                return_when=_asyncio.ALL_COMPLETED,
+            )
+        # Also drain any non-_track_task ``create_task`` (e.g.
+        # auto-discovery's pending_events loop in chain.py).
+        for _ in range(50):
+            other = [
+                t
+                for t in _asyncio.all_tasks()
+                if t is not _asyncio.current_task() and not t.done()
+            ]
+            if not other:
+                break
+            await _asyncio.wait(
+                other, timeout=0.1,
+                return_when=_asyncio.FIRST_COMPLETED,
+            )
+    except Exception:
+        pass
 
 
 @pytest_asyncio.fixture

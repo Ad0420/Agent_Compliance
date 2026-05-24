@@ -57,6 +57,7 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -173,6 +174,22 @@ def _track_task(task: asyncio.Task) -> asyncio.Task:
     _inflight_tasks.add(task)
     task.add_done_callback(_inflight_tasks.discard)
     return task
+
+
+def _should_dispatch_sync() -> bool:
+    """When true, dispatch_event awaits the first attempt inline.
+
+    Used by the test suite (``VERA_WEBHOOK_SYNC_DISPATCH=1`` set by
+    ``conftest.py``) to avoid background-task concurrency on SQLite's
+    single shared connection. Production never sets this; the
+    first-attempt task runs as ``asyncio.create_task`` so the calling
+    request returns immediately.
+    """
+    return os.getenv("VERA_WEBHOOK_SYNC_DISPATCH", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def _now() -> datetime:
@@ -619,7 +636,18 @@ async def dispatch_event(
         # Fire the first attempt. Errors inside the task are logged but
         # never propagate; the row is durable and the sweeper will pick
         # it up on the next tick if the task crashes.
-        _track_task(asyncio.create_task(_attempt_delivery(delivery_id)))
+        if _should_dispatch_sync():
+            # Tests opt into synchronous dispatch so the in-memory
+            # SQLite connection isn't contended by a background task
+            # mid-test. Production never sets this flag.
+            try:
+                await _attempt_delivery(delivery_id)
+            except Exception:
+                logger.exception(
+                    "sync dispatch of delivery=%s raised", delivery_id
+                )
+        else:
+            _track_task(asyncio.create_task(_attempt_delivery(delivery_id)))
 
 
 async def _create_delivery_row(
@@ -630,7 +658,7 @@ async def _create_delivery_row(
     payload: dict,
     idempotency_key: Optional[str],
 ) -> Optional[str]:
-    """Insert a ``WebhookDelivery`` row in a fresh session.
+    """Insert a ``WebhookDelivery`` row in a fresh ``AsyncSessionLocal`` session.
 
     Returns the new row's ``id`` on insert, or ``None`` when the row
     already existed (idempotency hit) or the insert failed for any other
@@ -638,11 +666,15 @@ async def _create_delivery_row(
 
     Inserted with ``status='in_progress'`` and a short
     ``locked_until`` lease so the sweeper's claim query does not race
-    the in-process first attempt.
+    the in-process first attempt. The caller is responsible for having
+    already committed its own session (``dispatch_event`` does a
+    pre-flight ``session.commit()`` so this assumption holds even on
+    the SQLite shared-connection path).
     """
+    new_id = str(uuid.uuid4())
+    effective_idem = idempotency_key or new_id
     try:
         async with AsyncSessionLocal() as session:
-            new_id = str(uuid.uuid4())
             row = WebhookDelivery(
                 id=new_id,
                 subscription_id=subscription_id,
@@ -654,21 +686,17 @@ async def _create_delivery_row(
                 next_retry_at=_now(),
                 locked_until=_now() + timedelta(seconds=PRODUCER_LEASE_SECONDS),
                 locked_by=None,
-                idempotency_key=idempotency_key or new_id,
+                idempotency_key=effective_idem,
             )
             session.add(row)
             try:
                 await session.commit()
             except IntegrityError:
                 await session.rollback()
-                # Idempotency hit — look up the existing row so the
-                # caller can debug log it, but DON'T schedule another
-                # attempt.
                 existing = await session.execute(
                     select(WebhookDelivery).where(
                         WebhookDelivery.subscription_id == subscription_id,
-                        WebhookDelivery.idempotency_key
-                        == (idempotency_key or new_id),
+                        WebhookDelivery.idempotency_key == effective_idem,
                     )
                 )
                 hit = existing.scalar_one_or_none()
