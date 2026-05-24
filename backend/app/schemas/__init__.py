@@ -27,6 +27,11 @@ from .baa import (
     BAAScopeCreate,
     BAAScopeResponse,
 )
+from .gate import (
+    GateEvaluateRequest,
+    Ruling,
+    RulingEffect,
+)
 
 __all__ = [
     "ActionRecordCreate",
@@ -55,4 +60,7 @@ __all__ = [
     "BAAAgreementResponse",
     "BAAScopeCreate",
     "BAAScopeResponse",
+    "GateEvaluateRequest",
+    "Ruling",
+    "RulingEffect",
 ]
