@@ -27,6 +27,12 @@ classifiers = [
 dependencies = [
     "httpx>=0.25.0",
     "click>=8.0.0,<10.0.0",
+    # LibCST powers ``vera codemod audit-to-gate`` (Phase 1 PR 9 /
+    # Stream D8). Bundled with the SDK rather than gated behind an
+    # extra: the codemod ships alongside the breaking ``@vera.audit``
+    # → ``@vera.gate`` rename and we don't want pilots discovering
+    # they need to ``pip install vera-sdk[codemod]`` mid-migration.
+    "libcst>=1.0.0",
 ]
 
 [project.scripts]
