@@ -3,17 +3,25 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { Home, ShieldCheck, Settings, Scale, Key, Users } from "lucide-react";
+import { Home, ShieldCheck, Settings, Scale, Key, Users, Inbox } from "lucide-react";
 
 // PR 12 (Phase 1 Stream F item F6) introduces /home as the real landing
 // page and adds /customers as the multi-tenant first-class nav entry per
 // `dashboard-design.md` §Information architecture. Order matters: Home
 // (daily check) → Customers (the multi-tenant core) → Compliance (org-wide
-// attestations) → API Keys (SDK plumbing) → Settings (everything else).
+// attestations) → Reviews (HITL queue) → API Keys (SDK plumbing) →
+// Settings (everything else).
+//
+// Wave 2D PR C2 adds /compliance/reviews as a top-level shortcut for the
+// HITL Review queue — the page lives under /compliance to keep its URL
+// breadcrumb honest, but reviewers hit it dozens of times a day so we
+// surface a dedicated nav entry alongside Compliance (the section header)
+// rather than burying it one click deep.
 const NAV_ITEMS = [
   { href: "/home", label: "Home", icon: Home },
   { href: "/customers", label: "Customers", icon: Users },
   { href: "/compliance", label: "Compliance", icon: Scale },
+  { href: "/compliance/reviews", label: "Reviews", icon: Inbox },
   { href: "/api-keys", label: "API Keys", icon: Key },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
@@ -32,9 +40,21 @@ export function Sidebar() {
           // /home is exact-match only — `/home` should not light up for `/homework` or any other prefix collision.
           // For everything else, only treat the link as active for the page itself or a true child route
           // (e.g. `/customers/123`), never for adjacent siblings like `/customers-archive`.
+          //
+          // Wave 2D C2: `/compliance/reviews` is a sibling of `/compliance` with its own nav entry.
+          // If a more specific NAV_ITEMS entry matches the current pathname, this less-specific one
+          // should defer (don't light up Compliance when the user is on /compliance/reviews).
+          const hasMoreSpecificMatch = NAV_ITEMS.some(
+            (other) =>
+              other.href !== item.href &&
+              other.href.startsWith(item.href + "/") &&
+              (pathname === other.href ||
+                pathname.startsWith(other.href + "/")),
+          );
           const isActive =
-            pathname === item.href ||
-            (item.href !== "/home" && pathname.startsWith(item.href + "/"));
+            !hasMoreSpecificMatch &&
+            (pathname === item.href ||
+              (item.href !== "/home" && pathname.startsWith(item.href + "/")));
           return (
             <Link
               key={item.href}

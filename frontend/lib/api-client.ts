@@ -37,15 +37,26 @@ import type {
   WebhookDeliveriesResponse,
   WebhookDeliveryReplayResponse,
   WebhookListResponse,
+  CompleteReviewInput,
+  CompleteReviewResponse,
 } from "./api-types";
 
 export class ApiError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-  ) {
+  public status: number;
+  /**
+   * Raw `detail` value as returned by the backend. For most endpoints this
+   * is a string and ``message`` is the same value; for endpoints that
+   * return a structured envelope (e.g. ``POST /v1/reviews/{id}/complete``
+   * → 403 with ``{code, required_role, reviewer_role, ...}``) callers can
+   * narrow on the shape via type guards to render an actionable error.
+   */
+  public detail: unknown;
+
+  constructor(status: number, message: string, detail?: unknown) {
     super(message);
+    this.status = status;
     this.name = "ApiError";
+    this.detail = detail ?? message;
   }
 }
 
@@ -80,7 +91,20 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: "Request failed" }));
-    throw new ApiError(response.status, error.detail || `Request failed (${response.status})`);
+    const detail = error?.detail;
+    // ``detail`` is a string in the common case (FastAPI's default
+    // HTTPException) and an object for endpoints that surface a
+    // structured envelope (e.g. POST /v1/reviews/{id}/complete on 403).
+    // We pass both: ``message`` is always a string for ``Error`` super,
+    // ``detail`` is the original payload so callers can narrow.
+    const message =
+      typeof detail === "string"
+        ? detail
+        : detail && typeof detail === "object" && "detail" in detail &&
+            typeof (detail as { detail?: unknown }).detail === "string"
+          ? (detail as { detail: string }).detail
+          : `Request failed (${response.status})`;
+    throw new ApiError(response.status, message, detail);
   }
 
   if (response.status === 204) return undefined as T;
@@ -307,6 +331,31 @@ export function decideApproval(id: string, input: ApprovalDecisionInput): Promis
 
 export function cancelApproval(id: string): Promise<Approval> {
   return request(`/v1/approvals/${id}/cancel`, { method: "POST" });
+}
+
+// ── Wave 2D PR C2 — Review queue page ───────────────────────────────────
+//
+// Wraps the A4 endpoint ``POST /v1/reviews/{review_id}/complete``. The
+// dashboard uses this as the alt channel for HITL completion when the
+// customer hasn't wired a webhook receiver (per
+// v1-implementation-plan.md §Phase 2 Dashboard, line 120 + 127).
+//
+// Status codes the dashboard surfaces inline (see complete-review-form.tsx):
+//   * 200 — decision recorded, queue refresh
+//   * 403 — reviewer role insufficient (detail is ReviewerInsufficientDetail)
+//   * 404 — review missing (shouldn't happen post-list-load; treat as 409)
+//   * 409 — already resolved OR attestation_conflict (Wave 2D A6)
+//   * 410 — review expired
+// All non-200s arrive as ``ApiError`` with the structured ``detail`` blob
+// preserved for narrowing.
+export function completeReview(
+  review_id: string,
+  input: CompleteReviewInput,
+): Promise<CompleteReviewResponse> {
+  return request(`/v1/reviews/${encodeURIComponent(review_id)}/complete`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 // Register
