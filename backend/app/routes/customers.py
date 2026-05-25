@@ -44,8 +44,14 @@ from ..schemas.customer import (
     CustomerStatus,
     CustomerUpdate,
 )
+from ..schemas.customer_decision import CustomerDecisionsListResponse
 from ..services.auth import require_permission
 from ..services.baa import invalidate_org_baa_cache
+from ..services.decisions import (
+    DEFAULT_LIMIT as DECISIONS_DEFAULT_LIMIT,
+    MAX_LIMIT as DECISIONS_MAX_LIMIT,
+    list_customer_decisions,
+)
 
 router = APIRouter(prefix="/customers", tags=["customers"])
 
@@ -475,4 +481,81 @@ async def upload_customer_baa(
         customer_status=customer.status,  # type: ignore[arg-type]
         effective_at=agreement.effective_at,
         expires_at=agreement.expires_at,
+    )
+
+
+# ── PR C1.5: Customer Decisions feed (Wave 2C C1 follow-up) ──────────────
+
+
+@router.get(
+    "/{tenant_id}/decisions",
+    response_model=CustomerDecisionsListResponse,
+)
+async def list_customer_decisions_endpoint(
+    tenant_id: str,
+    limit: int = Query(
+        default=DECISIONS_DEFAULT_LIMIT,
+        ge=1,
+        le=DECISIONS_MAX_LIMIT,
+        description=(
+            "Page size. Bounded server-side at "
+            f"{DECISIONS_MAX_LIMIT} to keep the join cost predictable."
+        ),
+    ),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_db),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
+):
+    """Decisions feed for the Customer detail page's Decisions tab.
+
+    Replaces C1's client-side adapter (``frontend/lib/api-client.ts::
+    getCustomerDecisions``) which assembled the row from
+    ``GET /v1/actions?tenant_id=`` and read gate / webhook / HITL state
+    out of ``ActionRecord.reasoning`` — keys the backend never writes.
+
+    What this endpoint actually joins
+    ---------------------------------
+    For each ``ActionRecord`` belonging to the (org, tenant) pair:
+
+    * Looks up the (optional) ``Approval`` row whose
+      ``request_record_id`` points back to it. The HITL materializer
+      (``services/gates/hitl.py``) stashes the winning gate's metadata
+      on ``Approval.context`` so the dashboard can render the Ruling
+      badge without joining a separate gate-evaluations table.
+    * For each approval, looks up the most recent ``WebhookDelivery``
+      row whose ``idempotency_key`` starts ``"{approval.id}:"`` — the
+      convention the dispatcher uses for ``review.*`` events.
+    * Maps ``Approval.expires_at`` into the response only while the
+      approval is still pending (so the UI shows the countdown for live
+      reviews and hides it for terminal ones).
+
+    Known limitation: ALLOW rulings
+    -------------------------------
+    Only HITL/BLOCK rulings show in the ``ruling`` field. ALLOW
+    rulings don't create an ``Approval`` row, so the dashboard sees
+    ``ruling=None`` for actions whose gate decided no review was
+    needed. Surfacing ALLOW rulings requires either an SDK-side
+    denormalisation or a new ``gate_evaluations`` table — both deferred
+    to a follow-up PR.
+    """
+    org_id, _ = auth
+    # Reuse the org-scoped lookup helper so the 404 message matches the
+    # other ``/v1/customers/{tenant_id}/*`` sub-routes (and so a customer
+    # that exists in another org never leaks a 200).
+    await _resolve_customer_or_404(
+        session, org_id=org_id, tenant_id=tenant_id
+    )
+
+    rows, total = await list_customer_decisions(
+        session,
+        org_id=org_id,
+        tenant_id=tenant_id,
+        limit=limit,
+        offset=offset,
+    )
+    return CustomerDecisionsListResponse(
+        decisions=rows,
+        total=total,
+        limit=limit,
+        offset=offset,
     )
