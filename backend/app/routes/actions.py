@@ -18,9 +18,10 @@ from ..schemas.action import (
     ActionRecordBatchCreate,
     ActionRecordListResponse,
 )
-from ..services.auth import require_permission
+from ..services.auth import AuthContext, require_permission, require_permission_with_context
 from ..services.chain import build_and_insert_record, build_and_insert_batch
 from ..services.hashing import canonicalize
+from ..services.iam import IamTier, audit_staff_read, redact_action_record
 from ..services.phi_detector import PHIDetection, detect_phi_shape
 from ..services.webhooks import dispatch_event
 
@@ -523,9 +524,9 @@ async def list_actions(
     limit: int = Query(default=50, le=200),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
+    ctx: AuthContext = Depends(require_permission_with_context("read")),
 ):
-    org_id, _ = auth
+    org_id = ctx.org_id
 
     query = select(ActionRecord).where(ActionRecord.org_id == org_id)
     count_query = select(func.count(ActionRecord.id)).where(ActionRecord.org_id == org_id)
@@ -568,6 +569,33 @@ async def list_actions(
     records_result = await session.execute(query)
     records = records_result.scalars().all()
 
+    # Wave 3A.c. Staff sessions see PHI fields redacted; customer sessions
+    # see the full payload. Every staff read writes a row to
+    # ``staff_audit_log`` so the customer can later ask "who at Vera
+    # touched my data". We log a single aggregate-list row here (resource_id
+    # is None for list reads), not one row per record — that would flood
+    # the log on a 200-row page.
+    if ctx.tier == IamTier.STAFF_READ_ONLY:
+        record_dicts = [
+            redact_action_record(_record_to_response(r).model_dump(mode="json"), ctx.tier)
+            for r in records
+        ]
+        await audit_staff_read(
+            session,
+            staff_id=ctx.staff_id or "",
+            endpoint="/v1/actions",
+            org_id=org_id,
+            resource_type="action_record",
+            resource_id=None,
+            redacted=True,
+        )
+        return ActionRecordListResponse(
+            records=[ActionRecordResponse.model_validate(d) for d in record_dicts],
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+
     return ActionRecordListResponse(
         records=[_record_to_response(r) for r in records],
         total=total,
@@ -580,9 +608,9 @@ async def list_actions(
 async def get_action(
     record_id: str,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
+    ctx: AuthContext = Depends(require_permission_with_context("read")),
 ):
-    org_id, _ = auth
+    org_id = ctx.org_id
     result = await session.execute(
         select(ActionRecord).where(
             ActionRecord.id == record_id,
@@ -592,4 +620,20 @@ async def get_action(
     record = result.scalar_one_or_none()
     if record is None:
         raise HTTPException(status_code=404, detail="Action record not found")
-    return _record_to_response(record)
+    response = _record_to_response(record)
+    # Wave 3A.c. Staff get redacted payload + an audit row; customers
+    # get the full payload with no audit (their own data — not a
+    # staff-on-customer access).
+    if ctx.tier == IamTier.STAFF_READ_ONLY:
+        redacted = redact_action_record(response.model_dump(mode="json"), ctx.tier)
+        await audit_staff_read(
+            session,
+            staff_id=ctx.staff_id or "",
+            endpoint="/v1/actions/{record_id}",
+            org_id=org_id,
+            resource_type="action_record",
+            resource_id=record_id,
+            redacted=True,
+        )
+        return ActionRecordResponse.model_validate(redacted)
+    return response
