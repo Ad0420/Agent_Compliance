@@ -456,3 +456,77 @@ export interface BAAUploadResponse {
   effective_at: string | null;
   expires_at: string | null;
 }
+
+// Webhook subscriptions + delivery health (Phase 2 Wave 2B PR A3 backend,
+// Wave 2C PR C3 dashboard surface).
+//
+// A ``WebhookSubscription`` is the customer-facing endpoint (URL + event
+// subscriptions). A ``WebhookDelivery`` is one (subscription, event) pair;
+// it survives retries. ``WebhookDeliveryAttempt`` is one HTTP send. The
+// Settings → Integrations page hangs a health panel off each subscription
+// card by calling `GET /v1/webhooks/{id}/deliveries` and reducing the
+// returned rows into a few scalar stats.
+export type WebhookDeliveryStatus =
+  | "pending"
+  | "in_progress"
+  | "succeeded"
+  | "aborted";
+
+export interface WebhookSubscription {
+  id: string;
+  url: string;
+  event_types: string[];
+  is_active: boolean;
+  description: string | null;
+  created_at: string;
+  last_delivery_at: string | null;
+  last_delivery_status: string | null;
+  consecutive_failures: number;
+}
+
+export interface WebhookListResponse {
+  webhooks: WebhookSubscription[];
+}
+
+export interface WebhookDeliveryAttempt {
+  id: string;
+  attempt_number: number;
+  attempted_at: string;
+  status_code: number | null;
+  error_message: string | null;
+  duration_ms: number | null;
+  next_retry_at: string | null;
+}
+
+export interface WebhookDelivery {
+  id: string;
+  subscription_id: string;
+  event_type: string;
+  status: WebhookDeliveryStatus;
+  attempt_count: number;
+  next_retry_at: string | null;
+  created_at: string;
+  succeeded_at: string | null;
+  aborted_at: string | null;
+  last_status_code: number | null;
+  idempotency_key: string;
+  attempts: WebhookDeliveryAttempt[];
+}
+
+export interface WebhookDeliveriesResponse {
+  deliveries: WebhookDelivery[];
+  total: number;
+}
+
+export interface WebhookDeliveriesQueryParams {
+  status?: WebhookDeliveryStatus;
+  limit?: number;
+  offset?: number;
+}
+
+export interface WebhookDeliveryReplayResponse {
+  id: string;
+  status: WebhookDeliveryStatus;
+  attempt_count: number;
+  next_retry_at: string | null;
+}
