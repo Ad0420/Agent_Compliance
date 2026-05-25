@@ -1,5 +1,38 @@
 # Vera — Agent Instructions
 
+## Git workflow
+
+This project uses a **`develop` → `main`** two-branch flow. Adopted at the
+start of Phase 3 to give us a real integration buffer before production.
+
+- **`main`** is the production branch. Only `develop` merges into `main`,
+  on release cadence (planned merges at phase or wave boundaries, never
+  feature-by-feature). `main` is what's actually deployed.
+- **`develop`** is the integration branch. All feature work happens
+  against `develop`; it's near-shippable at all times. Each phase's
+  acceptance gate runs on `develop` before the release merge into `main`.
+- **Feature branches** branch off `develop` and PR back into `develop`.
+  Naming pattern: `feat/<phase><wave><pr>-<short-description>` (e.g.
+  `feat/phase3-wave3a-checkpoint-export`).
+
+**Rules for humans + agents:**
+- **Default base branch is `develop`.** Never open a feature PR with
+  `main` as the base. Use `develop` unless you are explicitly doing a
+  release merge.
+- **Agent briefs MUST specify `develop` as the base.** When dispatching
+  an agent to implement a PR, include in the brief:
+  `git checkout develop && git pull --ff-only origin develop && git checkout -b <branch>`
+  and `gh pr create --base develop`.
+- **`develop` stays green.** Feature work that breaks integration tests
+  does not land. Conflicts get rebased against the current `develop`
+  head before merge.
+- **Release merges (`develop` → `main`)** are intentional events. Open a
+  PR titled `release: <phase or wave> → main`, walk the diff, run the
+  acceptance gate one last time on `develop`, then merge.
+- **Hotfix exception:** a true emergency fix may branch off `main` and
+  PR back into `main` directly, but must also be cherry-picked or
+  forward-merged into `develop` the same day so the branches stay in sync.
+
 ## Design System
 
 Always read [DESIGN.md](DESIGN.md) before making any visual or UI decisions.
