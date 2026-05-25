@@ -6,16 +6,84 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-05-24
+
 ### Added
-- `vera review-status <review_id>` now fetches a real approval via
-  `GET /v1/approvals/{id}` and renders it as a human-readable summary
-  (or raw JSON with `--json`). Supports `--watch` to poll until the
-  approval reaches a terminal state, `--interval` (default 5s, min
-  0.5s, max 60s) to tune cadence, `--timeout` to bound watch duration,
-  and `--no-color` (honors `NO_COLOR`). Watch + JSON emits NDJSON
-  suitable for `jq -c` pipelines.
-  Exit codes: 0 ok, 1 not-found, 2 transport, 3 watch-timeout,
-  130 Ctrl-C. (Wave 2B PR B3 — replaces the Phase 1 PR 11 stub.)
+- **`@vera.gate(realtime=True)`** — new decorator kwarg that routes
+  `REQUIRE_HITL` rulings to a new `RequiresDeferredReview` exception
+  instead of `PendingReview`, and crucially does **not** invoke the
+  wrapped function. Intended for use cases where blocking the user
+  thread on human review is unacceptable (e.g. a clinical scribe
+  responding to a doctor's voice in real time can't block waiting for
+  an attending physician's signoff). The customer's exception handler
+  is expected to:
+  1. Queue the intended action into a customer-side deferred-execution
+     store, keyed off `review_id`.
+  2. Return a placeholder / draft to the user immediately.
+  3. Resume the action out-of-band once the `review.completed` webhook
+     fires (Wave 2B PR A3 shipped the webhook delivery).
+  `ALLOW` and `BLOCK` rulings are unchanged — BLOCK is always
+  immediate, ALLOW is always invoke+capture.
+- **`RequiresDeferredReview` error class** (in `vera.errors`,
+  re-exported from `vera`). Semantically distinct from `PendingReview`
+  — the two correspond to two different patterns ("queue and
+  continue" vs. "block and wait"). `RequiresDeferredReview` is **not**
+  a subclass of `PendingReview`; customer code routing on `except
+  PendingReview` will NOT swallow the new exception. Surfaces the
+  same Ruling metadata (`review_id`, `fix_url`, `required_role`,
+  `gate_name`, `reason`, `reason_detail`, `citation`,
+  `expected_resolution`, `webhook_url`) so reviewers / dashboards can
+  route uniformly on either exception. Defensive PHI redaction on
+  `reason_detail` runs through the same B1 heuristic before the
+  exception surfaces.
+- Wire-level support for the backend's `REQUIRE_DEFERRED_REVIEW`
+  ruling effect: when the gate's policy itself asserts deferred-review
+  (vs. the caller opting in via `realtime=True`), the SDK raises
+  `RequiresDeferredReview` regardless of the call site's `realtime`
+  flag. The audit record carries `deferred_review_wire_effect: True`
+  in `outcome` so reporting can separate this from the realtime
+  call-site path.
+
+### Behavior
+- `@vera.gate(realtime=True)` previously raised `NotImplementedError`
+  at call time as a forward-compat stub. That stub is now replaced
+  with the full B2 routing — no SDK API surface changed for callers
+  who weren't using the kwarg. Callers who *were* using
+  `realtime=True` and catching `NotImplementedError` will now see
+  `RequiresDeferredReview` on HITL rulings instead; the previous
+  behaviour was documented as "ships in Wave 2C PR B2" so this is
+  the planned graduation.
+
+### Migration
+
+Existing `@vera.gate` call sites without a `realtime=` kwarg are
+**unaffected** — `realtime` defaults to `False` and the legacy
+sync-PendingReview semantics are preserved verbatim. The version
+bump to 1.1.0 (minor, not patch) reflects the new public surface
+(`RequiresDeferredReview` class + new decorator behaviour on
+`realtime=True`), not any breaking change to existing callers.
+
+To adopt realtime routing on a call site:
+
+```python
+@vera.gate(realtime=True, agent_type="scribe", action_type="commit_chart_note")
+def commit_chart_note(patient_id: str, note: str) -> Result:
+    ehr.commit(patient_id, note)
+
+try:
+    commit_chart_note(patient_id, note)
+except vera.RequiresDeferredReview as exc:
+    # Queue the action for the customer-side deferred-execution store
+    # and return a placeholder to the user.
+    deferred_store.enqueue(
+        review_id=exc.review_id,
+        action=lambda: commit_chart_note(patient_id, note),
+    )
+    return draft_placeholder(note)
+except vera.PolicyBlock as exc:
+    # Hard block — surface to user, do not retry.
+    ...
+```
 
 ## [1.0.1] - 2026-05-24
 
