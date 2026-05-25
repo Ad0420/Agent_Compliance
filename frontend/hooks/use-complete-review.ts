@@ -39,12 +39,13 @@ export function useCompleteReview() {
       mutationFn: ({ review_id, input }) => completeReview(review_id, input),
       onSuccess: () => {
         // Drop the row from the queue cache + nuke any detail caches.
-        // The shared "reviews" key covers both list buckets.
+        // Two distinct cache buckets to invalidate:
+        //   1. ["reviews", "queue"] — the org-wide queue this page reads.
+        //   2. ["approvals"]        — shared with the Home page's
+        //      "Things that need you" tile + the existing
+        //      /v1/approvals/{id}/decide hook so the count tick-down
+        //      is visible without a page reload.
         qc.invalidateQueries({ queryKey: ["reviews", "queue"] });
-        qc.invalidateQueries({ queryKey: ["approvals"] });
-        // The Home page's "Things that need you" tile reads pending
-        // approvals; refresh it too so the count tick-down is visible
-        // without a page reload.
         qc.invalidateQueries({ queryKey: ["approvals"] });
       },
     },
@@ -79,6 +80,16 @@ export function isAlreadyDecided(err: unknown): err is ApiError {
 
 export function isReviewExpired(err: unknown): err is ApiError {
   return err instanceof ApiError && err.status === 410;
+}
+
+// 404 is a terminal state in the same sense as 409/410 — the review
+// is no longer actionable from this client. Surfaces when a row was
+// garbage-collected on the server between the queue fetch and the
+// reviewer's click, or when the org_id scope check fails (rare —
+// suggests the auth context drifted). UI treats it the same as
+// "already decided" + auto-closes the panel.
+export function isReviewMissing(err: unknown): err is ApiError {
+  return err instanceof ApiError && err.status === 404;
 }
 
 // Convenience guard for the Wave 2D A6 specific code, in case the UI

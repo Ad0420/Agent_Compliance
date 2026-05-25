@@ -34,6 +34,7 @@ import {
   isAlreadyDecided,
   isReviewerInsufficient,
   isReviewExpired,
+  isReviewMissing,
   useCompleteReview,
 } from "@/hooks/use-complete-review";
 import type { Approval, CompleteReviewInput } from "@/lib/api-types";
@@ -124,8 +125,15 @@ export function CompleteReviewForm({
         },
         onError: (err) => {
           setPendingDecision(null);
-          if (isAlreadyDecided(err) || isReviewExpired(err)) {
-            // Auto-close path: the row is no longer actionable.
+          if (
+            isAlreadyDecided(err) ||
+            isReviewExpired(err) ||
+            isReviewMissing(err)
+          ) {
+            // Auto-close path: the row is no longer actionable. 404 is
+            // also terminal — the server has no record of this review
+            // (GC'd between list-load and submit), so retrying won't
+            // help; the queue refresh will drop the stale row.
             onTerminalError?.();
           }
         },
@@ -221,10 +229,21 @@ export function CompleteReviewForm({
         </p>
       ) : null}
 
+      {err && isReviewMissing(err) ? (
+        <p
+          role="alert"
+          data-testid="complete-review-form-error-missing"
+          className="rounded-[6px] bg-[color:var(--paper-3)] px-3 py-2 text-[13px] text-[color:var(--ink-2)]"
+        >
+          This review is no longer available.
+        </p>
+      ) : null}
+
       {err &&
       !isReviewerInsufficient(err) &&
       !isAlreadyDecided(err) &&
-      !isReviewExpired(err) ? (
+      !isReviewExpired(err) &&
+      !isReviewMissing(err) ? (
         // TS narrows ``err`` to ``never`` after the three guards (the
         // guards consume the full ApiError variant); the runtime value
         // is still an ApiError — pull the message via a cast so the

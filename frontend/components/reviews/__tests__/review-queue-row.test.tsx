@@ -31,6 +31,7 @@ import {
   isAttestationConflict,
   isReviewerInsufficient,
   isReviewExpired,
+  isReviewMissing,
 } from "@/hooks/use-complete-review";
 import { ApiError } from "@/lib/api-client";
 import type {
@@ -249,6 +250,7 @@ export const test_error_attestation_conflict: AttestationConflictResponse = {
 // Narrow each ApiError fixture against its guard so the guard's typing
 // is locked in at typecheck time.
 const _err_403 = new ApiError(403, test_error_insufficient_role.detail, test_error_insufficient_role);
+const _err_404 = new ApiError(404, "Review not found");
 const _err_409 = new ApiError(409, "Review is already approved", { code: "already_resolved" });
 const _err_409_conflict = new ApiError(
   409,
@@ -275,11 +277,16 @@ if (isReviewExpired(_err_410)) {
   const _status: number = _err_410.status;
   void _status;
 }
+if (isReviewMissing(_err_404)) {
+  const _status: number = _err_404.status;
+  void _status;
+}
 // Negative case — 500 should not narrow as any of the documented errors.
 if (
   !isReviewerInsufficient(_err_500) &&
   !isAlreadyDecided(_err_500) &&
   !isReviewExpired(_err_500) &&
+  !isReviewMissing(_err_500) &&
   !isAttestationConflict(_err_500)
 ) {
   // Reached — confirms the guards are exhaustive for the documented codes.

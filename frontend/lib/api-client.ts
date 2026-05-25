@@ -47,6 +47,7 @@ import type {
 } from "./api-types";
 
 export class ApiError extends Error {
+  public status: number;
   /**
    * Raw `detail` value as returned by the backend. For most endpoints this
    * is a string and ``message`` is the same value; for endpoints that
@@ -62,8 +63,6 @@ export class ApiError extends Error {
     this.name = "ApiError";
     this.detail = detail ?? message;
   }
-
-  public status: number;
 }
 
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";

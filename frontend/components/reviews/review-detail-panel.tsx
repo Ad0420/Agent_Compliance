@@ -60,6 +60,30 @@ function stringField(ctx: Record<string, unknown>, key: string): string | null {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
 
+/**
+ * Whitelist URL schemes for the gate-pack-provided ``fix_url`` so a
+ * compromised or buggy gate pack can't inject ``javascript:`` /
+ * ``data:`` URIs that execute when a reviewer clicks the reference
+ * link. ``Approval.context`` is a JSON blob written server-side by the
+ * gate pack — the pack author is trusted by the org admin, but the
+ * threat model includes a compromised pack scenario.
+ *
+ * Returns the URL when it parses as ``http://`` or ``https://``;
+ * returns ``null`` otherwise so the caller can fall back to plain
+ * text rendering.
+ */
+function safeHttpUrl(raw: string): string | null {
+  try {
+    const u = new URL(raw);
+    if (u.protocol === "http:" || u.protocol === "https:") {
+      return u.toString();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export interface ReviewDetailPanelProps {
   approval: Approval;
   onClose: () => void;
@@ -81,7 +105,12 @@ export function ReviewDetailPanel({
   const gateName = stringField(ctx, "gate_name");
   const requiredRole = stringField(ctx, "required_role");
   const citation = stringField(ctx, "citation");
-  const fixUrl = stringField(ctx, "fix_url");
+  const rawFixUrl = stringField(ctx, "fix_url");
+  // Only render as a clickable link when the URL is http/https. Other
+  // schemes (javascript:, data:, file:) are rendered as plain text so
+  // a compromised gate pack can't slip an XSS payload through the
+  // reviewer's UI. See ``safeHttpUrl`` above for the threat-model note.
+  const fixUrl = rawFixUrl ? safeHttpUrl(rawFixUrl) : null;
   const reasonDetail = stringField(ctx, "reason_detail");
 
   // Renderable preview of the action's input data when the gate
@@ -188,6 +217,19 @@ export function ReviewDetailPanel({
                 {fixUrl}
                 <ExternalLink aria-hidden="true" className="size-3" />
               </a>
+            </DetailRow>
+          ) : rawFixUrl ? (
+            // Non-http(s) scheme — render as inert text + an inline
+            // note so the reviewer still sees what the gate pack
+            // wrote, without giving the URL click-execute privileges.
+            <DetailRow label="Reference">
+              <span
+                data-testid="review-detail-panel-fix-url-blocked"
+                className="text-[13px] text-[color:var(--ink-3)]"
+                title="Link not rendered: scheme is not http or https."
+              >
+                {rawFixUrl}
+              </span>
             </DetailRow>
           ) : null}
 
