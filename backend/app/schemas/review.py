@@ -22,6 +22,7 @@ can't smuggle a multi-MB blob into the chain via the resolution record.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -69,6 +70,21 @@ class ReviewCompletionInput(BaseModel):
         description=(
             "Cryptographic attestation. Phase 2 accepts the value as-is; "
             "verification ships in Phase 4+."
+        ),
+    )
+    decided_at: Optional[datetime] = Field(
+        default=None,
+        description=(
+            "Wave 2D closeout — reviewer-supplied decision timestamp "
+            "(client clock). When omitted the server fills with "
+            "``now()`` at callback receipt (legacy behaviour). When "
+            "supplied, server validates it sits inside "
+            "``[requested_at, expires_at]`` with a small clock-skew "
+            "tolerance (see "
+            "``services.reviews._validate_decided_at``). The validated "
+            "value is recorded on the resolution chain record alongside "
+            "the server's ``callback_received_at`` so auditors can "
+            "reconstruct both sides of the clock."
         ),
     )
 
