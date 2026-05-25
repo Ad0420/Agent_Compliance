@@ -376,9 +376,16 @@ async def test_complete_review_cross_org_returns_404(
 
 
 @pytest.mark.asyncio
-async def test_complete_review_already_resolved_returns_409(
+async def test_complete_review_already_resolved_conflicting_decision_returns_409(
     async_client, org_and_key, db_session
 ):
+    """Wave 2D PR A6 changed the second-callback semantics: a callback
+    on an already-resolved review now MATCH-OR-CONFLICTS against the
+    canonical decision. This test covers the conflict branch (different
+    decisions → 409 ``attestation_conflict``). The matching-decision
+    branch is covered by
+    ``tests/test_attestation_conflict.py::test_second_callback_same_decision_is_idempotent``.
+    """
     org, raw_key, _ = org_and_key
     approval = await _seed_hitl_approval(db_session, org.id)
 
@@ -396,14 +403,17 @@ async def test_complete_review_already_resolved_returns_409(
     r2 = await async_client.post(
         f"/v1/reviews/{approval.id}/complete",
         json={
-            "decision": "approve",
+            "decision": "reject",
             "reviewer_role": "attending_physician",
             "reviewer_id": "dr_other",
         },
         headers={"Authorization": f"Bearer {raw_key}"},
     )
     assert r2.status_code == 409
-    assert "already" in r2.json()["detail"].lower()
+    body = r2.json()
+    assert body["code"] == "attestation_conflict"
+    assert body["canonical_decision"] == "approve"
+    assert body["conflicting_decision"] == "reject"
 
 
 # ── 410: expired ───────────────────────────────────────────────────────────

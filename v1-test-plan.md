@@ -31,9 +31,9 @@ This is the test plan that closes the gaps surfaced by the eng review. Each NEW 
 | Strictest gate wins (BLOCK > REQUIRE_HITL > ALLOW) | unit: payload triggering all 3 → effect == BLOCK | gap |
 | **Webhook delivery — durable retry queue** (per F1 fix) | integration: receiver returns 5xx → retry after 1m, 5m, 30m, 2h, 8h, 24h; persist across process restart | gap (massive — the whole queue does not exist today) |
 | Webhook idempotency on `review_id` | integration: same review_id posted twice → first canonical, second logged as duplicate | gap |
-| Attestation conflict (second callback different decision) | integration: review_id approved, then second callback with decision=reject from different reviewer → logged as `attestation_conflict`, first stays canonical | gap |
+| Attestation conflict (second callback different decision) | integration: review_id approved, then second callback with decision=reject from different reviewer → logged as `attestation_conflict`, first stays canonical | covered (Wave 2D PR A6) |
 | Reviewer role mismatch 403 | integration: callback attesting MD-only for DEA gate → 403 `reviewer_credentials_insufficient`, logged | covered |
-| Concurrent callbacks race (two reviewers click Approve simultaneously) | integration: 2x parallel callbacks on same review_id → exactly one wins; row-level lock or unique constraint enforces | gap |
+| Concurrent callbacks race (two reviewers click Approve simultaneously) | integration: 2x parallel callbacks on same review_id → exactly one wins; row-level lock or unique constraint enforces | covered (Wave 2D PR A6 — `SELECT … FOR UPDATE` in `services/reviews.complete_review` serialises on Postgres; SQLite single-threaded driver makes the second caller observe the resolved row) |
 | Callback timestamp validation | unit: `decided_at` 2h in future → 400; `decided_at` older than `requested_at + expiry` → 400 with `review_expired` | gap |
 | `review.expired` callback fires at expiry | integration: review unanswered for 4h → Vera POSTs `review.expired` to customer webhook | gap |
 | Real-time mode latency | benchmark: `realtime=True` ALLOW path <10ms p99; HITL path returns `REQUIRE_DEFERRED_REVIEW` immediately, action proceeds | partial |
