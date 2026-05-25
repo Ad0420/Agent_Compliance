@@ -200,10 +200,29 @@ export function uploadCustomerBaa(
 // No dedicated `/v1/customers/{tenant_id}/decisions` endpoint exists in
 // Phase 2 (a backend-side join lives in a later PR). Until then we adapt
 // the existing /v1/actions?tenant_id=<id> path: ActionRecord rows already
-// carry tenant_id (Phase 1 PR 13), the Ruling is embedded in each row's
-// `reasoning` JSON when a Wave 2B gate ran, and webhook delivery state
-// rides on the same JSON under `webhook_delivery` once Wave 2B PR A3 lit
-// up the dispatcher.
+// carry tenant_id (Phase 1 PR 13), and the Ruling / webhook delivery /
+// HITL expiry will ride on each row's ``reasoning`` JSON.
+//
+// IMPORTANT — backend wiring status (as of PR C1 landing):
+//   * ``reasoning.gate_ruling`` — NOT yet written by the gates evaluator
+//     or ClinicalScribePack. Tracked as a follow-up Wave 2C backend slice
+//     ("mirror Ruling into ActionRecord.reasoning on every gate run").
+//   * ``reasoning.webhook_delivery`` — NOT yet written by the dispatcher
+//     (Wave 2B PR A3 writes the WebhookDelivery row but does not
+//     denormalise the summary onto the originating ActionRecord). Same
+//     follow-up backend slice as above.
+//   * ``reasoning.hitl_expires_at`` — NOT yet written; depends on the
+//     approval dispatcher copying ``Approval.expires_at`` into the
+//     request ActionRecord's reasoning blob.
+//
+// Until those backend slices land, every CustomerDecision will be
+// projected with ``ruling: null`` / ``webhook_delivery: null`` /
+// ``hitl_expires_at: null``. ``DecisionRow`` handles every null branch
+// (renders the "No gate" INFO badge + no webhook dot + no HITL countdown)
+// so the tab is functional today — but the headline value (Ruling +
+// delivery) only lights up once the backend mirrors are wired. Out of
+// scope per the PR C1 spec; this comment is the contract trail so the
+// follow-up backend PR knows exactly which keys to populate.
 //
 // Extracting these views client-side keeps the wire contract small and
 // the join trivial — the page only renders 50 rows at a time.
