@@ -76,6 +76,7 @@ callback path via sequential calls.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -190,30 +191,47 @@ def _canonical_decision_for(approval: Approval) -> Optional[str]:
     return _STATUS_TO_DECISION.get(approval.status)
 
 
-def _canonical_attestation_summary(approval: Approval) -> dict[str, object]:
-    """Snapshot the canonical (first) attestation for the chain record.
+def _canonical_attestation_summary(
+    approval: Approval, canonical_decision: str
+) -> dict[str, object]:
+    """Snapshot the canonical attestation that produced the terminal status.
 
-    Pulls from ``approval.decisions[0]`` — the cryptographically signed
-    vote that ``decide_approval`` recorded when the row first resolved.
     Returns the minimum fields auditors need to reconstruct "who said
     what when": ``approver``, ``decision``, ``decided_at``, ``key_id``.
-    Falls back to a status-only summary when the row is somehow terminal
-    without a vote (shouldn't happen for the approved/rejected branch,
-    but defensive against future code paths that resolve out-of-band).
+
+    /review finding (Codex #6): for ``approvers_required > 1`` flows,
+    ``decisions[0]`` is the FIRST vote, which is NOT necessarily the
+    vote whose decision matches the terminal status. Example: 2-of-N
+    approve gate where reviewer A approves (decisions=[approve],
+    pending), reviewer B rejects (decisions=[approve, reject], status
+    flips to rejected). ``decisions[0]`` is approve but the canonical
+    decision (= status verb) is reject — surfacing decisions[0] here
+    would produce a conflict record claiming
+    ``canonical_decision="reject"`` but
+    ``canonical_attestation.decision="approve"``, which is
+    self-contradictory evidence.
+
+    Fix: find the *first* vote whose ``decision`` matches the canonical
+    verb. That's the attestation that caused the terminal status flip
+    (for single-approver flows, this is decisions[0]; for multi-approver
+    flows, it's the vote that pushed the row over the threshold). Falls
+    back to a status-only summary when the row is somehow terminal
+    without a matching vote (defensive against future out-of-band
+    resolution paths).
     """
     decisions = approval.decisions or []
-    if decisions:
-        first = decisions[0]
-        return {
-            "approver": first.get("approver"),
-            "decision": first.get("decision"),
-            "decided_at": first.get("decided_at"),
-            "key_id": first.get("key_id"),
-            "note": first.get("note"),
-        }
+    for vote in decisions:
+        if vote.get("decision") == canonical_decision:
+            return {
+                "approver": vote.get("approver"),
+                "decision": vote.get("decision"),
+                "decided_at": vote.get("decided_at"),
+                "key_id": vote.get("key_id"),
+                "note": vote.get("note"),
+            }
     return {
         "approver": None,
-        "decision": _canonical_decision_for(approval),
+        "decision": canonical_decision,
         "decided_at": (
             approval.resolved_at.isoformat()
             if approval.resolved_at
@@ -272,7 +290,7 @@ async def _log_attestation_conflict(
     consume it without a new field naming convention.
     """
     context = approval.context or {}
-    canonical_summary = _canonical_attestation_summary(approval)
+    canonical_summary = _canonical_attestation_summary(approval, canonical_decision)
     conflict_summary = {
         "reviewer_id": payload.reviewer_id,
         "reviewer_role": payload.reviewer_role,
@@ -308,7 +326,7 @@ async def _log_attestation_conflict(
             "canonical_decision": canonical_decision,
             "conflicting_decision": payload.decision,
             "conflict_detected_at": conflict_detected_at.isoformat(),
-            "gate_name": context.get("required_role") and context.get("gate_name"),
+            "gate_name": context.get("gate_name"),
             "required_role": context.get("required_role"),
         },
     )
@@ -318,6 +336,18 @@ async def _log_attestation_conflict(
     # the pattern in ``decide_approval`` / ``_resolve_and_record``).
     await session.commit()
 
+    # /review finding (Codex #9): ``dispatch_event``'s
+    # ``_default_idempotency_key`` only derives a key for ``review.*``
+    # events, so without an explicit key here a client retry of the
+    # SAME conflicting callback would burn a fresh webhook delivery
+    # every time. Scope the key to (review_id, reviewer_id,
+    # conflicting_decision) so retries from the same reviewer dedupe
+    # while DISTINCT reviewers each get their own conflict event
+    # (auditors need to see the full series of disagreement).
+    idem_key = (
+        f"{approval.id}:{payload.reviewer_id}:{payload.decision}"
+        ":attestation_conflict"
+    )
     await dispatch_event(
         session,
         approval.org_id,
@@ -331,6 +361,7 @@ async def _log_attestation_conflict(
             "conflict_detected_at": conflict_detected_at.isoformat(),
             "resolution_record_id": approval.resolution_record_id,
         },
+        idempotency_key=idem_key,
     )
 
 
@@ -366,6 +397,20 @@ async def complete_review(
     # callback so the loser observes the canonical resolution and
     # routes to ``_handle_second_callback`` rather than racing into
     # ``decide_approval``.
+    #
+    # Defense against /review finding (Codex #8): validate the path
+    # segment is a UUID BEFORE allocating a lock keyed by it. Otherwise
+    # any caller with a valid write API key could POST arbitrary
+    # ``/v1/reviews/<random_string>/complete`` and grow the unbounded
+    # ``_review_locks`` dict in every worker — a slow memory-DoS
+    # vector. Approvals are stored with stringified UUIDs (see
+    # ``models.Approval.id`` default), so rejecting non-UUID paths is a
+    # 100% correct precondition.
+    try:
+        uuid.UUID(review_id)
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=404, detail="Review not found")
+
     review_lock = await get_review_lock(review_id)
     async with review_lock:
         return await _complete_review_locked(session, org_id, review_id, data)

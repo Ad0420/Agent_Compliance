@@ -568,6 +568,193 @@ async def test_concurrent_callbacks_same_decision_resolve_exactly_once(
     assert conflict_rows == []
 
 
+# ── /review-driven hardening (Codex #6, #8, #9) ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_complete_review_rejects_non_uuid_path_segment(
+    async_client, org_and_key
+):
+    """Codex #8: validate the ``review_id`` path segment is a UUID
+    BEFORE allocating a per-review asyncio lock keyed by it. Without
+    this guard, any caller with a valid write key could grow the
+    unbounded ``_review_locks`` dict in every worker by POSTing
+    arbitrary path strings — a slow memory-DoS vector.
+    """
+    _, raw_key, _ = org_and_key
+    response = await async_client.post(
+        "/v1/reviews/not-a-uuid/complete",
+        json={
+            "decision": "approve",
+            "reviewer_role": "attending_physician",
+            "reviewer_id": "dr_smith",
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    # Returned BEFORE the lock allocation; the body shape matches the
+    # legitimate "no such review" 404 since both surface as
+    # "review not found" from the caller's perspective.
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_multi_approver_canonical_attestation_matches_terminal_decision(
+    async_client, org_and_key, db_session
+):
+    """Codex #6: in a 2-of-N approve gate where reviewer A approves
+    (pending) then reviewer B rejects (status flips to rejected), the
+    conflict record's ``canonical_attestation`` MUST be the vote whose
+    decision matches the terminal status (``reject``), not
+    ``decisions[0]`` (which is reviewer A's earlier ``approve``).
+    Otherwise the chain record would be self-contradictory:
+    ``canonical_decision="reject"`` paired with
+    ``canonical_attestation.decision="approve"``.
+    """
+    org, raw_key, _ = org_and_key
+    approval = await _seed_hitl_approval(
+        db_session, org.id, approvers_required=2
+    )
+    headers = {"Authorization": f"Bearer {raw_key}"}
+
+    # First vote: approve (stays pending — 1 of 2).
+    r1 = await async_client.post(
+        f"/v1/reviews/{approval.id}/complete",
+        json={
+            "decision": "approve",
+            "reviewer_role": "attending_physician",
+            "reviewer_id": "dr_first_approves",
+        },
+        headers=headers,
+    )
+    assert r1.status_code == 200
+    assert r1.json()["status"] == "pending"
+
+    # Second vote: reject (terminates — status flips to rejected).
+    r2 = await async_client.post(
+        f"/v1/reviews/{approval.id}/complete",
+        json={
+            "decision": "reject",
+            "reviewer_role": "attending_physician",
+            "reviewer_id": "dr_second_rejects",
+        },
+        headers=headers,
+    )
+    assert r2.status_code == 200
+    assert r2.json()["status"] == "rejected"
+
+    # Third callback: approve — conflicts with canonical decision "reject".
+    r3 = await async_client.post(
+        f"/v1/reviews/{approval.id}/complete",
+        json={
+            "decision": "approve",
+            "reviewer_role": "attending_physician",
+            "reviewer_id": "dr_third_approves",
+        },
+        headers=headers,
+    )
+    assert r3.status_code == 409
+    assert r3.json()["canonical_decision"] == "reject"
+
+    # The chain record's canonical_attestation must point at the reject
+    # vote (dr_second_rejects), NOT decisions[0] (dr_first_approves).
+    rows = (
+        await db_session.execute(
+            select(ActionRecord).where(
+                ActionRecord.org_id == org.id,
+                ActionRecord.action_type == "attestation_conflict",
+            )
+        )
+    ).scalars().all()
+    assert len(rows) == 1
+    canonical = rows[0].reasoning["canonical_attestation"]
+    assert canonical["decision"] == "reject"
+    assert "dr_second_rejects" in canonical["approver"]
+
+
+@pytest.mark.asyncio
+async def test_repeated_conflict_from_same_reviewer_dedupes_webhook(
+    async_client, org_and_key, db_session, monkeypatch
+):
+    """Codex #9: client-side retry of the same conflicting callback
+    (same reviewer_id + same decision) must NOT spawn a fresh webhook
+    delivery on every attempt. The chain record is still written each
+    time (every attempt is a distinct audit event), but the webhook
+    layer dedupes via the explicit idempotency key
+    ``{review_id}:{reviewer_id}:{decision}:attestation_conflict``.
+    """
+    org, raw_key, _ = org_and_key
+
+    sub = WebhookSubscription(
+        org_id=org.id,
+        url="http://test.example/webhook",
+        event_types=["attestation_conflict"],
+        secret="whsec_test",
+        is_active=True,
+    )
+    db_session.add(sub)
+    await db_session.commit()
+
+    import app.services.webhooks as webhooks_mod
+
+    async def _noop_attempt(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(webhooks_mod, "_attempt_delivery", _noop_attempt)
+
+    approval = await _seed_hitl_approval(db_session, org.id)
+    await _resolve_via_callback(async_client, raw_key, approval.id)
+
+    conflict_body = {
+        "decision": "reject",
+        "reviewer_role": "attending_physician",
+        "reviewer_id": "dr_retry",
+    }
+    headers = {"Authorization": f"Bearer {raw_key}"}
+
+    # Three consecutive retries from the SAME reviewer.
+    for _ in range(3):
+        r = await async_client.post(
+            f"/v1/reviews/{approval.id}/complete",
+            json=conflict_body,
+            headers=headers,
+        )
+        assert r.status_code == 409
+
+    deliveries = (
+        await db_session.execute(
+            select(WebhookDelivery).where(
+                WebhookDelivery.org_id == org.id,
+                WebhookDelivery.event_type == "attestation_conflict",
+            )
+        )
+    ).scalars().all()
+    # Exactly one delivery for the same-reviewer retries.
+    assert len(deliveries) == 1
+
+    # A DISTINCT reviewer with a conflicting decision DOES get its own
+    # delivery — the dedup is scoped per-reviewer, not per-review.
+    r = await async_client.post(
+        f"/v1/reviews/{approval.id}/complete",
+        json={
+            "decision": "reject",
+            "reviewer_role": "attending_physician",
+            "reviewer_id": "dr_other_dissenter",
+        },
+        headers=headers,
+    )
+    assert r.status_code == 409
+
+    deliveries = (
+        await db_session.execute(
+            select(WebhookDelivery).where(
+                WebhookDelivery.org_id == org.id,
+                WebhookDelivery.event_type == "attestation_conflict",
+            )
+        )
+    ).scalars().all()
+    assert len(deliveries) == 2
+
+
 @pytest.mark.asyncio
 async def test_concurrent_callbacks_different_decisions_produce_conflict(
     async_client, org_and_key, db_session
