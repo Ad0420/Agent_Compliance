@@ -9,8 +9,9 @@ description = "Multi-tenant medtech demo bench for Vera"
 requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.27",
-    "openai>=1.50",
-    "anthropic>=0.40",
+    # Responses API requires openai>=1.40; we pin >=2.0 for the stable
+    # ``.responses`` namespace + ``output_text`` accessor.
+    "openai>=2.0",
     "python-dotenv>=1.0",
     "faker>=24.0",
     "rich>=13.7",
