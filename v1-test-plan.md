@@ -41,6 +41,7 @@ This is the test plan that closes the gaps surfaced by the eng review. Each NEW 
 | SSRF on webhook URL | security test: registered URL `http://169.254.169.254/...` → outbound blocked at delivery time, customer warned | gap |
 | Slack channel signature verification (if kept) | unit: Slack callback with wrong signing key → 401 | gap |
 | Approval pipeline migration (per F2) | migration test: existing polling Approvals continue working; new Review records flow through callback model; no double-counting | gap |
+| Review queue Recommendation card scaffold (Wave 2D C4) | typecheck/contract test: `ReviewRecommendations` component renders empty in Phase 2 (no API yet); `loading | empty | populated` state machine + `ReviewRecommendation` / `ReviewRecommendationsResponse` types match the Phase 4 §A6 AI Insights endpoint contract; `onApply` callback shape ready for Phase 4 task-creation wiring | covered |
 
 ## Phase 3 — Off-Vera checkpoint + offline verify
 

@@ -635,3 +635,62 @@ export interface CustomerDecisionsQueryParams {
   limit?: number;
   offset?: number;
 }
+
+// ── Wave 2D PR C4 — Review queue Recommendation card scaffold ──────────
+//
+// Mirrors the contract that the Phase 4 AI Insights endpoint
+// (`POST /v1/compliance/insights`) will return. Empty in Phase 2 — the
+// `ReviewRecommendations` component renders nothing visible because no
+// recommendations exist yet. Wired up in Phase 4 when the Haiku-class
+// generator lands.
+//
+// Source of truth: v1-implementation-plan.md Phase 2 line 122 (scaffold
+// brief) + Phase 4 line 188 (endpoint shape).
+//
+// Severity vocabulary matches the existing `SeverityBadge` primitive
+// (`HIGH | MEDIUM | LOW | INFO`) so the Phase 4 wiring is a plug-in,
+// not a rewrite. The Phase 4 plan permits HIGH | MEDIUM | LOW; INFO is
+// reserved for non-actionable findings (e.g., "no patterns detected
+// this week").
+
+export type RecommendationSeverity = "HIGH" | "MEDIUM" | "LOW" | "INFO";
+
+export interface ReviewRecommendation {
+  id: string;
+  severity: RecommendationSeverity;
+  title: string;
+  /**
+   * Issue description (the pattern Vera detected, e.g., "3 decisions
+   * below review-time threshold from reviewer X in the last 7 days").
+   * Rendered with the amber ⚠ glyph in the primitive's expanded body.
+   */
+  description: string;
+  /**
+   * Required regulatory citation or in-context evidence. Per the AI
+   * Insights principle in Phase 4 §A6: every card carries a quoted
+   * source so the recommendation is grounded, not hallucinated.
+   * Rendered in a `--paper-3` block in the primitive.
+   */
+  quoted_source: string;
+  /**
+   * Concrete next-step copy ("Open a counsel-review task for reviewer X").
+   * In Phase 4 this is what `apply_action` produces when the user clicks
+   * Apply (creates a task, no auto-mutation of records).
+   */
+  suggested_action: string;
+  /**
+   * Machine-readable identifier of what clicking "Apply" should do.
+   * Phase 2: scaffold no-op (the component's `onApply` callback receives
+   * the recommendation id; the host wires it up). Phase 4: server
+   * dispatches a task per this action key.
+   */
+  apply_action: string;
+}
+
+export interface ReviewRecommendationsResponse {
+  recommendations: ReviewRecommendation[];
+  /** ISO-8601 timestamp the insights call generated this set. */
+  generated_at: string;
+  /** Model identifier (e.g., "claude-haiku-4.x"). Surfaces in audit trail. */
+  model: string;
+}
