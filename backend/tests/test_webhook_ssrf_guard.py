@@ -67,3 +67,83 @@ def test_dns_resolution_failure_blocked() -> None:
         safe, reason = is_safe_outbound_url("https://nonexistent.invalid/")
         assert safe is False
         assert reason == "dns_resolution_failed"
+
+
+# ── Integration: delivery-time guard short-circuits HTTP + aborts ─────
+
+
+@pytest.mark.asyncio
+async def test_delivery_time_ssrf_blocks_http_and_aborts(db_session, org_and_key):
+    """A subscription whose URL is unsafe at delivery time must:
+
+    1. Skip the HTTP POST entirely (no httpx call).
+    2. Mark the delivery as ``aborted`` (no retries — permanently unsafe).
+    3. Record an attempt with ``error_message`` starting ``ssrf_blocked:``.
+    """
+    from unittest.mock import MagicMock
+    from unittest.mock import patch as _patch
+    from sqlalchemy import select
+
+    from app.models import (
+        WebhookDelivery,
+        WebhookDeliveryAttempt,
+        WebhookSubscription,
+    )
+    from app.services.webhooks import _attempt_delivery
+
+    org, _, _ = org_and_key
+
+    sub = WebhookSubscription(
+        org_id=org.id,
+        url="http://169.254.169.254/latest/meta-data/",  # AWS metadata
+        secret="topsecret",
+        event_types=["policy.violation"],
+    )
+    db_session.add(sub)
+    await db_session.commit()
+    await db_session.refresh(sub)
+
+    delivery = WebhookDelivery(
+        org_id=org.id,
+        subscription_id=sub.id,
+        event_type="policy.violation",
+        payload={"x": 1},
+        status="in_progress",
+        attempt_count=0,
+        idempotency_key="ssrf-test-k1",
+    )
+    db_session.add(delivery)
+    await db_session.commit()
+    await db_session.refresh(delivery)
+    delivery_id = delivery.id
+
+    # The httpx client MUST NOT be called — assert by failing if it is.
+    httpx_mock = MagicMock()
+    httpx_mock.AsyncClient = MagicMock(
+        side_effect=AssertionError(
+            "httpx must not be called for SSRF-blocked URL"
+        )
+    )
+    with _patch("app.services.webhooks.httpx", httpx_mock):
+        success = await _attempt_delivery(delivery_id)
+
+    assert success is False
+
+    refreshed = await db_session.get(WebhookDelivery, delivery_id)
+    await db_session.refresh(refreshed)
+    assert refreshed.status == "aborted", (
+        f"expected aborted, got {refreshed.status}"
+    )
+    assert refreshed.attempt_count == 1
+
+    attempts = (
+        await db_session.execute(
+            select(WebhookDeliveryAttempt).where(
+                WebhookDeliveryAttempt.delivery_id == delivery_id
+            )
+        )
+    ).scalars().all()
+    assert len(attempts) == 1
+    assert attempts[0].status_code is None
+    assert attempts[0].error_message is not None
+    assert attempts[0].error_message.startswith("ssrf_blocked:")
