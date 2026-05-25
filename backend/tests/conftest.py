@@ -6,6 +6,12 @@ import os
 # mid-test. Set BEFORE importing ``app.*`` so ``services.webhooks``
 # sees it at module load. Production never sets this.
 os.environ.setdefault("VERA_WEBHOOK_SYNC_DISPATCH", "1")
+# Phase 3 Wave 3A.b — disable the checkpoint cadence sweeper by default
+# in tests. Individual tests that need to exercise the sweeper opt in
+# explicitly via ``monkeypatch.setattr(settings, ...)`` or by calling
+# ``sweep_due_checkpoints`` directly. Mirrors the webhook sweeper
+# pattern; both default to enabled in production and disabled in tests.
+os.environ.setdefault("VERA_CHECKPOINT_SWEEPER_ENABLED", "false")
 
 import pytest
 import pytest_asyncio

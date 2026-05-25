@@ -40,6 +40,10 @@ from .middleware import (
 from .services.immutability import install_sqlite_triggers
 from .services.webhook_sweeper import start_in_process as start_webhook_sweeper
 from .services.webhook_sweeper import stop_in_process as stop_webhook_sweeper
+from .services.checkpoint_sweeper import (
+    start_in_process as start_checkpoint_sweeper,
+    stop_in_process as stop_checkpoint_sweeper,
+)
 
 logger = logging.getLogger("vera")
 
@@ -57,11 +61,18 @@ async def lifespan(app: FastAPI):
     # don't want time-driven side effects can disable it. See
     # ``app/services/webhook_sweeper.py``.
     start_webhook_sweeper()
+    # Phase 3 Wave 3A.b — per-org checkpoint cadence sweeper. Separate
+    # background asyncio task that walks the org table once per tick
+    # (default 5 min) and creates checkpoints for orgs whose cadence
+    # threshold has elapsed. Gated by VERA_CHECKPOINT_SWEEPER_ENABLED.
+    # See ``app/services/checkpoint_sweeper.py``.
+    start_checkpoint_sweeper()
     logger.info("Vera API started — tables ready")
     yield
-    # Shutdown: stop sweeper first so it stops grabbing rows mid-shutdown,
+    # Shutdown: stop sweepers first so they stop grabbing rows mid-shutdown,
     # then close the DB pool.
     await stop_webhook_sweeper()
+    await stop_checkpoint_sweeper()
     await engine.dispose()
 
 
