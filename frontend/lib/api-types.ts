@@ -537,28 +537,31 @@ export interface WebhookDeliveryReplayResponse {
   next_retry_at: string | null;
 }
 
-// ── Wave 2C PR C1 — Customer detail Decisions tab ────────────────────────
+// ── Wave 2C PR C1 + C1.5 — Customer detail Decisions tab ─────────────────
 //
 // Surfaces what each agent decision *meant*: the gate Ruling, the
 // downstream webhook delivery status, and (for pending HITL approvals)
 // the time-to-expiry countdown.
 //
-// Backend source of truth:
-//   * GET /v1/actions?tenant_id=<id> — ActionRecord rows for this customer
-//     (Phase 1 PR 13 supports the per-tenant filter via the indexed
-//     ``tenant_id`` column).
-//   * Ruling fields live on each ActionRecord's ``reasoning`` JSON when
-//     a Wave 2B gate (ClinicalScribePack etc.) evaluated the action.
-//     Shape mirrors backend/app/schemas/gate.py::Ruling.
-//   * Webhook delivery status is derived from the most recent attempt for
-//     the action's request_record_id (see backend/app/schemas/webhook_delivery.py).
+// Backend source of truth (post-C1.5):
+//   * GET /v1/customers/{tenant_id}/decisions — server-side join of
+//     ActionRecord ⋈ Approval ⋈ WebhookDelivery (most recent per
+//     approval). Shape mirrors backend/app/schemas/customer_decision.py.
+//   * Ruling fields come off ``Approval.context`` (gate_name /
+//     required_role / citation / reason) — NOT ActionRecord.reasoning.
+//     Writing into reasoning would change the hash chain.
+//   * Webhook delivery status is the latest WebhookDelivery row whose
+//     idempotency_key starts ``"{approval.id}:"``.
 //
-// PR C1 intentionally does NOT introduce a dedicated
-// /v1/customers/{tenant_id}/decisions endpoint — the existing
-// /v1/actions?tenant_id=<id> path already returns everything needed
-// (Ruling is embedded in reasoning, delivery status fetched separately
-// per action). A dedicated endpoint can land in a later PR if the join
-// becomes hot.
+// C1 originally adapted GET /v1/actions client-side; C1.5 replaced the
+// adapter with the dedicated endpoint when /review caught that the
+// adapter read keys the backend doesn't write. Hook signature was
+// preserved — consumers of useCustomerDecisions are unaffected.
+//
+// ALLOW-ruling limitation: ``ruling`` is ``null`` for actions whose
+// gate decided ALLOW (no Approval row is created on the ALLOW path).
+// Out-of-scope follow-up: either SDK-side denormalisation onto
+// ActionRecord or a new ``gate_evaluations`` table.
 
 export type RulingEffect = "allow" | "require_hitl" | "block";
 
