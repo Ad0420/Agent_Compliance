@@ -70,8 +70,6 @@ def is_safe_outbound_url(url: str) -> tuple[bool, str | None]:
         blocked, reason = _is_blocked_ip(ip)
         if blocked:
             return False, reason
-        if str(ip) in _BLOCKED_LITERAL_IPS:
-            return False, "cloud_metadata"
         return True, None
     except ValueError:
         pass  # host is a name, resolve below
@@ -82,7 +80,7 @@ def is_safe_outbound_url(url: str) -> tuple[bool, str | None]:
     except socket.gaierror:
         return False, "dns_resolution_failed"
 
-    for family, _, _, _, sockaddr in infos:
+    for _family, _, _, _, sockaddr in infos:
         addr = sockaddr[0]
         try:
             ip = ipaddress.ip_address(addr)
