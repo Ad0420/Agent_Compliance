@@ -17,6 +17,72 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Exit codes: 0 ok, 1 not-found, 2 transport, 3 watch-timeout,
   130 Ctrl-C. (Wave 2B PR B3 — replaces the Phase 1 PR 11 stub.)
 
+## [1.0.1] - 2026-05-24
+
+### Fixed
+- `@vera.gate` now sends the `GateEvaluateRequest` body shape that the
+  backend's `POST /v1/gates/evaluate` endpoint (shipped in backend
+  PR #212) requires. Previously the SDK sent `action_class` /
+  `tenant_id` only; after the backend upgrade this would have produced
+  a 422 on every gated call. The new body includes `agent_name`,
+  `action_type`, `action_name`, `authorized_by`, plus optional
+  `agent_id`, `action_description`, `data_subject_id`, `target_system`,
+  `target_resource`. Legacy callers do not need to change anything —
+  the new fields are derived from the existing `VeraClient` /
+  decorator kwarg state. **Action required for customers whose
+  `vera.init()` omits `agent_name`:** pass `agent_name=` to
+  `vera.init()` or set `VERA_AGENT_NAME`, otherwise gated calls now
+  raise `VeraClientError` (the backend marks `agent_name` as
+  required).
+
+### Added
+- `@vera.gate` now routes the backend's `Ruling` envelope end-to-end:
+  - `effect == "allow"` → invoke + capture (unchanged).
+  - `effect == "require_hitl"` → invoke for draft, capture, raise
+    `PendingReview` with `review_id` / `fix_url` / `required_role` /
+    `reason` / `reason_detail` / `citation` / `gate_name` populated.
+  - `effect == "block"` → raise `PolicyBlock` with `reason` / `citation`
+    / `fix_url` / `retryable` / `required_role` / `gate_name` /
+    `reason_detail` populated. The wrapped function is **not** invoked.
+- New optional `@vera.gate` kwargs: `agent_id`, `action_description`,
+  `data_subject_id`, `target_system`, `target_resource`. All forward
+  to the matching field on `GateEvaluateRequest`. All `None` by
+  default — emitted on the wire only when the caller supplied a value.
+- New attributes on `PolicyBlock`: `gate_name`, `reason_detail`,
+  `required_role`. All optional, default to falsy.
+- New attributes on `PendingReview`: `gate_name`, `reason`,
+  `reason_detail`, `citation`. All optional, default to falsy.
+  Existing `except PolicyBlock as e: e.reason` and `except PendingReview
+  as e: e.review_id` patterns keep working unchanged.
+- Defensive PHI redaction on `reason_detail` before it is stamped onto
+  raised exceptions or audit records — reuses the
+  `errors._looks_like_phi` / `errors._is_likely_phi` heuristics the
+  tenant resolver uses. If a backend ever leaked a PHI-shaped string
+  into `reason_detail`, the SDK replaces it with `"(redacted:
+  reason_detail matched PHI-shape heuristic)"` before raising.
+- `VeraError.__str__` now appends `[fix={fix_url}]` to the rendered
+  message when `fix_url` differs from the class default. Makes the
+  remediation URL visible in stack traces and structured logs without
+  breaking v1.0.0 snapshot strings (the token only renders when
+  `fix_url` was customised).
+
+### Behavior
+- 422 from `/v1/gates/evaluate` carrying a recognised `code` keeps
+  routing through `wrap_httpx_error` (`PolicyBlock`,
+  `TenantMissingOrInvalid`, etc.). A 422 from a pydantic validation
+  failure with no `code` now raises a B1-specific `VeraClientError`
+  with version-skew remediation text instead of the generic
+  `VeraValidationError` copy — pointing operators at the SDK/backend
+  upgrade path.
+- 404 fallback (Phase 1 → Phase 2 bridge) preserved verbatim. Older
+  backends that don't yet have `/v1/gates/evaluate` still degrade to
+  audit-only capture with a once-per-process `UserWarning`.
+
+### Out of scope (deferred to follow-up PRs)
+- `@vera.gate(realtime=True)` returning a draft + queueing a deferred
+  review (`REQUIRE_DEFERRED_REVIEW` effect) — ships in Wave 2C PR B2.
+- `vera review-status <review_id>` CLI — ships in Wave 2C PR B3.
+
 ## [1.0.0] - 2026-05-24
 
 ### Stable release

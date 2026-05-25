@@ -65,6 +65,7 @@ from .errors import (
     PendingReview,
     PolicyBlock,
     TenantMissingOrInvalid,
+    VeraClientError,
     VeraError,
 )
 from .redaction import Redactor
@@ -224,32 +225,162 @@ def _resolve_client(explicit_client: Any, *, async_preferred: bool = False) -> A
     return _decorator_mod._default_client
 
 
+def _short_key_hint(api_key: Optional[str]) -> str:
+    """Stable, non-secret hint derived from the API key for ``authorized_by``.
+
+    The backend ``GateEvaluateRequest.authorized_by`` is a free-form
+    string used to identify the principal who authorised the action.
+    We want it correlatable across requests (so the audit ledger groups
+    calls by API key) but the full key MUST NEVER leave the SDK
+    process — that's the threat model the key tier prefix (``al_test_``
+    / ``al_live_``) exists to support.
+
+    Format: ``api_key:<first 8 chars>…`` so the tier prefix survives
+    while the secret bulk doesn't, and downstream consumers can tell
+    the principal kind (``api_key:...`` vs. a future ``oauth:...`` /
+    ``service_account:...``). Falls back to ``"sdk"`` when no key is
+    configured (matches the existing client warning that auth-less
+    operation degrades gracefully). Wave 2B PR B1.
+    """
+    if not api_key:
+        return "sdk"
+    return f"api_key:{api_key[:8]}…"
+
+
+def _client_api_key(client: Any) -> Optional[str]:
+    """Recover the configured API key from a ``VeraClient`` for ``authorized_by``.
+
+    The client stores the bearer token in
+    ``client._client.headers["Authorization"]`` (set at
+    ``VeraClient.__init__``) rather than as an attribute, so the key
+    never appears in ``dir(client)`` / repr output. Strip the
+    ``"Bearer "`` prefix and return what's left.
+
+    Returns ``None`` when the header is absent or empty so the caller
+    can fall back to the ``"sdk"`` sentinel.
+    """
+    try:
+        headers = client._client.headers
+    except AttributeError:
+        return None
+    auth = headers.get("Authorization", "") if headers is not None else ""
+    if not auth:
+        return None
+    if auth.startswith("Bearer "):
+        return auth[len("Bearer "):] or None
+    return auth or None
+
+
+def _safe_reason_detail(raw: Optional[str]) -> Optional[str]:
+    """Defensive PHI redaction on ``reason_detail`` before exception surfaces.
+
+    The backend ``Ruling.reason_detail`` contract (PR #212) forbids PHI
+    in the field, but the SDK is the last hop into customer process
+    memory + their structured-log aggregator. If the backend ever
+    leaked a PHI-shaped string (a bug we want to detect at the
+    boundary, not propagate), the SDK redacts it before stamping onto
+    the raised exception so it doesn't reach the customer's
+    ``except`` handler / log line.
+
+    Reuses the same heuristic the tenant resolver applies
+    (``errors._looks_like_phi`` for SSN/DOB shapes,
+    ``errors._is_likely_phi`` for whitespace+digit combos). Leans
+    toward false-positive — losing a diagnostic string is vastly
+    cheaper than echoing PHI into a stack trace surfaced in a log
+    pipeline. Wave 2B PR B1.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str) or not raw:
+        return raw
+    # Lazy import to avoid pulling errors module helpers on hot paths
+    # that don't go through a HITL / BLOCK ruling.
+    from .errors import _is_likely_phi, _looks_like_phi
+
+    if _looks_like_phi(raw) or _is_likely_phi(raw):
+        return "(redacted: reason_detail matched PHI-shape heuristic)"
+    return raw
+
+
 def _build_evaluate_request(
     *,
     action_class: str,
+    action_type: str,
     tenant_id: str,
     tenant_source: str,
+    agent_name: str,
+    agent_id: Optional[str],
     agent_type: Optional[str],
+    authorized_by: str,
     input_data: Any,
+    data_subject_id: Optional[str] = None,
+    target_system: Optional[str] = None,
+    target_resource: Optional[str] = None,
+    action_description: Optional[str] = None,
 ) -> dict:
     """Build the JSON body for ``POST /v1/gates/evaluate``.
 
-    Wire shape kept deliberately small in Phase 1 — the backend
-    endpoint lands in Phase 2 and may grow extra fields then; the SDK
-    forwards whatever's set and ignores anything it doesn't recognise
-    in the response.
+    Wire shape matches the backend ``GateEvaluateRequest`` pydantic
+    schema (``backend/app/schemas/gate.py``, shipped in Wave 2A
+    PR #212). Required fields (``agent_name``, ``action_type``,
+    ``action_name``, ``authorized_by``) are always populated; optional
+    fields are emitted only when the caller supplied a value (skipped
+    when ``None`` to avoid ``null`` clutter and let the server's
+    defaults take over).
+
+    The legacy ``agent_type`` taxonomy survives in ``metadata`` (the
+    server schema does not have a top-level ``agent_type`` and would
+    drop it under ``extra="ignore"`` if we tried) — keeps the existing
+    observability shape carrying the field while the wire body stays
+    spec-compliant. Wave 2B PR B1.
     """
+    if not agent_name:
+        # The backend schema marks ``agent_name`` as required with
+        # ``min_length=1`` — a missing client.agent_name would 422 at
+        # the gate boundary. Raise client-side with an actionable
+        # message instead so the customer sees the root cause without
+        # round-tripping the validation envelope.
+        raise VeraClientError(
+            "vera.gate requires client.agent_name to be set; pass "
+            "agent_name= to vera.init() or set VERA_AGENT_NAME.",
+            user_facing_reason=(
+                "Vera could not evaluate this action — agent_name is required."
+            ),
+            developer_reason=(
+                "client.agent_name is empty/None; backend GateEvaluateRequest "
+                "requires agent_name >= 1 char."
+            ),
+        )
     body: dict[str, Any] = {
-        "action_class": action_class,
-        "tenant_id": tenant_id,
+        "agent_name": agent_name,
+        "action_type": action_type,
+        "action_name": action_class,
+        "authorized_by": authorized_by,
         # Nested under metadata for the same reason as
         # ``_build_payload`` in client.py: pydantic v2 ``extra="ignore"``
         # would otherwise silently drop the provenance field.
         "metadata": {"tenant_source": tenant_source},
         "input_data": input_data,
     }
+    body["tenant_id"] = tenant_id
+
+    # Optional top-level fields — only emit when caller provided.
+    if agent_id is not None:
+        body["agent_id"] = agent_id
+    if action_description is not None:
+        body["action_description"] = action_description
+    if data_subject_id is not None:
+        body["data_subject_id"] = data_subject_id
+    if target_system is not None:
+        body["target_system"] = target_system
+    if target_resource is not None:
+        body["target_resource"] = target_resource
+
+    # Legacy ``agent_type`` rides in metadata (backend schema has no
+    # top-level slot for it).
     if agent_type is not None:
-        body["agent_type"] = agent_type
+        body["metadata"]["agent_type"] = agent_type
+
     return body
 
 
@@ -311,20 +442,35 @@ def _capture_action(
 
 
 def _parse_ruling(body: dict) -> dict:
-    """Coerce the backend response into the dict the decorator consumes.
+    """Coerce the backend ``Ruling`` envelope into the dict the decorator routes on.
 
-    Flat envelope per PR #201:
-    ``{effect, reason, citation, review_id?, fix_url?, required_role?,
-       expected_resolution?, webhook_url?, retryable?}``.
+    Contract per backend ``app/schemas/gate.py::Ruling`` (Wave 2A PR #212):
+      * ``effect``        — ``"allow" | "require_hitl" | "block"`` (lowercase)
+      * ``reason``        — machine-readable reason code
+      * ``reason_detail`` — human-readable explanation, NEVER PHI
+                            (SDK defensively redacts via ``_safe_reason_detail``)
+      * ``citation``      — optional regulatory citation
+      * ``gate_name``     — identifier of the gate that produced the ruling
+      * ``review_id``     — present iff ``effect == "require_hitl"``
+      * ``fix_url``       — dashboard URL for remediation / review
+      * ``required_role`` — reviewer role required (HITL paths)
+      * ``retryable``     — defaults False on the wire
 
-    Unknown fields are preserved on the returned dict so they're
-    available for logging / future use without an SDK release.
+    Legacy compatibility: tests + the legacy #201 envelope sent
+    ``effect: "ALLOW"`` (uppercase); #212 sends ``effect: "allow"``
+    (lowercase per the new schema). The SDK normalises by upper-casing
+    once on entry so the dispatch table stays case-stable across both
+    shapes. Forward-compat: extras are preserved as ``_raw`` for
+    logging / future routing (B2's ``REQUIRE_DEFERRED_REVIEW`` will
+    consume the same envelope).
     """
     effect = str(body.get("effect") or "").upper()
     return {
         "effect": effect,
         "reason": body.get("reason") or "",
+        "reason_detail": body.get("reason_detail") or None,
         "citation": body.get("citation") or "",
+        "gate_name": body.get("gate_name") or "",
         "review_id": body.get("review_id"),
         "fix_url": body.get("fix_url"),
         "required_role": body.get("required_role"),
@@ -335,13 +481,101 @@ def _parse_ruling(body: dict) -> dict:
     }
 
 
+def _is_pydantic_validation_envelope(body: Any) -> bool:
+    """Return True when the response body looks like FastAPI's default 422.
+
+    FastAPI's auto-generated 422 carries
+    ``{"detail": [{"loc": [...], "msg": ..., "type": ...}, ...]}``.
+    The backend's domain errors (the Phase 1 ``code``-tagged 422s) wrap
+    differently — they emit ``{"code": "tenant_malformed", "detail": ...}``
+    with a string detail. We only want to surface the version-skew
+    error when the body looks like the pydantic envelope AND there's
+    no recognised ``code`` to dispatch on. Wave 2B PR B1.
+    """
+    if not isinstance(body, dict):
+        return False
+    detail = body.get("detail")
+    if not isinstance(detail, list) or not detail:
+        return False
+    first = detail[0]
+    if not isinstance(first, dict):
+        return False
+    # FastAPI's validation entries always carry ``loc`` + ``msg``.
+    return "loc" in first and "msg" in first
+
+
+def _raise_wire_shape_mismatch_422(resp: Any, body: Any) -> None:
+    """Raise an actionable ``VeraClientError`` on a 422 wire-shape mismatch.
+
+    Hits when a pydantic validation failure on ``GateEvaluateRequest``
+    surfaces with no recognised ``code`` — i.e. the SDK shipped a body
+    the backend doesn't accept. The default ``VeraValidationError`` copy
+    ("Server returned 4xx") is too generic for the SDK/backend version
+    skew case, which is the one operationally common cause. Point the
+    operator at the SDK version pin / backend upgrade path explicitly.
+    Wave 2B PR B1.
+    """
+    rid = None
+    try:
+        rid = resp.headers.get("X-Request-ID") or resp.headers.get("x-request-id")
+    except Exception:
+        pass
+    detail_repr = repr(body.get("detail") if isinstance(body, dict) else body)[:500]
+    raise VeraClientError(
+        message=(
+            f"POST {GATE_EVALUATE_PATH} returned 422 (request shape rejected). "
+            "Likely SDK / backend version skew — the SDK is sending the new "
+            "GateEvaluateRequest body shape but the backend rejected one or "
+            "more fields. Upgrade the backend to the release that shipped "
+            "the Wave 2A gate-evaluate contract (PR #212), or pin the SDK "
+            "to the last pre-1.0.1 release if a backend upgrade is not "
+            "possible. See "
+            "https://docs.usevera.xyz/sdk/version-compat for the compatibility "
+            "matrix."
+        ),
+        status_code=422,
+        request_id=rid,
+        user_facing_reason=(
+            "Vera could not evaluate this action because the request did not "
+            "match the server's expected shape. Please contact support if "
+            "this persists."
+        ),
+        developer_reason=(
+            f"422 from {GATE_EVALUATE_PATH}; pydantic detail: {detail_repr}"
+        ),
+        fix_url="https://docs.usevera.xyz/sdk/version-compat",
+    )
+
+
+def _maybe_raise_version_skew(resp: Any) -> None:
+    """If the 422 is a pydantic envelope without a known ``code``, raise version-skew."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return  # non-JSON 422 — let wrap_httpx_error handle it generically.
+    # If the body has a ``code`` mapped to a branded SDK error, defer
+    # to wrap_httpx_error so domain exceptions keep their behaviour
+    # (TenantMissingOrInvalid, PolicyBlock, etc.).
+    if isinstance(body, dict) and isinstance(body.get("code"), str):
+        from .errors import CODE_TO_ERROR_CLASS
+
+        if body["code"] in CODE_TO_ERROR_CLASS:
+            return
+    if _is_pydantic_validation_envelope(body):
+        _raise_wire_shape_mismatch_422(resp, body)
+
+
 def _call_evaluate_sync(client: Any, body: dict) -> Optional[dict]:
     """POST ``/v1/gates/evaluate``. Returns parsed ruling, or ``None`` for 404.
 
     Raises whatever ``wrap_httpx_error`` produces on non-404 failures
     (``PolicyBlock`` / ``PendingReview`` / ``VeraAuthError`` / etc) so
     backend-emitted error envelopes surface as branded exceptions per
-    the existing transport-layer contract.
+    the existing transport-layer contract. 422 responses that look
+    like a pydantic validation failure with no recognised ``code``
+    take a dedicated B1 path: they raise a ``VeraClientError`` with
+    actionable version-skew copy instead of the generic validation
+    error.
 
     The 404 fallback is the Phase 1 / Phase 2 bridge: the backend
     endpoint doesn't exist yet, so the SDK ships with the decorator
@@ -362,6 +596,11 @@ def _call_evaluate_sync(client: Any, body: dict) -> Optional[dict]:
 
     if resp.status_code == 404:
         return None
+    if resp.status_code == 422:
+        # Inspect the body BEFORE handing off to wrap_httpx_error so
+        # we can surface the version-skew message when the 422 is a
+        # pydantic envelope without a known code. Raises on match.
+        _maybe_raise_version_skew(resp)
     try:
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -420,6 +659,8 @@ async def _call_evaluate_async(client: Any, body: dict) -> Optional[dict]:
 
     if resp.status_code == 404:
         return None
+    if resp.status_code == 422:
+        _maybe_raise_version_skew(resp)
     try:
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -438,23 +679,43 @@ async def _call_evaluate_async(client: Any, body: dict) -> Optional[dict]:
 
 
 def _build_pending_review(ruling: dict) -> PendingReview:
-    """Construct a :class:`PendingReview` from a parsed REQUIRE_HITL ruling."""
+    """Construct a :class:`PendingReview` from a parsed REQUIRE_HITL ruling.
+
+    The new B1 attributes (``gate_name``, ``reason``, ``reason_detail``,
+    ``citation``) are populated from the Ruling envelope. ``reason_detail``
+    runs through :func:`_safe_reason_detail` first so any PHI-shaped
+    string the backend ever leaked is replaced with a sentinel before
+    reaching the customer's ``except`` handler.
+    """
     return PendingReview(
         review_id=ruling.get("review_id") or "",
         expected_resolution=ruling.get("expected_resolution"),
         webhook_url=ruling.get("webhook_url"),
         required_role=ruling.get("required_role"),
         fix_url=ruling.get("fix_url"),
+        gate_name=ruling.get("gate_name") or "",
+        reason=ruling.get("reason") or "",
+        reason_detail=_safe_reason_detail(ruling.get("reason_detail")),
+        citation=ruling.get("citation") or None,
     )
 
 
 def _build_policy_block(ruling: dict) -> PolicyBlock:
-    """Construct a :class:`PolicyBlock` from a parsed BLOCK ruling."""
+    """Construct a :class:`PolicyBlock` from a parsed BLOCK ruling.
+
+    The new B1 attributes (``gate_name``, ``reason_detail``,
+    ``required_role``) are populated from the Ruling envelope.
+    ``reason_detail`` runs through :func:`_safe_reason_detail` first
+    so any PHI-shaped string is redacted at the boundary.
+    """
     return PolicyBlock(
         reason=ruling.get("reason") or "Gate evaluation returned BLOCK.",
         citation=ruling.get("citation") or "",
         fix_url=ruling.get("fix_url"),
         retryable=ruling.get("retryable", False),
+        gate_name=ruling.get("gate_name") or "",
+        reason_detail=_safe_reason_detail(ruling.get("reason_detail")),
+        required_role=ruling.get("required_role"),
     )
 
 
@@ -475,6 +736,12 @@ def _sync_call(
     redactor: Optional[Redactor],
     realtime: bool,
     client: Any,
+    # Wave 2B PR B1 — optional GateEvaluateRequest passthroughs.
+    agent_id: Optional[str] = None,
+    action_description: Optional[str] = None,
+    data_subject_id: Optional[str] = None,
+    target_system: Optional[str] = None,
+    target_resource: Optional[str] = None,
 ) -> Any:
     """Shared sync invocation path used by :func:`gate`.
 
@@ -540,10 +807,18 @@ def _sync_call(
 
     body = _build_evaluate_request(
         action_class=resolved_action_name,
+        action_type=action_type,
         tenant_id=tenant_id,
         tenant_source=tenant_source,
+        agent_name=getattr(effective_client, "agent_name", "") or "",
+        agent_id=agent_id,
         agent_type=resolved_agent_type,
+        authorized_by=_short_key_hint(_client_api_key(effective_client)),
         input_data=input_data,
+        data_subject_id=data_subject_id,
+        target_system=target_system,
+        target_resource=target_resource,
+        action_description=action_description,
     )
     ruling = _call_evaluate_sync(effective_client, body)
 
@@ -752,6 +1027,12 @@ async def _async_call(
     redactor: Optional[Redactor],
     realtime: bool,
     client: Any,
+    # Wave 2B PR B1 — optional GateEvaluateRequest passthroughs.
+    agent_id: Optional[str] = None,
+    action_description: Optional[str] = None,
+    data_subject_id: Optional[str] = None,
+    target_system: Optional[str] = None,
+    target_resource: Optional[str] = None,
 ) -> Any:
     """Async sibling of :func:`_sync_call`.
 
@@ -802,10 +1083,18 @@ async def _async_call(
 
     body = _build_evaluate_request(
         action_class=resolved_action_name,
+        action_type=action_type,
         tenant_id=tenant_id,
         tenant_source=tenant_source,
+        agent_name=getattr(effective_client, "agent_name", "") or "",
+        agent_id=agent_id,
         agent_type=resolved_agent_type,
+        authorized_by=_short_key_hint(_client_api_key(effective_client)),
         input_data=input_data,
+        data_subject_id=data_subject_id,
+        target_system=target_system,
+        target_resource=target_resource,
+        action_description=action_description,
     )
     ruling = await _call_evaluate_async(effective_client, body)
 
@@ -959,6 +1248,14 @@ def gate(
     redactor: Optional[Redactor] = None,
     realtime: bool = False,
     client: Any = None,
+    # --- Wave 2B PR B1 — optional GateEvaluateRequest passthroughs.
+    # All None by default; emitted on the wire only when set, so
+    # the wire shape stays minimal for callers that don't need them.
+    agent_id: Optional[str] = None,
+    action_description: Optional[str] = None,
+    data_subject_id: Optional[str] = None,
+    target_system: Optional[str] = None,
+    target_resource: Optional[str] = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """The v1 ``@vera.gate`` primitive — wrap an agent action with policy enforcement.
 
@@ -988,6 +1285,21 @@ def gate(
             surprises later.
         client: Explicit client override. Defaults to the
             module-level default registered by ``vera.init``.
+        agent_id: Optional stable identifier for this specific agent
+            instance (vs. ``client.agent_name`` which identifies the
+            agent class). Forwarded to the backend's
+            ``GateEvaluateRequest.agent_id``. ``None`` to omit.
+        action_description: Human-readable description of the action
+            for the audit ledger (e.g. ``"Commit chart note draft to
+            EHR"``). ``None`` to omit. Wave 2B PR B1.
+        data_subject_id: Identifier of the data subject the action
+            targets (e.g. patient ID, applicant ID). Lets the backend's
+            policy lookup scope on the affected party. ``None`` to omit.
+        target_system: System the action will affect (e.g. ``"EHR"``,
+            ``"LOS"``, ``"CRM"``). ``None`` to omit.
+        target_resource: Specific resource handle within
+            ``target_system`` (e.g. ``"encounter:789"``,
+            ``"application:abc"``). ``None`` to omit.
 
     Routing (when the backend ``/v1/gates/evaluate`` endpoint exists):
 
@@ -1018,6 +1330,11 @@ def gate(
                     redactor=redactor,
                     realtime=realtime,
                     client=client,
+                    agent_id=agent_id,
+                    action_description=action_description,
+                    data_subject_id=data_subject_id,
+                    target_system=target_system,
+                    target_resource=target_resource,
                 )
 
             return async_wrapper
@@ -1035,6 +1352,11 @@ def gate(
                 redactor=redactor,
                 realtime=realtime,
                 client=client,
+                agent_id=agent_id,
+                action_description=action_description,
+                data_subject_id=data_subject_id,
+                target_system=target_system,
+                target_resource=target_resource,
             )
 
         return sync_wrapper
