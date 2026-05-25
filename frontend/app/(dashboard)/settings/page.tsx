@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { formatDate, cn } from "@/lib/utils";
 import { PERMISSION_COLORS } from "@/lib/constants";
-import { Check, Loader2, Bell, Key } from "lucide-react";
+import { Check, Loader2, Bell, Key, Webhook } from "lucide-react";
 import { updateAlertEmail } from "@/lib/api-client";
 
 /**
@@ -95,6 +95,23 @@ export default function SettingsPage() {
         <CardContent>
           <Button asChild size="sm">
             <Link href="/api-keys">Open API Keys →</Link>
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Webhook className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-base">Integrations</CardTitle>
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">
+            Webhook subscriptions and per-endpoint delivery health.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <Button asChild size="sm">
+            <Link href="/settings/integrations">Open Integrations →</Link>
           </Button>
         </CardContent>
       </Card>
