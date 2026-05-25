@@ -697,6 +697,99 @@ def require_permission_with_context(permission: str):
     return _check
 
 
+def require_staff_or_customer_admin():
+    """Dependency: allow Vera staff (read-only) OR customer-admin (full
+    rights on the org). Used by the staff audit-log endpoint which must
+    work for both:
+
+      * The staff member checking their own activity history.
+      * The customer admin checking which Vera engineers touched their
+        org's data.
+
+    Returns the same ``AuthContext`` shape as
+    ``require_permission_with_context``. Staff sessions DO satisfy the
+    gate (no extra 403). Customer sessions must hold the ``admin``
+    permission — API-key admin or Clerk-session admin role.
+    """
+    from .baa import is_org_baa_active
+
+    async def _check(
+        credentials: HTTPAuthorizationCredentials = Security(security),
+        session: AsyncSession = Depends(get_db),
+        x_org_id: Optional[str] = Header(default=None, alias="X-Org-Id"),
+    ) -> AuthContext:
+        raw = credentials.credentials
+
+        # API-key path — must be admin.
+        if raw.startswith(settings.api_key_prefix):
+            api_key = await authenticate_request(session, raw)
+            if api_key is None:
+                raise HTTPException(
+                    status_code=401, detail="Invalid or revoked API key"
+                )
+            if "admin" not in api_key.permissions:
+                raise HTTPException(
+                    status_code=403,
+                    detail="API key lacks 'admin' permission",
+                )
+            # Live-key BAA gate — same as require_permission. Keeps
+            # behaviour parity so an expired BAA can't read the audit log
+            # either.
+            if api_key.kind == "live":
+                baa_active = await is_org_baa_active(session, api_key.org_id)
+                if not baa_active:
+                    raise HTTPException(
+                        status_code=403,
+                        detail={
+                            "code": "baa_expired",
+                            "detail": (
+                                "Live API keys require an active Business "
+                                "Associate Agreement on file for your "
+                                "organization."
+                            ),
+                            "fix_url": "/customers",
+                        },
+                    )
+            return AuthContext(
+                org_id=api_key.org_id,
+                api_key=api_key,
+                tier=IamTier.CUSTOMER,
+            )
+
+        # Clerk path — staff bypass the admin gate; customer admin must
+        # match the admin role.
+        staff_ctx = await _resolve_clerk_staff_context(
+            session, raw, requested_org_id=x_org_id
+        )
+        if staff_ctx is not None:
+            return staff_ctx
+
+        try:
+            clerk_result = await _authenticate_clerk_session(session, raw)
+        except _NoActiveOrgError:
+            raise HTTPException(
+                status_code=400,
+                detail="No active organization in Clerk session",
+            )
+        if clerk_result is None:
+            raise HTTPException(
+                status_code=401, detail="Invalid or expired session"
+            )
+        org_id, perms = clerk_result
+        if "admin" not in perms:
+            raise HTTPException(
+                status_code=403,
+                detail="Session role lacks 'admin' permission",
+            )
+        return AuthContext(
+            org_id=org_id,
+            api_key=None,
+            tier=IamTier.CUSTOMER,
+        )
+
+    return _check
+
+
 async def get_membership_for_clerk_user(
     session: AsyncSession,
     *,
