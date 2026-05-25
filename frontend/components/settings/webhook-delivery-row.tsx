@@ -67,12 +67,16 @@ export interface WebhookDeliveryRowProps {
   delivery: WebhookDelivery;
   onReplay: (delivery_id: string) => void;
   isReplaying: boolean;
+  /** Error message from the most recent replay attempt on this row, if
+   *  any. Surfaced inline so a failed replay doesn't fail silently. */
+  replayError?: string | null;
 }
 
 export function WebhookDeliveryRow({
   delivery,
   onReplay,
   isReplaying,
+  replayError,
 }: WebhookDeliveryRowProps) {
   const variant = STATUS_VARIANT[delivery.status];
   const label = STATUS_LABEL[delivery.status];
@@ -122,7 +126,15 @@ export function WebhookDeliveryRow({
       </span>
 
       {isAborted ? (
-        <div className="col-span-5 mt-2 flex justify-end">
+        <div className="col-span-5 mt-2 flex items-center justify-end gap-3">
+          {replayError ? (
+            <span
+              role="alert"
+              className="text-[12px] text-[color:var(--brick)]"
+            >
+              Replay failed — {replayError}
+            </span>
+          ) : null}
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
               <Button

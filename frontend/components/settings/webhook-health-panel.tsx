@@ -36,11 +36,18 @@ import { WebhookDeliveryRow } from "./webhook-delivery-row";
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface HealthStats {
+  /** All deliveries created in the last 24h, any status. */
   total: number;
+  /** Terminal deliveries in the last 24h (succeeded + aborted). The
+   *  success-rate denominator — excludes in-flight so an endpoint with
+   *  several pending deliveries doesn't read as "67%". */
+  terminal: number;
   succeeded: number;
   retried: number;
   pending: number;
   aborted: number;
+  /** Percentage succeeded out of *terminal* deliveries, or null when no
+   *  terminal deliveries in window. */
   successRatePct: number | null;
   lastSuccess: { at: string; statusCode: number | null } | null;
 }
@@ -78,8 +85,12 @@ export function computeHealthStats(
   }
 
   const total = recent.length;
+  // Success rate denominator counts terminal deliveries only — including
+  // in-flight rows would make a healthy endpoint with several pending
+  // deliveries read as e.g. "67% (2/3)" until the sweeper catches up.
+  const terminal = succeeded + aborted;
   const successRatePct =
-    total === 0 ? null : Math.round((succeeded / total) * 100);
+    terminal === 0 ? null : Math.round((succeeded / terminal) * 100);
 
   // The "last delivery" line uses the most recent succeeded row, not just
   // the newest row of any status — operators care that the endpoint is
@@ -99,6 +110,7 @@ export function computeHealthStats(
 
   return {
     total,
+    terminal,
     succeeded,
     retried,
     pending,
@@ -150,8 +162,12 @@ export function WebhookHealthPanel({
   now,
   className,
 }: WebhookHealthPanelProps) {
+  // The backend caps `limit` at 200. A high-volume endpoint (>50/day)
+  // would have its 24h window truncated at 50, deflating stats. Ask for
+  // the max so the window has the best chance of being complete; the
+  // accordion still only displays the 10 newest.
   const { data, isLoading, isError, error } = useWebhookDeliveries(webhookId, {
-    limit: 50,
+    limit: 200,
   });
   const replay = useReplayWebhookDelivery(webhookId);
   const [expanded, setExpanded] = React.useState(false);
@@ -236,7 +252,7 @@ export function WebhookHealthPanel({
               <>
                 {stats.successRatePct}%{" "}
                 <span className="text-[color:var(--ink-2)]">
-                  ({stats.succeeded}/{stats.total})
+                  ({stats.succeeded}/{stats.terminal})
                 </span>
               </>
             )}
@@ -287,16 +303,22 @@ export function WebhookHealthPanel({
               aria-label="Recent webhook deliveries"
               className="mt-2"
             >
-              {accordionDeliveries.map((d) => (
-                <WebhookDeliveryRow
-                  key={d.id}
-                  delivery={d}
-                  onReplay={(deliveryId) => replay.mutate(deliveryId)}
-                  isReplaying={
-                    replay.isPending && replay.variables === d.id
-                  }
-                />
-              ))}
+              {accordionDeliveries.map((d) => {
+                const isThisRow = replay.variables === d.id;
+                return (
+                  <WebhookDeliveryRow
+                    key={d.id}
+                    delivery={d}
+                    onReplay={(deliveryId) => replay.mutate(deliveryId)}
+                    isReplaying={replay.isPending && isThisRow}
+                    replayError={
+                      replay.isError && isThisRow && replay.error
+                        ? replay.error.message
+                        : null
+                    }
+                  />
+                );
+              })}
             </ul>
           ) : null}
         </div>
