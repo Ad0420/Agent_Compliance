@@ -635,3 +635,54 @@ export interface CustomerDecisionsQueryParams {
   limit?: number;
   offset?: number;
 }
+
+// ── Wave 2D PR C2 — Review queue page (HITL completion) ──────────────────
+//
+// Body shape for ``POST /v1/reviews/{review_id}/complete`` — mirrors the
+// backend ``ReviewCompletionInput`` schema (backend/app/schemas/review.py).
+// Field constraints mirror the server's pydantic bounds verbatim so the
+// dashboard form catches input violations before they hit the wire:
+//
+//   * reviewer_role: min_length=1, max_length=64
+//   * reviewer_id:   min_length=1, max_length=128
+//   * note:          max_length=2000 (regulation per spec requires a comment
+//                    of at least 10 chars on approve/reject — enforced UI-side)
+//   * signature:     max_length=512 (Phase 4 will verify; Phase 2 free-form)
+export interface CompleteReviewInput {
+  decision: "approve" | "reject";
+  reviewer_role: string;
+  reviewer_id: string;
+  note?: string | null;
+  signature?: string | null;
+}
+
+// Success response shape: ``ApprovalResponse`` on 200. The endpoint
+// returns the *updated* approval row so the dashboard's React Query
+// cache can swap the queue entry without a refetch.
+export type CompleteReviewResponse = Approval;
+
+// 403 error envelope. The backend's ``_insufficient_role_detail``
+// returns this as the ``detail`` field on the 403; the dashboard surfaces
+// the structured fields inline ("Your role 'MD' is insufficient. This
+// decision requires 'dea_licensed_physician'.").
+export interface ReviewerInsufficientDetail {
+  code: "reviewer_credentials_insufficient";
+  review_id: string;
+  required_role: string | null;
+  reviewer_role: string;
+  detail: string;
+}
+
+// 409 error envelope. Two distinct codes flow through this status:
+//   * already-resolved (approved / rejected / cancelled) — the row moved
+//     out of pending while the reviewer was filling out the form.
+//   * attestation_conflict (Wave 2D A6) — second callback with a
+//     different decision from a different reviewer. Canonical decision
+//     stays first; this one is logged and rejected.
+// Both surface the same "already decided" message in the UI; admins can
+// pull the structured detail from the audit chain.
+export interface AttestationConflictResponse {
+  code: "attestation_conflict" | "already_resolved";
+  review_id: string;
+  detail: string;
+}
