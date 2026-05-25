@@ -347,7 +347,15 @@ async def test_cross_org_isolation(async_client, db_engine):
 
 
 @pytest.mark.asyncio
-async def test_policy_violation_dispatches_webhook(db_session, org_and_key):
+async def test_policy_violation_dispatches_webhook(db_engine, db_session, org_and_key):
+    """A policy violation should fire a ``policy.violation`` webhook.
+
+    A3 makes the delivery durable via ``webhook_deliveries`` rows. The
+    in-process attempt + bookkeeping use ``AsyncSessionLocal`` so the
+    test must point that at the same in-memory engine.
+    """
+    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+
     org, _, _ = org_and_key
 
     # Active policy that fires for unknown agents.
@@ -372,8 +380,13 @@ async def test_policy_violation_dispatches_webhook(db_session, org_and_key):
         event_types=["policy.violation"],
     )
 
+    session_factory = async_sessionmaker(
+        db_engine, class_=AsyncSession, expire_on_commit=False
+    )
+
     mock_client = _ok_mock_client()
-    with patch("app.services.webhooks.httpx.AsyncClient", return_value=mock_client):
+    with patch("app.services.webhooks.httpx.AsyncClient", return_value=mock_client), \
+         patch("app.services.webhooks.AsyncSessionLocal", session_factory):
         await build_and_insert_record(
             db_session,
             org.id,
@@ -409,7 +422,9 @@ async def test_policy_violation_dispatches_webhook(db_session, org_and_key):
 
 
 @pytest.mark.asyncio
-async def test_signature_is_verifiable(db_session, org_and_key):
+async def test_signature_is_verifiable(db_engine, db_session, org_and_key):
+    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+
     org, _, _ = org_and_key
     secret = "shared-secret-1234"
     await _make_subscription(
@@ -420,8 +435,13 @@ async def test_signature_is_verifiable(db_session, org_and_key):
         event_types=["policy.violation"],
     )
 
+    session_factory = async_sessionmaker(
+        db_engine, class_=AsyncSession, expire_on_commit=False
+    )
+
     mock_client = _ok_mock_client()
-    with patch("app.services.webhooks.httpx.AsyncClient", return_value=mock_client):
+    with patch("app.services.webhooks.httpx.AsyncClient", return_value=mock_client), \
+         patch("app.services.webhooks.AsyncSessionLocal", session_factory):
         await dispatch_event(
             db_session,
             org.id,
@@ -580,7 +600,9 @@ async def test_auto_disable_after_threshold_failures(db_engine, org_and_key):
 
 
 @pytest.mark.asyncio
-async def test_approval_lifecycle_fires_request_and_resolve(db_session, org_and_key):
+async def test_approval_lifecycle_fires_request_and_resolve(db_engine, db_session, org_and_key):
+    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+
     org, _, _ = org_and_key
     await _make_subscription(
         db_session,
@@ -588,8 +610,13 @@ async def test_approval_lifecycle_fires_request_and_resolve(db_session, org_and_
         event_types=["approval.requested", "approval.resolved"],
     )
 
+    session_factory = async_sessionmaker(
+        db_engine, class_=AsyncSession, expire_on_commit=False
+    )
+
     mock_client = _ok_mock_client()
-    with patch("app.services.webhooks.httpx.AsyncClient", return_value=mock_client):
+    with patch("app.services.webhooks.httpx.AsyncClient", return_value=mock_client), \
+         patch("app.services.webhooks.AsyncSessionLocal", session_factory):
         approval = await request_approval(
             db_session,
             org.id,
@@ -625,7 +652,9 @@ async def test_approval_lifecycle_fires_request_and_resolve(db_session, org_and_
 
 
 @pytest.mark.asyncio
-async def test_cancel_approval_fires_cancelled(db_session, org_and_key):
+async def test_cancel_approval_fires_cancelled(db_engine, db_session, org_and_key):
+    from sqlalchemy.ext.asyncio import async_sessionmaker, AsyncSession
+
     org, _, _ = org_and_key
     await _make_subscription(
         db_session,
@@ -633,8 +662,13 @@ async def test_cancel_approval_fires_cancelled(db_session, org_and_key):
         event_types=["approval.cancelled"],
     )
 
+    session_factory = async_sessionmaker(
+        db_engine, class_=AsyncSession, expire_on_commit=False
+    )
+
     mock_client = _ok_mock_client()
-    with patch("app.services.webhooks.httpx.AsyncClient", return_value=mock_client):
+    with patch("app.services.webhooks.httpx.AsyncClient", return_value=mock_client), \
+         patch("app.services.webhooks.AsyncSessionLocal", session_factory):
         approval = await request_approval(
             db_session,
             org.id,
@@ -666,6 +700,15 @@ def test_allowed_event_types_is_complete():
     assert ALLOWED_EVENT_TYPES == frozenset(
         {
             "policy.violation",
+            # ── Wave 2B PR A3 — customer-facing rename of approval.* ──
+            "review.requested",
+            "review.completed",
+            "review.expired",
+            # ── Wave 2B PR A3 — delivery pipeline signals ──
+            "webhook_delivery_aborted",
+            # ── Wave 2B PR A6 — reserved (no producer in A3) ──
+            "attestation_conflict",
+            # ── Legacy ``approval.*`` — deprecated, removed Phase 4/5. ──
             "approval.requested",
             "approval.resolved",
             "approval.cancelled",

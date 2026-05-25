@@ -25,6 +25,21 @@ class Settings(BaseSettings):
     # Max records per batch ingest
     max_batch_size: int = 100
 
+    # ── Wave 2B PR A3: webhook delivery sweeper ────────────────────────
+    # Background sweeper that picks up due ``webhook_deliveries`` rows
+    # (retries + scheduled first attempts) and POSTs them. Also runs the
+    # approval-expiry pass on the same tick. Disable in tests that don't
+    # want time-driven side effects.
+    webhook_sweeper_enabled: bool = True
+    # Tick cadence. Worst-case retry lag = tick * 1 (one full sleep).
+    webhook_sweeper_tick_seconds: int = 30
+    # Max rows the sweeper claims per tick. Caps the per-tick work so a
+    # backlog doesn't starve other event loop tasks.
+    webhook_sweeper_batch_size: int = 50
+    # Approval-expiry batch size on the same tick. Smaller because each
+    # expiry writes a chain ActionRecord (acquires the per-org lock).
+    approval_expiry_batch_size: int = 20
+
     # Max size for JSON blob fields (bytes of serialized JSON)
     max_json_field_size: int = 1_000_000  # 1 MB
 

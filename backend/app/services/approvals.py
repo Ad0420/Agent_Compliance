@@ -91,6 +91,21 @@ async def request_approval(
     await session.commit()
     await session.refresh(approval)
 
+    # ── Wave 2B PR A3 — dual emission (approval.* + review.*) ─────────
+    # The customer-facing rename ships ``review.*`` alongside the legacy
+    # ``approval.*`` names for one release; ``approval.*`` is marked
+    # deprecated in ``services/webhooks.ALLOWED_EVENT_TYPES`` and will
+    # be removed in Phase 4/5. Both events share idempotency keys
+    # derived from ``approval_id`` so a producer-side retry never
+    # double-emits (per ``webhook_retry.idempotency_key_for_review``).
+    requested_at_iso = (
+        approval.requested_at.isoformat() if approval.requested_at else None
+    )
+    expires_at_iso = (
+        approval.expires_at.isoformat() if approval.expires_at else None
+    )
+    # Legacy event — same payload shape as pre-A3 so existing consumers
+    # don't break.
     await dispatch_event(
         session,
         org_id,
@@ -101,9 +116,26 @@ async def request_approval(
             "agent_name": approval.requested_by_agent,
             "risk_tier": approval.risk_tier,
             "data_subject_id": approval.data_subject_id,
-            "requested_at": approval.requested_at.isoformat()
-            if approval.requested_at
-            else None,
+            "requested_at": requested_at_iso,
+        },
+    )
+    # New event — plan §7 payload. ``required_role`` is owned by PR A2
+    # and arrives as None here until A2 lands the gate-config wiring.
+    await dispatch_event(
+        session,
+        org_id,
+        "review.requested",
+        {
+            "review_id": approval.id,
+            "request_record_id": approval.request_record_id,
+            "action_name": approval.action_name,
+            "agent_name": approval.requested_by_agent,
+            "risk_tier": approval.risk_tier,
+            "data_subject_id": approval.data_subject_id,
+            "required_role": None,  # PR A2 will populate
+            "expires_at": expires_at_iso,
+            "requested_at": requested_at_iso,
+            "context_excerpt": approval.context,
         },
     )
     return approval
@@ -147,6 +179,17 @@ async def _resolve_and_record(
     await session.commit()
     await session.refresh(approval)
 
+    # ── Wave 2B PR A3 — dual emission ─────────────────────────────────
+    # Legacy ``approval.resolved`` continues to fire with the pre-A3
+    # payload. The new ``review.*`` event maps to either
+    # ``review.completed`` (for approved/rejected) or ``review.expired``
+    # (for the sweeper-driven expiry path) per plan §7. ``cancelled``
+    # still rides ``approval.cancelled`` only — the customer-facing
+    # ``review.*`` namespace treats cancellation as a completed review
+    # with ``final_status='cancelled'`` per plan §7 mapping.
+    resolved_at_iso = (
+        approval.resolved_at.isoformat() if approval.resolved_at else None
+    )
     await dispatch_event(
         session,
         approval.org_id,
@@ -156,11 +199,44 @@ async def _resolve_and_record(
             "action_name": approval.action_name,
             "final_status": final_status,
             "decisions": approval.decisions,
-            "resolved_at": approval.resolved_at.isoformat()
-            if approval.resolved_at
-            else None,
+            "resolved_at": resolved_at_iso,
         },
     )
+    if final_status == "expired":
+        await dispatch_event(
+            session,
+            approval.org_id,
+            "review.expired",
+            {
+                "review_id": approval.id,
+                "final_status": "expired",
+                "expired_at": resolved_at_iso,
+                "requested_at": (
+                    approval.requested_at.isoformat()
+                    if approval.requested_at
+                    else None
+                ),
+                "expires_at": (
+                    approval.expires_at.isoformat()
+                    if approval.expires_at
+                    else None
+                ),
+                "resolution_record_id": approval.resolution_record_id,
+            },
+        )
+    else:
+        await dispatch_event(
+            session,
+            approval.org_id,
+            "review.completed",
+            {
+                "review_id": approval.id,
+                "final_status": final_status,
+                "decisions": approval.decisions,
+                "resolved_at": resolved_at_iso,
+                "resolution_record_id": approval.resolution_record_id,
+            },
+        )
     return approval
 
 
@@ -277,6 +353,9 @@ async def cancel_approval(
     await session.commit()
     await session.refresh(approval)
 
+    resolved_at_iso = (
+        approval.resolved_at.isoformat() if approval.resolved_at else None
+    )
     await dispatch_event(
         session,
         org_id,
@@ -285,9 +364,20 @@ async def cancel_approval(
             "approval_id": approval.id,
             "action_name": approval.action_name,
             "cancelled_by": canceller,
-            "resolved_at": approval.resolved_at.isoformat()
-            if approval.resolved_at
-            else None,
+            "resolved_at": resolved_at_iso,
+        },
+    )
+    # ── Wave 2B PR A3 — review.completed maps cancellation per plan §7 ──
+    await dispatch_event(
+        session,
+        org_id,
+        "review.completed",
+        {
+            "review_id": approval.id,
+            "final_status": "cancelled",
+            "decisions": approval.decisions,
+            "resolved_at": resolved_at_iso,
+            "resolution_record_id": approval.resolution_record_id,
         },
     )
     return approval

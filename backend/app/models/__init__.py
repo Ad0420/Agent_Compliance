@@ -10,6 +10,8 @@ from .policy_violation import PolicyViolation
 from .approval import Approval
 from .idempotency_record import IdempotencyRecord
 from .webhook_subscription import WebhookSubscription
+from .webhook_delivery import WebhookDelivery, DELIVERY_STATUSES
+from .webhook_delivery_attempt import WebhookDeliveryAttempt
 from .org_membership import OrgMembership, BACKEND_ROLES
 from .processed_webhook_event import ProcessedWebhookEvent
 from .compliance_review_record import ComplianceReviewRecord
@@ -31,6 +33,9 @@ __all__ = [
     "Approval",
     "IdempotencyRecord",
     "WebhookSubscription",
+    "WebhookDelivery",
+    "WebhookDeliveryAttempt",
+    "DELIVERY_STATUSES",
     "OrgMembership",
     "BACKEND_ROLES",
     "ProcessedWebhookEvent",

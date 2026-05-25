@@ -37,6 +37,8 @@ from .middleware import (
     RequestIDMiddleware,
 )
 from .services.immutability import install_sqlite_triggers
+from .services.webhook_sweeper import start_in_process as start_webhook_sweeper
+from .services.webhook_sweeper import stop_in_process as stop_webhook_sweeper
 
 logger = logging.getLogger("vera")
 
@@ -48,9 +50,17 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
         if settings.database_url.startswith("sqlite"):
             await conn.run_sync(install_sqlite_triggers)
+    # Wave 2B PR A3 — webhook delivery sweeper. Background asyncio task
+    # that retries failed deliveries + sweeps expired approvals on the
+    # same tick. Gated by VERA_WEBHOOK_SWEEPER_ENABLED so tests that
+    # don't want time-driven side effects can disable it. See
+    # ``app/services/webhook_sweeper.py``.
+    start_webhook_sweeper()
     logger.info("Vera API started — tables ready")
     yield
-    # Shutdown: close DB connection pool
+    # Shutdown: stop sweeper first so it stops grabbing rows mid-shutdown,
+    # then close the DB pool.
+    await stop_webhook_sweeper()
     await engine.dispose()
 
 
