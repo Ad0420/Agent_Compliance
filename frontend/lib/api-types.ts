@@ -456,3 +456,98 @@ export interface BAAUploadResponse {
   effective_at: string | null;
   expires_at: string | null;
 }
+
+// ── Wave 2C PR C1 — Customer detail Decisions tab ────────────────────────
+//
+// Surfaces what each agent decision *meant*: the gate Ruling, the
+// downstream webhook delivery status, and (for pending HITL approvals)
+// the time-to-expiry countdown.
+//
+// Backend source of truth:
+//   * GET /v1/actions?tenant_id=<id> — ActionRecord rows for this customer
+//     (Phase 1 PR 13 supports the per-tenant filter via the indexed
+//     ``tenant_id`` column).
+//   * Ruling fields live on each ActionRecord's ``reasoning`` JSON when
+//     a Wave 2B gate (ClinicalScribePack etc.) evaluated the action.
+//     Shape mirrors backend/app/schemas/gate.py::Ruling.
+//   * Webhook delivery status is derived from the most recent attempt for
+//     the action's request_record_id (see backend/app/schemas/webhook_delivery.py).
+//
+// PR C1 intentionally does NOT introduce a dedicated
+// /v1/customers/{tenant_id}/decisions endpoint — the existing
+// /v1/actions?tenant_id=<id> path already returns everything needed
+// (Ruling is embedded in reasoning, delivery status fetched separately
+// per action). A dedicated endpoint can land in a later PR if the join
+// becomes hot.
+
+export type RulingEffect = "allow" | "require_hitl" | "block";
+
+export interface Ruling {
+  effect: RulingEffect;
+  reason: string;
+  reason_detail: string | null;
+  citation: string | null;
+  review_id: string | null;
+  fix_url: string | null;
+  required_role: string | null;
+  gate_name: string | null;
+}
+
+// Mirrors backend WebhookDelivery.status. ``pending`` = queued, not yet
+// attempted. ``retrying`` = at least one failed attempt with a future
+// next_retry_at. ``delivered`` = succeeded_at set. ``aborted`` = retry
+// budget exhausted (status='dead' on the backend, surfaced as 'aborted'
+// in the UI for clarity).
+export type WebhookDeliveryStatus =
+  | "delivered"
+  | "pending"
+  | "retrying"
+  | "aborted";
+
+export interface WebhookDeliverySummary {
+  status: WebhookDeliveryStatus;
+  attempt_count: number;
+  // Total attempts allowed before status flips to ``aborted``. Backend
+  // currently uses 7 (see services/webhooks.py); surfacing it lets the
+  // UI render "Retry N/7" without hard-coding the budget.
+  max_attempts: number;
+  next_retry_at: string | null;
+  last_status_code: number | null;
+  succeeded_at: string | null;
+  aborted_at: string | null;
+}
+
+// Composite shape consumed by the Decisions tab. One row per action.
+// Built client-side from an ActionRecord + (optional) Ruling pulled out
+// of reasoning + (optional) webhook delivery summary.
+export interface CustomerDecision {
+  id: string;
+  sequence_number: number;
+  action_timestamp: string;
+  agent_name: string;
+  action_name: string;
+  action_type: string;
+  result: string;
+  // Present when a gate evaluated this action. ``null`` = no gate ran
+  // (capture-only mode or Wave 2A stub allow).
+  ruling: Ruling | null;
+  // Present when this action triggered a webhook subscription. ``null``
+  // for actions with no subscribers.
+  webhook_delivery: WebhookDeliverySummary | null;
+  // Mirrors Approval.expires_at when ruling.effect === 'require_hitl' and
+  // a review is still pending. ``null`` otherwise (approved, expired, or
+  // no HITL required).
+  hitl_expires_at: string | null;
+}
+
+export interface CustomerDecisionsResponse {
+  decisions: CustomerDecision[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface CustomerDecisionsQueryParams {
+  limit?: number;
+  offset?: number;
+}
