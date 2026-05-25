@@ -27,6 +27,13 @@ import type {
   CustomerAgentsResponse,
   CustomerListResponse,
   CustomerQueryParams,
+  CustomerDecision,
+  CustomerDecisionsResponse,
+  CustomerDecisionsQueryParams,
+  Ruling,
+  RulingEffect,
+  WebhookDeliverySummary,
+  WebhookDeliveryStatus,
   WizardAnswersResponse,
   WizardAnswersSubmission,
   BAAUploadInput,
@@ -186,6 +193,123 @@ export function uploadCustomerBaa(
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+// ── Wave 2C PR C1 — Customer detail Decisions tab ─────────────────────────
+//
+// No dedicated `/v1/customers/{tenant_id}/decisions` endpoint exists in
+// Phase 2 (a backend-side join lives in a later PR). Until then we adapt
+// the existing /v1/actions?tenant_id=<id> path: ActionRecord rows already
+// carry tenant_id (Phase 1 PR 13), the Ruling is embedded in each row's
+// `reasoning` JSON when a Wave 2B gate ran, and webhook delivery state
+// rides on the same JSON under `webhook_delivery` once Wave 2B PR A3 lit
+// up the dispatcher.
+//
+// Extracting these views client-side keeps the wire contract small and
+// the join trivial — the page only renders 50 rows at a time.
+
+const WEBHOOK_BACKEND_MAX_ATTEMPTS = 7; // mirrors services/webhooks.py
+
+function _coerceRuling(reasoning: Record<string, unknown>): Ruling | null {
+  // Ruling rides under reasoning.gate_ruling. ClinicalScribePack and the
+  // generic evaluator both write this key; absence = no gate ran.
+  const raw = (reasoning as { gate_ruling?: unknown }).gate_ruling;
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const effect = r.effect;
+  if (effect !== "allow" && effect !== "require_hitl" && effect !== "block") {
+    // Unknown effect = treat as no Ruling rather than crash the row.
+    return null;
+  }
+  return {
+    effect: effect as RulingEffect,
+    reason: typeof r.reason === "string" ? r.reason : "",
+    reason_detail:
+      typeof r.reason_detail === "string" ? r.reason_detail : null,
+    citation: typeof r.citation === "string" ? r.citation : null,
+    review_id: typeof r.review_id === "string" ? r.review_id : null,
+    fix_url: typeof r.fix_url === "string" ? r.fix_url : null,
+    required_role:
+      typeof r.required_role === "string" ? r.required_role : null,
+    gate_name: typeof r.gate_name === "string" ? r.gate_name : null,
+  };
+}
+
+function _coerceWebhookDelivery(
+  reasoning: Record<string, unknown>,
+): WebhookDeliverySummary | null {
+  const raw = (reasoning as { webhook_delivery?: unknown }).webhook_delivery;
+  if (!raw || typeof raw !== "object") return null;
+  const d = raw as Record<string, unknown>;
+  const status = d.status;
+  if (
+    status !== "delivered" &&
+    status !== "pending" &&
+    status !== "retrying" &&
+    status !== "aborted"
+  ) {
+    return null;
+  }
+  return {
+    status: status as WebhookDeliveryStatus,
+    attempt_count: typeof d.attempt_count === "number" ? d.attempt_count : 0,
+    max_attempts:
+      typeof d.max_attempts === "number"
+        ? d.max_attempts
+        : WEBHOOK_BACKEND_MAX_ATTEMPTS,
+    next_retry_at:
+      typeof d.next_retry_at === "string" ? d.next_retry_at : null,
+    last_status_code:
+      typeof d.last_status_code === "number" ? d.last_status_code : null,
+    succeeded_at: typeof d.succeeded_at === "string" ? d.succeeded_at : null,
+    aborted_at: typeof d.aborted_at === "string" ? d.aborted_at : null,
+  };
+}
+
+function _coerceHitlExpiresAt(
+  reasoning: Record<string, unknown>,
+): string | null {
+  // Approval.expires_at is mirrored into the reasoning blob by the
+  // gate dispatcher when effect=require_hitl. Absent for ALLOW/BLOCK.
+  const v = (reasoning as { hitl_expires_at?: unknown }).hitl_expires_at;
+  return typeof v === "string" ? v : null;
+}
+
+function _actionRecordToDecision(rec: ActionRecord): CustomerDecision {
+  const reasoning = rec.reasoning ?? {};
+  return {
+    id: rec.id,
+    sequence_number: rec.sequence_number,
+    action_timestamp: rec.action_timestamp,
+    agent_name: rec.agent_name,
+    action_name: rec.action_name,
+    action_type: rec.action_type,
+    result: rec.result,
+    ruling: _coerceRuling(reasoning),
+    webhook_delivery: _coerceWebhookDelivery(reasoning),
+    hitl_expires_at: _coerceHitlExpiresAt(reasoning),
+  };
+}
+
+export async function getCustomerDecisions(
+  tenant_id: string,
+  params?: CustomerDecisionsQueryParams,
+): Promise<CustomerDecisionsResponse> {
+  // Adapter path: GET /v1/actions?tenant_id=<id>, then project each
+  // ActionRecord into the CustomerDecision shape. Limit/offset flow
+  // straight through — the underlying endpoint accepts both.
+  const query: ActionQueryParams = {
+    tenant_id,
+    limit: params?.limit ?? 50,
+    offset: params?.offset ?? 0,
+  };
+  const raw = await getActions(query);
+  return {
+    decisions: raw.records.map(_actionRecordToDecision),
+    total: raw.total,
+    limit: raw.limit,
+    offset: raw.offset,
+  };
 }
 
 export function updateAlertEmail(alert_email: string | null): Promise<Organization> {

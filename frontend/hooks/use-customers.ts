@@ -8,6 +8,7 @@ import {
 import {
   getCustomer,
   getCustomerAgents,
+  getCustomerDecisions,
   getCustomers,
   patchCustomer,
   uploadCustomerBaa,
@@ -18,6 +19,8 @@ import type {
   BAAUploadResponse,
   Customer,
   CustomerAgentsResponse,
+  CustomerDecisionsQueryParams,
+  CustomerDecisionsResponse,
   CustomerQueryParams,
 } from "@/lib/api-types";
 
@@ -68,6 +71,34 @@ export function usePatchCustomer(tenant_id: string) {
       // display_name / contact fields on next visit.
       qc.setQueryData(["customers", "detail", tenant_id], updated);
       qc.invalidateQueries({ queryKey: ["customers", "list"] });
+    },
+  });
+}
+
+// Wave 2C PR C1 — Customer detail Decisions tab.
+//
+// Auto-refreshes while any decision has a non-terminal webhook delivery
+// (pending or retrying) so the operator sees retries land without a
+// manual reload. Idle once all deliveries reach a terminal state.
+export function useCustomerDecisions(
+  tenant_id: string,
+  params?: CustomerDecisionsQueryParams,
+  enabled = true,
+) {
+  return useQuery<CustomerDecisionsResponse>({
+    queryKey: ["customers", "decisions", tenant_id, params],
+    queryFn: () => getCustomerDecisions(tenant_id, params),
+    enabled: !!tenant_id && enabled,
+    staleTime: 10_000,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return false;
+      const hasInFlight = data.decisions.some(
+        (d) =>
+          d.webhook_delivery?.status === "pending" ||
+          d.webhook_delivery?.status === "retrying",
+      );
+      return hasInFlight ? 15_000 : false;
     },
   });
 }
