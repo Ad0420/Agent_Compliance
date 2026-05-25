@@ -33,11 +33,15 @@ import type {
   Ruling,
   RulingEffect,
   WebhookDeliverySummary,
-  WebhookDeliveryStatus,
+  DecisionWebhookStatus,
   WizardAnswersResponse,
   WizardAnswersSubmission,
   BAAUploadInput,
   BAAUploadResponse,
+  WebhookDeliveriesQueryParams,
+  WebhookDeliveriesResponse,
+  WebhookDeliveryReplayResponse,
+  WebhookListResponse,
 } from "./api-types";
 
 export class ApiError extends Error {
@@ -270,7 +274,7 @@ function _coerceWebhookDelivery(
     return null;
   }
   return {
-    status: status as WebhookDeliveryStatus,
+    status: status as DecisionWebhookStatus,
     attempt_count: typeof d.attempt_count === "number" ? d.attempt_count : 0,
     max_attempts:
       typeof d.max_attempts === "number"
@@ -467,4 +471,33 @@ export function exportPdf(params?: ExportParams): Promise<void> {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const query = buildQuery(params as Record<string, string | number | undefined>);
   return downloadFile(`/v1/export/pdf${query}`, `vera_report_${timestamp}.pdf`);
+}
+
+// Webhook subscriptions + delivery health (Phase 2 Wave 2C PR C3).
+// Admin-only on the backend (require_permission("admin")). The dashboard
+// uses these to render the Settings → Integrations webhook health panel.
+export function getWebhooks(): Promise<WebhookListResponse> {
+  return request("/v1/webhooks");
+}
+
+export function getWebhookDeliveries(
+  webhook_id: string,
+  params?: WebhookDeliveriesQueryParams,
+): Promise<WebhookDeliveriesResponse> {
+  const query = buildQuery(
+    params as Record<string, string | number | undefined>,
+  );
+  return request(
+    `/v1/webhooks/${encodeURIComponent(webhook_id)}/deliveries${query}`,
+  );
+}
+
+export function replayWebhookDelivery(
+  webhook_id: string,
+  delivery_id: string,
+): Promise<WebhookDeliveryReplayResponse> {
+  return request(
+    `/v1/webhooks/${encodeURIComponent(webhook_id)}/deliveries/${encodeURIComponent(delivery_id)}/replay`,
+    { method: "POST" },
+  );
 }

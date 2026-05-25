@@ -26,7 +26,7 @@
  *   Severity language pairs ("Allowed" / "Review required" / "Blocked")
  *   match the badge tier per the §Voice & copy manual rule.
  *
- * - WebhookDeliveryStatus → StatusDot variant:
+ * - DecisionWebhookStatus → StatusDot variant:
  *     delivered → ok       (olive)
  *     pending   → muted    (ink-3)
  *     retrying  → warn     (amber) + title="Retry N/7, next at HH:MM UTC"
@@ -57,7 +57,7 @@ import {
 import type {
   CustomerDecision,
   RulingEffect,
-  WebhookDeliveryStatus,
+  DecisionWebhookStatus,
 } from "@/lib/api-types";
 
 const RULING_SEVERITY: Record<RulingEffect, Severity> = {
@@ -75,14 +75,14 @@ const RULING_LABEL: Record<RulingEffect, string> = {
   block: "Blocked",
 };
 
-const DELIVERY_VARIANT: Record<WebhookDeliveryStatus, StatusVariant> = {
+const DELIVERY_VARIANT: Record<DecisionWebhookStatus, StatusVariant> = {
   delivered: "ok",
   pending: "muted",
   retrying: "warn",
   aborted: "error",
 };
 
-const DELIVERY_LABEL: Record<WebhookDeliveryStatus, string> = {
+const DELIVERY_LABEL: Record<DecisionWebhookStatus, string> = {
   delivered: "Webhook delivered",
   pending: "Webhook pending",
   retrying: "Webhook retrying",

@@ -32,7 +32,7 @@ import type {
   Ruling,
   RulingEffect,
   WebhookDeliverySummary,
-  WebhookDeliveryStatus,
+  DecisionWebhookStatus,
 } from "@/lib/api-types";
 
 // ── Ruling fixtures (all three effects) ────────────────────────────────
@@ -216,7 +216,7 @@ void _aborted_node;
 
 // ── Exhaustiveness assertion ───────────────────────────────────────────
 //
-// If a new RulingEffect or WebhookDeliveryStatus is added to api-types
+// If a new RulingEffect or DecisionWebhookStatus is added to api-types
 // without updating ``decision-row.tsx``'s lookup tables, the switch
 // fallthroughs below stop being exhaustive and TS errors out.
 
@@ -230,7 +230,7 @@ function _exhaust_effects(e: RulingEffect): string {
       return "H";
   }
 }
-function _exhaust_statuses(s: WebhookDeliveryStatus): string {
+function _exhaust_statuses(s: DecisionWebhookStatus): string {
   switch (s) {
     case "delivered":
       return "ok";

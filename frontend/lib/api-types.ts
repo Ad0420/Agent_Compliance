@@ -457,6 +457,86 @@ export interface BAAUploadResponse {
   expires_at: string | null;
 }
 
+// Webhook subscriptions + delivery health (Phase 2 Wave 2B PR A3 backend,
+// Wave 2C PR C3 dashboard surface).
+//
+// A ``WebhookSubscription`` is the customer-facing endpoint (URL + event
+// subscriptions). A ``WebhookDelivery`` is one (subscription, event) pair;
+// it survives retries. ``WebhookDeliveryAttempt`` is one HTTP send. The
+// Settings → Integrations page hangs a health panel off each subscription
+// card by calling `GET /v1/webhooks/{id}/deliveries` and reducing the
+// returned rows into a few scalar stats.
+//
+// ``WebhookDeliveryStatus`` mirrors the backend `webhook_deliveries.status`
+// column verbatim — it is the canonical wire shape. The Decisions-tab
+// UI uses a derived view (``DecisionWebhookStatus`` below) that collapses
+// ``succeeded`` → ``delivered`` and synthesises ``retrying`` from
+// ``pending AND attempt_count > 1``.
+export type WebhookDeliveryStatus =
+  | "pending"
+  | "in_progress"
+  | "succeeded"
+  | "aborted";
+
+export interface WebhookSubscription {
+  id: string;
+  url: string;
+  event_types: string[];
+  is_active: boolean;
+  description: string | null;
+  created_at: string;
+  last_delivery_at: string | null;
+  last_delivery_status: string | null;
+  consecutive_failures: number;
+}
+
+export interface WebhookListResponse {
+  webhooks: WebhookSubscription[];
+}
+
+export interface WebhookDeliveryAttempt {
+  id: string;
+  attempt_number: number;
+  attempted_at: string;
+  status_code: number | null;
+  error_message: string | null;
+  duration_ms: number | null;
+  next_retry_at: string | null;
+}
+
+export interface WebhookDelivery {
+  id: string;
+  subscription_id: string;
+  event_type: string;
+  status: WebhookDeliveryStatus;
+  attempt_count: number;
+  next_retry_at: string | null;
+  created_at: string;
+  succeeded_at: string | null;
+  aborted_at: string | null;
+  last_status_code: number | null;
+  idempotency_key: string;
+  attempts: WebhookDeliveryAttempt[];
+}
+
+export interface WebhookDeliveriesResponse {
+  deliveries: WebhookDelivery[];
+  total: number;
+}
+
+export interface WebhookDeliveriesQueryParams {
+  status?: WebhookDeliveryStatus;
+  limit?: number;
+  offset?: number;
+}
+
+export interface WebhookDeliveryReplayResponse {
+  id: string;
+  status: WebhookDeliveryStatus;
+  attempt_count: number;
+  next_retry_at: string | null;
+}
+
 // ── Wave 2C PR C1 — Customer detail Decisions tab ────────────────────────
 //
 // Surfaces what each agent decision *meant*: the gate Ruling, the
@@ -493,19 +573,23 @@ export interface Ruling {
   gate_name: string | null;
 }
 
-// Mirrors backend WebhookDelivery.status. ``pending`` = queued, not yet
-// attempted. ``retrying`` = at least one failed attempt with a future
-// next_retry_at. ``delivered`` = succeeded_at set. ``aborted`` = retry
-// budget exhausted (status='dead' on the backend, surfaced as 'aborted'
-// in the UI for clarity).
-export type WebhookDeliveryStatus =
+// UI-layer derived status for the Decisions tab (distinct from
+// ``WebhookDeliveryStatus`` above, which is the canonical backend wire
+// shape). The mapping the adapter applies:
+//   backend ``succeeded``         → ``delivered``
+//   backend ``aborted``           → ``aborted``
+//   backend ``pending``  (attempt_count > 1, next_retry_at set) → ``retrying``
+//   backend ``pending`` / ``in_progress`` (otherwise) → ``pending``
+// This keeps the row label intuitive ("Delivered" / "Retrying") without
+// coupling the customer-facing UI to backend lifecycle vocabulary.
+export type DecisionWebhookStatus =
   | "delivered"
   | "pending"
   | "retrying"
   | "aborted";
 
 export interface WebhookDeliverySummary {
-  status: WebhookDeliveryStatus;
+  status: DecisionWebhookStatus;
   attempt_count: number;
   // Total attempts allowed before status flips to ``aborted``. Backend
   // currently uses 7 (see services/webhooks.py); surfacing it lets the
