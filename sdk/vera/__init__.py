@@ -76,6 +76,11 @@ from .errors import (
     WrongKeyTier,
     TenantMissingOrInvalid,
     ReviewerCredentialsInsufficient,
+    # Wave 2C PR B2 — distinct error class raised by
+    # ``@vera.gate(realtime=True)`` so customer code can route the
+    # "queue and continue" pattern separately from the default
+    # "block and wait" PendingReview pattern.
+    RequiresDeferredReview,
 )
 
 logger = logging.getLogger("vera.init")
@@ -476,6 +481,8 @@ __all__ = [
     "WrongKeyTier",
     "TenantMissingOrInvalid",
     "ReviewerCredentialsInsufficient",
+    # Wave 2C PR B2
+    "RequiresDeferredReview",
     # Back-compat aliases (deprecated)
     "ActionLedgerClient",
     "AsyncActionLedgerClient",
