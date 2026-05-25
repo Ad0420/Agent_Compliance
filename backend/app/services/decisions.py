@@ -48,9 +48,10 @@ follow-up tracking note.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Optional, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import ActionRecord, Approval, WebhookDelivery
@@ -156,7 +157,7 @@ def _build_webhook_delivery(
     )
 
 
-def _hitl_expires_at(approval: Approval) -> Optional[object]:
+def _hitl_expires_at(approval: Approval) -> Optional[datetime]:
     """Surface ``Approval.expires_at`` only while the review is still pending.
 
     After approval / rejection / expiry / cancellation the expiry clock
@@ -203,7 +204,6 @@ async def _latest_webhook_delivery_per_approval(
     like_clauses = [
         WebhookDelivery.idempotency_key.like(f"{aid}:%") for aid in approval_ids
     ]
-    from sqlalchemy import or_
 
     stmt = (
         select(WebhookDelivery)

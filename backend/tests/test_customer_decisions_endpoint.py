@@ -755,6 +755,66 @@ async def test_webhook_status_succeeded_maps_to_delivered(
 
 
 @pytest.mark.asyncio
+async def test_decisions_offset_past_end_returns_empty_page(
+    async_client, org_and_key, db_session
+):
+    """A page request whose offset is past total returns ``decisions=[]``
+    + the correct ``total`` so the UI can render "no rows in this
+    slice" without re-querying."""
+    org, raw_key, _ = org_and_key
+    await _make_customer(db_session, org_id=org.id, tenant_id="acme")
+    await _seed_action(
+        db_session, org_id=org.id, tenant_id="acme", sequence_number=1
+    )
+
+    resp = await async_client.get(
+        "/v1/customers/acme/decisions?limit=10&offset=50",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["decisions"] == []
+    assert body["limit"] == 10
+    assert body["offset"] == 50
+
+
+@pytest.mark.asyncio
+async def test_decisions_skip_approvals_with_null_request_record_id(
+    async_client, org_and_key, db_session
+):
+    """Approvals whose ``request_record_id`` is NULL (e.g., created via
+    POST /v1/approvals directly rather than the HITL materializer) must
+    not crash the join. They're simply not surfaced — the feed shows
+    only actions, and an approval without a request_record_id has no
+    action to attach to."""
+    org, raw_key, _ = org_and_key
+    await _make_customer(db_session, org_id=org.id, tenant_id="acme")
+    await _seed_action(
+        db_session, org_id=org.id, tenant_id="acme", sequence_number=1
+    )
+    # Approval with NO request_record_id — must not crash the
+    # request_record_id bucketing logic.
+    await _seed_approval(
+        db_session,
+        org_id=org.id,
+        request_record_id=None,
+        context={"gate_name": "orphan_gate"},
+    )
+
+    resp = await async_client.get(
+        "/v1/customers/acme/decisions",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    [decision] = body["decisions"]
+    # No approval attaches → ruling stays None.
+    assert decision["ruling"] is None
+
+
+@pytest.mark.asyncio
 async def test_webhook_status_aborted_maps_to_aborted(
     async_client, org_and_key, db_session
 ):
