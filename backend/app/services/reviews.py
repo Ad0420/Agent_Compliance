@@ -77,7 +77,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import HTTPException
@@ -97,9 +97,124 @@ from .webhooks import dispatch_event
 logger = logging.getLogger("vera.reviews")
 
 
+# Wave 2D closeout — clock-skew tolerance for client-supplied
+# ``decided_at``. Reviewer clocks drift; we accept a 5-minute future
+# window before rejecting as "in the future" (matches the tolerance
+# typical webhook signers like Stripe / GitHub allow on signature
+# timestamps). A 0-tolerance check would reject legitimate callbacks
+# from clients whose NTP sync is off by seconds.
+_DECIDED_AT_FUTURE_SKEW = timedelta(minutes=5)
+
+
 def _now() -> datetime:
     """Naive UTC, matching services.approvals._now (project convention)."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _to_naive_utc(value: datetime) -> datetime:
+    """Normalise a (possibly tz-aware) datetime to naive UTC.
+
+    The schema's ``Optional[datetime]`` accepts both naive and aware
+    inputs (Pydantic v2 will parse ISO-8601 with offset). The rest of
+    the project stores naive UTC — see ``models.Approval.requested_at``,
+    ``Approval.expires_at`` and ``services.approvals._now`` — so we
+    coerce here before any comparison. Naive inputs are assumed to
+    already be UTC (matches the producer-side convention in
+    ``schemas.approval``).
+    """
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def _validate_decided_at(
+    payload_decided_at: datetime,
+    approval: "Approval",  # noqa: F821 - forward ref kept readable
+    now: datetime,
+) -> datetime:
+    """Validate a client-supplied ``decided_at`` against approval timing.
+
+    Returns the normalised naive-UTC value when valid. Raises ``HTTPException``
+    on any of the three documented failure modes — the SDK's
+    ``wrap_httpx_error`` already speaks the flat-``code`` envelope.
+
+    Failure modes (v1-test-plan.md "Callback timestamp validation" row):
+
+    * ``decided_at`` more than ``_DECIDED_AT_FUTURE_SKEW`` ahead of
+      server clock → 400 ``decided_at_in_future`` (defends against
+      tampered client clocks claiming a decision was made after a row
+      was tampered with — common forensic anti-pattern).
+    * ``decided_at`` strictly older than ``approval.requested_at`` →
+      400 ``decided_at_before_requested_at`` (impossible: a reviewer
+      cannot decide before the approval was requested).
+    * ``decided_at`` past ``approval.expires_at`` → 400 ``review_expired``
+      (matches the lazy-expiry semantics in PR A4 so a client trying to
+      backdate a decision into the expiry window still gets rejected).
+    """
+    normalised = _to_naive_utc(payload_decided_at)
+
+    # Order matters. ``past-expiry`` is a strict subset of ``in-future``
+    # whenever the review window is shorter than the skew tolerance —
+    # but the spec asks for the more specific ``review_expired`` code
+    # in that case. Check it FIRST so a reviewer trying to backdate a
+    # decision into the closed window sees the right code instead of
+    # the generic future-clock rejection.
+    if (
+        approval.expires_at is not None
+        and normalised > approval.expires_at
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "review_expired",
+                "review_id": approval.id,
+                "decided_at": normalised.isoformat(),
+                "expires_at": approval.expires_at.isoformat(),
+                "detail": (
+                    "decided_at sits past the review's expires_at; the "
+                    "review window had already closed."
+                ),
+            },
+        )
+
+    if normalised > now + _DECIDED_AT_FUTURE_SKEW:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "decided_at_in_future",
+                "review_id": approval.id,
+                "decided_at": normalised.isoformat(),
+                "server_now": now.isoformat(),
+                "skew_tolerance_seconds": int(
+                    _DECIDED_AT_FUTURE_SKEW.total_seconds()
+                ),
+                "detail": (
+                    "decided_at is more than the allowed clock-skew "
+                    "tolerance ahead of the server clock."
+                ),
+            },
+        )
+
+    if (
+        approval.requested_at is not None
+        and normalised < approval.requested_at
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "decided_at_before_requested_at",
+                "review_id": approval.id,
+                "decided_at": normalised.isoformat(),
+                "requested_at": approval.requested_at.isoformat(),
+                "detail": (
+                    "decided_at predates the approval's requested_at; "
+                    "a decision cannot be made before the review was "
+                    "requested."
+                ),
+            },
+        )
+
+    return normalised
 
 
 def _insufficient_role_detail(
@@ -431,6 +546,20 @@ async def _complete_review_locked(
     if approval is None:
         raise HTTPException(status_code=404, detail="Review not found")
 
+    # ── Wave 2D closeout — client-supplied decided_at validation.
+    # Validate BEFORE branching on approval state so a malformed
+    # timestamp is rejected uniformly regardless of pending /
+    # terminal / expired state (the 400 reason is a contract about
+    # the *callback*, not about the review). Skip when the client
+    # omits the field — that preserves PR A4's "server fills with
+    # now()" default.
+    now_for_validation = _now()
+    validated_decided_at: Optional[datetime] = None
+    if data.decided_at is not None:
+        validated_decided_at = _validate_decided_at(
+            data.decided_at, approval, now_for_validation
+        )
+
     # ── Already-terminal guards. Mirror the lazy-expiry contract from
     # services.approvals.get_approval_with_lazy_expiry so a reviewer
     # racing the sweeper sees a consistent 410 even on the first
@@ -546,10 +675,16 @@ async def _complete_review_locked(
     # state — single-vote approvals always do, but a 2-of-N approval
     # with ``approve`` from one reviewer stays pending and we should
     # NOT pretend the row is decided yet.
+    #
+    # Wave 2D closeout — when the reviewer supplied a validated
+    # ``decided_at`` we trust that value over ``_now()`` so the row
+    # records the human's clock (per spec) rather than the server's
+    # processing time. The server's wall-clock is still captured on
+    # ``callback_received_at`` so auditors can reconstruct both sides.
     now = _now()
     resolved.callback_received_at = now
     if resolved.status != "pending":
-        resolved.decided_at = now
+        resolved.decided_at = validated_decided_at or now
     await session.commit()
     await session.refresh(resolved)
 
