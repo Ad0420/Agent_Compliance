@@ -84,6 +84,16 @@ class Settings(BaseSettings):
     # all incoming events (503) — never silently accept unsigned bodies.
     clerk_webhook_secret: str = ""
 
+    # Vera-internal staff Clerk org. Wave 3A.c — when a Clerk session's
+    # ``org_id`` claim matches this value (OR the session carries an
+    # ``org_role == 'vera_staff'`` claim), the request is resolved to
+    # ``IamTier.STAFF_READ_ONLY``: PHI fields are redacted from every
+    # response and a row is written to ``staff_audit_log``. Empty in
+    # development; set in Vera-managed environments only. The role-claim
+    # path lets deployments that don't dedicate a single Clerk org work
+    # too.
+    clerk_staff_org_id: str = ""
+
     # Clerk Backend API secret key (``sk_live_…`` / ``sk_test_…``). Required
     # only for the defense-in-depth membership freshness re-check in
     # ``require_clerk_role``: when a local ``OrgMembership`` row is older than
