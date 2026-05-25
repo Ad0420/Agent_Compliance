@@ -85,7 +85,14 @@ async def sweep_expired_approvals(
     resolved = 0
     for approval in rows:
         try:
+            # A6.5: _resolve_and_record no longer commits on its own.
+            # Commit per-row so a failure on one expired approval does
+            # not roll back the rest of the batch (preserves the
+            # pre-refactor "best-effort batch" semantics + idempotency:
+            # next sweeper tick re-tries any row left pending).
             await _resolve_and_record(session, approval, "expired")
+            await session.commit()
+            await session.refresh(approval)
             resolved += 1
         except Exception:
             logger.exception(
@@ -93,6 +100,15 @@ async def sweep_expired_approvals(
                 approval.id,
                 approval.org_id,
             )
+            # Drop the failed-row writes so the next iteration starts
+            # from a clean session state.
+            try:
+                await session.rollback()
+            except Exception:
+                logger.exception(
+                    "rollback after failed expiry also failed; "
+                    "session may be in an unrecoverable state"
+                )
     if resolved:
         logger.info("approval expiry sweep resolved %s rows", resolved)
     return resolved

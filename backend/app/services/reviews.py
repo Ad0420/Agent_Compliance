@@ -464,7 +464,12 @@ async def _complete_review_locked(
     # pending state until the sweeper runs and silently drop the
     # ``review.expired`` event that customers depend on for cleanup.
     if approval.expires_at is not None and _now() > approval.expires_at:
+        # A6.5: _resolve_and_record no longer commits on its own; commit
+        # here so the expired status + chain record are durable before
+        # the 410 surfaces to the caller.
         await _resolve_and_record(session, approval, "expired")
+        await session.commit()
+        await session.refresh(approval)
         raise HTTPException(status_code=410, detail="Review has expired")
 
     context = approval.context or {}
