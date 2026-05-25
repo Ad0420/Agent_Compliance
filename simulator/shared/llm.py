@@ -1,14 +1,18 @@
 """LLM provider abstraction for the simulator.
 
-Mode A (sales demo) → real OpenAI / Anthropic, recorded via Vera's audited
-wrappers so every LLM call lands in the audit chain.
+Mode A (sales demo) → real OpenAI calls via the Responses API, recorded
+via Vera's audited wrappers so every LLM call lands in the audit chain.
 
 Mode B (CI) → CassetteProvider replays prompt-keyed JSON fixtures so tests
 are deterministic and free.
 
-The simulator deliberately mixes providers across customers — OpenAI for
-ScribeMD's note drafting, Anthropic for orders extraction — so a single
-demo run exercises both `AuditedOpenAI` and `AuditedAnthropic`.
+Historical note: the simulator originally mixed OpenAI (note draft) +
+Anthropic (orders extraction / red-flag detection). The Anthropic path
+has been replaced with the OpenAI Responses API using `gpt-5.4-mini` so
+the demo only needs ONE API key (`OPENAI_API_KEY`). Both pipeline stages
+still flow through Vera's audit chain via the SDK's audited HTTP client;
+the audit-trail story is unchanged — only the underlying model provider
+collapsed to a single vendor.
 """
 
 from __future__ import annotations
@@ -48,11 +52,30 @@ class LLMProvider:
 # ── OpenAI (real) ───────────────────────────────────────────────────────────
 
 
-class OpenAIProvider(LLMProvider):
-    """Real OpenAI calls. Wrapped by Vera's `AuditedOpenAI` upstream when used
-    inside an agent so each call records into the audit chain automatically."""
+# Default model for every "real" call site. The simulator originally split
+# OpenAI (gpt-4o-mini) + Anthropic (claude-sonnet-4-6); both call paths now
+# use this single model via the Responses API.
+DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
 
-    def __init__(self, model: str = "gpt-4o-mini", audited_client=None):
+
+class OpenAIProvider(LLMProvider):
+    """Real OpenAI calls via the **Responses API** (`client.responses.create`).
+
+    The Responses API differs from the legacy Chat Completions API in three
+    relevant ways:
+
+      * the system prompt rides as ``instructions=...`` (not a message)
+      * the user turn rides as ``input=...`` (string for single-turn use)
+      * the output cap is ``max_output_tokens`` (not ``max_tokens``)
+      * usage fields are ``usage.input_tokens`` / ``usage.output_tokens``
+        (not the Chat Completions ``prompt_tokens`` / ``completion_tokens``)
+
+    Vera's SDK wraps the underlying httpx client so every call records into
+    the audit chain automatically; this class only owns the LLM-vendor
+    contract, not the audit plumbing.
+    """
+
+    def __init__(self, model: str = DEFAULT_OPENAI_MODEL, audited_client=None):
         if audited_client is None:
             import openai
 
@@ -63,59 +86,47 @@ class OpenAIProvider(LLMProvider):
 
     def chat(self, system: str, user: str, max_tokens: int = 512) -> LLMResponse:
         t0 = time.time()
-        resp = self._client.chat.completions.create(
+        resp = self._client.responses.create(
             model=self.model,
-            max_tokens=max_tokens,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            instructions=system,
+            input=user,
+            max_output_tokens=max_tokens,
         )
         elapsed_ms = int((time.time() - t0) * 1000)
+        # ``output_text`` is the SDK's convenience accessor that concatenates
+        # all text content blocks in the response. Equivalent to iterating
+        # ``resp.output`` for ``ResponseOutputText`` items.
+        text = (resp.output_text or "").strip()
         usage = resp.usage
         return LLMResponse(
-            text=resp.choices[0].message.content.strip(),
-            input_tokens=usage.prompt_tokens,
-            output_tokens=usage.completion_tokens,
+            text=text,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
             model=self.model,
             duration_ms=elapsed_ms,
         )
 
 
-# ── Anthropic (real) ────────────────────────────────────────────────────────
+# ── Anthropic → OpenAI compat shim ──────────────────────────────────────────
+#
+# The simulator originally used Anthropic for orders extraction (ScribeMD)
+# and red-flag detection (TriageGuard). To collapse the demo to a single
+# vendor (and a single API key), this shim routes every "anthropic" request
+# at ``OpenAIProvider``. The class name stays so call sites importing
+# ``AnthropicProvider`` keep working; ``get_provider("anthropic")`` likewise
+# stays functional. The audit-trail story is unchanged — Vera's audited
+# HTTP client still wraps every call regardless of which vendor SDK is used.
 
 
-class AnthropicProvider(LLMProvider):
-    """Real Anthropic calls. Wrap with `AuditedAnthropic` upstream for auditing."""
+class AnthropicProvider(OpenAIProvider):
+    """Back-compat alias — routes Anthropic-named requests through OpenAI.
 
-    def __init__(self, model: str = "claude-sonnet-4-6", audited_client=None):
-        if audited_client is None:
-            import anthropic
+    Kept so any external code importing ``AnthropicProvider`` doesn't break.
+    Internally identical to ``OpenAIProvider``; see that class for the wire
+    contract.
+    """
 
-            self._client = anthropic.Anthropic()
-        else:
-            self._client = audited_client
-        self.model = model
-
-    def chat(self, system: str, user: str, max_tokens: int = 512) -> LLMResponse:
-        t0 = time.time()
-        resp = self._client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            system=system,
-            messages=[{"role": "user", "content": user}],
-        )
-        elapsed_ms = int((time.time() - t0) * 1000)
-        text_blocks = [
-            b.text for b in resp.content if getattr(b, "type", None) == "text"
-        ]
-        return LLMResponse(
-            text="".join(text_blocks).strip(),
-            input_tokens=resp.usage.input_tokens,
-            output_tokens=resp.usage.output_tokens,
-            model=self.model,
-            duration_ms=elapsed_ms,
-        )
+    pass
 
 
 # ── Cassette (replay for Mode B / CI) ───────────────────────────────────────
@@ -213,10 +224,12 @@ def get_provider(
     name = name.lower()
     if name == "openai":
         real: LLMProvider = OpenAIProvider()
-        model = "gpt-4o-mini"
+        model = DEFAULT_OPENAI_MODEL
     elif name == "anthropic":
+        # Both branches now use OpenAI under the hood; the "anthropic" key
+        # is kept so call sites that historically asked for it still work.
         real = AnthropicProvider()
-        model = "claude-sonnet-4-6"
+        model = DEFAULT_OPENAI_MODEL
     else:
         raise ValueError(f"Unknown LLM provider: {name!r}")
 
