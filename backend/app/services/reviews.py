@@ -44,7 +44,7 @@ from ..models import Approval
 from ..schemas.action import ActionRecordCreate
 from ..schemas.approval import ApprovalDecision
 from ..schemas.review import ReviewCompletionInput
-from .approvals import decide_approval
+from .approvals import _resolve_and_record, decide_approval
 from .chain import build_and_insert_record
 from .reviewer_roles import is_role_sufficient
 
@@ -109,11 +109,14 @@ async def complete_review(
             status_code=409, detail=f"Review is already {approval.status}"
         )
 
-    # Lazy expiration: same naive-UTC comparison the approval service
-    # uses. Don't transition the row here — the next
-    # ``decide_approval`` call (or the sweeper) will, and 410 is what
-    # the reviewer needs to see *now*.
+    # Lazy expiration: same contract as
+    # ``services.approvals.decide_approval`` — transition the row to
+    # ``expired`` and fire the ``review.expired`` webhook BEFORE
+    # raising 410. Skipping the transition would leave the row in
+    # pending state until the sweeper runs and silently drop the
+    # ``review.expired`` event that customers depend on for cleanup.
     if approval.expires_at is not None and _now() > approval.expires_at:
+        await _resolve_and_record(session, approval, "expired")
         raise HTTPException(status_code=410, detail="Review has expired")
 
     context = approval.context or {}

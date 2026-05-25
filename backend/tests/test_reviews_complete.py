@@ -413,8 +413,13 @@ async def test_complete_review_already_resolved_returns_409(
 async def test_complete_review_expired_returns_410(
     async_client, org_and_key, db_session
 ):
-    """Lazy-expiry: the sweeper hasn't run yet but the deadline passed,
-    so the reviewer should see a clean 410."""
+    """Lazy-expiry: the sweeper hasn't run yet but the deadline passed.
+
+    Mirrors the contract from ``services.approvals.decide_approval`` —
+    the row transitions to ``expired`` (resolution record + webhook)
+    BEFORE we raise 410. Skipping the transition would silently drop
+    the ``review.expired`` event customers depend on for cleanup.
+    """
     org, raw_key, _ = org_and_key
     approval = await _seed_hitl_approval(
         db_session, org.id, expires_in_seconds=60
@@ -434,6 +439,44 @@ async def test_complete_review_expired_returns_410(
     )
     assert response.status_code == 410
     assert "expired" in response.json()["detail"].lower()
+
+    # Row was transitioned, not just rejected — resolution record exists.
+    refreshed = await db_session.get(Approval, approval.id)
+    await db_session.refresh(refreshed)
+    assert refreshed.status == "expired"
+    assert refreshed.resolution_record_id is not None
+
+
+@pytest.mark.asyncio
+async def test_complete_review_already_expired_returns_410_without_re_resolve(
+    async_client, org_and_key, db_session
+):
+    """410 when the row already terminal-state expired: don't try to
+    re-resolve, just raise."""
+    org, raw_key, _ = org_and_key
+    approval = await _seed_hitl_approval(
+        db_session, org.id, expires_in_seconds=60
+    )
+    # Pre-resolve as expired (sweeper path).
+    from app.services.approvals import _resolve_and_record
+
+    await _resolve_and_record(db_session, approval, "expired")
+    original_resolution_id = approval.resolution_record_id
+
+    response = await async_client.post(
+        f"/v1/reviews/{approval.id}/complete",
+        json={
+            "decision": "approve",
+            "reviewer_role": "attending_physician",
+            "reviewer_id": "dr_smith",
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert response.status_code == 410
+    # Resolution record wasn't overwritten with a second one.
+    refreshed = await db_session.get(Approval, approval.id)
+    await db_session.refresh(refreshed)
+    assert refreshed.resolution_record_id == original_resolution_id
 
 
 # ── 422: validation ────────────────────────────────────────────────────────
