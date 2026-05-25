@@ -32,10 +32,23 @@ The backend ``/v1/gates/evaluate`` endpoint lands in Phase 2. For Phase
   the existing httpx wrapper produces (``VeraAuthError``,
   ``VeraNetworkError``, ``PolicyBlock``, ``PendingReview``, ...).
 
-The ``realtime=True`` kwarg is plumbed through but raises
-:class:`NotImplementedError` until the backend's ``REQUIRE_DEFERRED_REVIEW``
-ruling lands in Phase 2 — keeps the API surface stable for callers
-configuring decorators now.
+Realtime mode (Wave 2C PR B2)
+-----------------------------
+
+``@vera.gate(realtime=True)`` changes how ``REQUIRE_HITL`` rulings are
+routed at the call site. The default ``PendingReview`` exception
+forces a "block and wait" pattern that is unacceptable in some
+domains — e.g. a clinical scribe responding to a doctor's voice in
+real time cannot block waiting for an attending physician to sign
+off. ``realtime=True`` routes the same ruling to a distinct
+:class:`vera.errors.RequiresDeferredReview` exception so customer
+code can implement a "queue and continue" pattern: queue the action
+into a customer-side deferred-execution store, return a placeholder
+to the user immediately, resume once the ``review.completed`` webhook
+fires.
+
+``ALLOW`` and ``BLOCK`` rulings are unchanged when ``realtime=True``
+— BLOCK is always immediate; ALLOW is always invoke+capture.
 
 Testing
 -------
@@ -64,6 +77,7 @@ from ._context import resolve_agent_type, resolve_tenant
 from .errors import (
     PendingReview,
     PolicyBlock,
+    RequiresDeferredReview,
     TenantMissingOrInvalid,
     VeraClientError,
     VeraError,
@@ -700,6 +714,30 @@ def _build_pending_review(ruling: dict) -> PendingReview:
     )
 
 
+def _build_requires_deferred_review(ruling: dict) -> RequiresDeferredReview:
+    """Construct a :class:`RequiresDeferredReview` from a parsed ruling.
+
+    Used by the ``realtime=True`` routing branch (REQUIRE_HITL on a
+    realtime call site) and by the forward-compat
+    ``REQUIRE_DEFERRED_REVIEW`` wire-effect path. Surfaces the same
+    Ruling metadata as :class:`PendingReview` so customer code can
+    route uniformly on either exception. ``reason_detail`` runs
+    through :func:`_safe_reason_detail` first so any PHI-shaped
+    string is redacted at the boundary. Wave 2C PR B2.
+    """
+    return RequiresDeferredReview(
+        review_id=ruling.get("review_id") or "",
+        fix_url=ruling.get("fix_url"),
+        required_role=ruling.get("required_role"),
+        gate_name=ruling.get("gate_name") or "",
+        reason=ruling.get("reason") or "",
+        reason_detail=_safe_reason_detail(ruling.get("reason_detail")),
+        citation=ruling.get("citation") or None,
+        expected_resolution=ruling.get("expected_resolution"),
+        webhook_url=ruling.get("webhook_url"),
+    )
+
+
 def _build_policy_block(ruling: dict) -> PolicyBlock:
     """Construct a :class:`PolicyBlock` from a parsed BLOCK ruling.
 
@@ -749,13 +787,24 @@ def _sync_call(
     no client), routes the ruling, captures the action, raises the
     appropriate domain error. Same flow used by the async wrapper
     after it does its own ``await`` of the evaluate POST.
-    """
-    if realtime:
-        raise NotImplementedError(
-            "vera.gate(realtime=True) requires the Phase 2 backend "
-            "REQUIRE_DEFERRED_REVIEW ruling; not available yet."
-        )
 
+    ``realtime=True`` (Wave 2C PR B2) changes the routing of
+    ``REQUIRE_HITL`` rulings only:
+
+    * default — invoke the wrapped function for a draft, capture as
+      ``pending_review``, raise :class:`PendingReview` ("block and
+      wait" pattern; caller surfaces the draft and polls).
+    * ``realtime=True`` — do NOT invoke the wrapped function, capture
+      as ``pending_review`` with ``realtime=True`` stamped onto the
+      metadata, raise :class:`RequiresDeferredReview` ("queue and
+      continue" pattern; caller queues the action into a customer-side
+      deferred-execution store and resumes on the ``review.completed``
+      webhook).
+
+    ``ALLOW`` and ``BLOCK`` rulings are unchanged regardless of the
+    ``realtime`` flag — BLOCK is always immediate, and ALLOW is always
+    invoke+capture.
+    """
     from .decorator import (
         _default_redactor,
         _warn_empty_client_once,
@@ -865,9 +914,37 @@ def _sync_call(
         raise _build_policy_block(ruling)
 
     if effect == _RULING_REQUIRE_HITL:
-        # Invoke for draft, capture, then raise. The capture MUST happen
-        # before the raise so a caller whose handler swallows
-        # PendingReview still has the draft in the audit trail.
+        if realtime:
+            # B2 — "queue and continue" semantics. Do NOT invoke the
+            # wrapped function; the customer's deferred-execution store
+            # will execute it once the review.completed webhook fires.
+            # Capturing the attempt is still mandatory (the audit trail
+            # MUST record that a HITL gate fired on this call site, with
+            # the realtime=True provenance so it's distinguishable from
+            # the default sync-PendingReview path in the ledger).
+            _capture_action(
+                effective_client,
+                action_name=resolved_action_name,
+                action_type=action_type,
+                result="pending_review",
+                input_data=input_data,
+                outcome={
+                    "ruling": ruling.get("_raw") or {},
+                    "realtime": True,
+                },
+                duration_ms=int((time.perf_counter() - start) * 1000),
+                error_message=None,
+                tenant_id=tenant_id,
+                agent_type=resolved_agent_type,
+                review_id=ruling.get("review_id"),
+                ruling_effect=_RULING_REQUIRE_HITL,
+            )
+            raise _build_requires_deferred_review(ruling)
+
+        # Default (realtime=False) — invoke for draft, capture, then
+        # raise. The capture MUST happen before the raise so a caller
+        # whose handler swallows PendingReview still has the draft in
+        # the audit trail.
         try:
             result_value = func(*args, **kwargs)
         except Exception as exc:
@@ -900,6 +977,33 @@ def _sync_call(
             ruling_effect=_RULING_REQUIRE_HITL,
         )
         raise _build_pending_review(ruling)
+
+    if effect == _RULING_REQUIRE_DEFERRED_REVIEW:
+        # Wire-level ``REQUIRE_DEFERRED_REVIEW`` effect — always a
+        # "queue and continue" decision regardless of the call site's
+        # ``realtime`` flag (the backend is asserting that this gate's
+        # policy is deferred-review by design, not the caller's choice).
+        # Do NOT invoke the wrapped function; raise
+        # RequiresDeferredReview so the customer's deferred-execution
+        # store can handle it.
+        _capture_action(
+            effective_client,
+            action_name=resolved_action_name,
+            action_type=action_type,
+            result="pending_review",
+            input_data=input_data,
+            outcome={
+                "ruling": ruling.get("_raw") or {},
+                "deferred_review_wire_effect": True,
+            },
+            duration_ms=int((time.perf_counter() - start) * 1000),
+            error_message=None,
+            tenant_id=tenant_id,
+            agent_type=resolved_agent_type,
+            review_id=ruling.get("review_id"),
+            ruling_effect=_RULING_REQUIRE_DEFERRED_REVIEW,
+        )
+        raise _build_requires_deferred_review(ruling)
 
     if effect not in _KNOWN_RULINGS:
         _warn_unknown_ruling_once(effect)
@@ -1039,14 +1143,10 @@ async def _async_call(
     Wraps an async function. The shape mirrors the sync version
     closely so backward-compat / capture invariants are obvious side
     by side; the only difference is ``await``\\ s on the wrapped
-    function and the evaluate call.
+    function and the evaluate call. ``realtime=True`` routing is
+    identical to the sync path — see :func:`_sync_call` for the
+    "queue and continue" vs "block and wait" rationale.
     """
-    if realtime:
-        raise NotImplementedError(
-            "vera.gate(realtime=True) requires the Phase 2 backend "
-            "REQUIRE_DEFERRED_REVIEW ruling; not available yet."
-        )
-
     from .decorator import (
         _default_redactor,
         _warn_empty_client_once,
@@ -1134,6 +1234,28 @@ async def _async_call(
         raise _build_policy_block(ruling)
 
     if effect == _RULING_REQUIRE_HITL:
+        if realtime:
+            # See _sync_call B2 branch for the rationale — async
+            # mirror of the "queue and continue" semantics.
+            _capture_action(
+                effective_client,
+                action_name=resolved_action_name,
+                action_type=action_type,
+                result="pending_review",
+                input_data=input_data,
+                outcome={
+                    "ruling": ruling.get("_raw") or {},
+                    "realtime": True,
+                },
+                duration_ms=int((time.perf_counter() - start) * 1000),
+                error_message=None,
+                tenant_id=tenant_id,
+                agent_type=resolved_agent_type,
+                review_id=ruling.get("review_id"),
+                ruling_effect=_RULING_REQUIRE_HITL,
+            )
+            raise _build_requires_deferred_review(ruling)
+
         try:
             result_value = await func(*args, **kwargs)
         except Exception as exc:
@@ -1166,6 +1288,28 @@ async def _async_call(
             ruling_effect=_RULING_REQUIRE_HITL,
         )
         raise _build_pending_review(ruling)
+
+    if effect == _RULING_REQUIRE_DEFERRED_REVIEW:
+        # See _sync_call — wire-level REQUIRE_DEFERRED_REVIEW is always
+        # a queue-and-continue decision regardless of the realtime flag.
+        _capture_action(
+            effective_client,
+            action_name=resolved_action_name,
+            action_type=action_type,
+            result="pending_review",
+            input_data=input_data,
+            outcome={
+                "ruling": ruling.get("_raw") or {},
+                "deferred_review_wire_effect": True,
+            },
+            duration_ms=int((time.perf_counter() - start) * 1000),
+            error_message=None,
+            tenant_id=tenant_id,
+            agent_type=resolved_agent_type,
+            review_id=ruling.get("review_id"),
+            ruling_effect=_RULING_REQUIRE_DEFERRED_REVIEW,
+        )
+        raise _build_requires_deferred_review(ruling)
 
     if effect not in _KNOWN_RULINGS:
         _warn_unknown_ruling_once(effect)
@@ -1278,11 +1422,13 @@ def gate(
             ``vera.init(agent_type=...)``. ``None`` consults the
             global.
         redactor: Per-decorator redaction policy override.
-        realtime: When True, HITL rulings become deferred reviews
-            (action proceeds, review queued post-action). Phase 2
-            backend dependency — currently raises ``NotImplementedError``
-            at call time so the kwarg can be wired now without
-            surprises later.
+        realtime: When True, ``REQUIRE_HITL`` rulings raise
+            :class:`vera.errors.RequiresDeferredReview` instead of
+            :class:`vera.errors.PendingReview` and the wrapped function
+            is NOT invoked — caller is expected to queue the action
+            into a customer-side deferred-execution store and resume
+            on the ``review.completed`` webhook. ``ALLOW`` and
+            ``BLOCK`` rulings are unchanged. Wave 2C PR B2.
         client: Explicit client override. Defaults to the
             module-level default registered by ``vera.init``.
         agent_id: Optional stable identifier for this specific agent

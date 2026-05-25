@@ -591,11 +591,14 @@ def test_async_require_hitl_captures_then_raises(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# realtime=True (Phase 2 dependency)
+# realtime=True kwarg accepted on ALLOW (Wave 2C PR B2 — full coverage in
+# tests/test_gate_realtime.py; smoke test here so the legacy decorator
+# suite catches any regression that removes the kwarg).
 # ---------------------------------------------------------------------------
 
 
-def test_realtime_raises_not_implemented(monkeypatch):
+def test_realtime_kwarg_accepted_on_allow_path(monkeypatch):
+    """B2 — realtime=True is no longer NotImplementedError; ALLOW is unchanged."""
     client = _make_client()
     _install_transport(client, _evaluate_handler({"effect": "ALLOW"}))
     set_default_client(client)
@@ -604,8 +607,11 @@ def test_realtime_raises_not_implemented(monkeypatch):
     def wrapped():
         return "ok"
 
-    with pytest.raises(NotImplementedError):
-        wrapped()
+    # ALLOW path is identical regardless of realtime — invoke + capture +
+    # return. The deferred-review routing only fires on REQUIRE_HITL.
+    assert wrapped() == "ok"
+    items = list(client._queue.queue)
+    assert items[0]["result"] == "success"
     client.close()
 
 

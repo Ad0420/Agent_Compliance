@@ -502,6 +502,133 @@ class PendingReview(VeraError):
         return d
 
 
+class RequiresDeferredReview(VeraError):
+    """Raised by ``@vera.gate(realtime=True)`` when a gate returns ``REQUIRE_HITL``.
+
+    Semantically distinct from :class:`PendingReview`. The two errors
+    correspond to two different patterns the customer's agent code can
+    follow when a HITL gate fires:
+
+    * :class:`PendingReview` — *"block and wait."* The wrapped function
+      already ran as a draft; the caller's exception handler typically
+      surfaces the draft to the user and polls / waits for the review
+      verdict.
+    * :class:`RequiresDeferredReview` — *"queue and continue."* The
+      wrapped function was NOT invoked. The caller is expected to:
+
+      1. Queue the intended action into a customer-side deferred-execution
+         store, keyed off ``review_id``.
+      2. Return a placeholder / draft to the user immediately so the
+         user-facing thread is not blocked.
+      3. Resume the action out-of-band once the ``review.completed``
+         webhook fires (the action is then executed by the customer's
+         deferred-store worker, not by this call site).
+
+    Use case: a clinical scribe agent responding to a doctor's voice in
+    real time cannot block waiting for an attending physician to sign
+    off — it must surface a draft, queue the EHR commit, and finalise
+    once the attending approves. ``realtime=True`` is the SDK signal
+    that this is the expected pattern at the call site.
+
+    Fields mirror :class:`PendingReview` so customer code can route
+    uniformly on either exception via shared metadata.
+
+    Wave 2C PR B2.
+    """
+
+    code = "requires_deferred_review"
+    default_user_facing_reason = (
+        "This action requires human review before it can be completed. "
+        "It has been queued and will be applied once a reviewer approves."
+    )
+    default_developer_reason = (
+        "Gate evaluation returned REQUIRE_HITL on a realtime=True call site "
+        "— wrapped function NOT invoked; queue the action and resume on "
+        "review.completed webhook."
+    )
+    default_fix_url = "https://app.usevera.xyz/reviews"
+
+    def __init__(
+        self,
+        message: str = "",
+        *,
+        review_id: str = "",
+        fix_url: str | None = None,
+        required_role: str | None = None,
+        gate_name: str = "",
+        reason: str = "",
+        reason_detail: str | None = None,
+        citation: str | None = None,
+        expected_resolution: Any = None,
+        webhook_url: str | None = None,
+        user_facing_reason: str | None = None,
+        developer_reason: str | None = None,
+        request_id: str | None = None,
+        status_code: int | None = None,
+        docs_url: str | None = None,
+    ):
+        self.review_id = review_id
+        self.required_role = required_role
+        self.gate_name = gate_name
+        self.reason = reason
+        self.reason_detail = reason_detail
+        self.citation = citation
+        self.expected_resolution = expected_resolution
+        self.webhook_url = webhook_url
+        if developer_reason is None:
+            # Prefer the gate's ``reason_detail`` when present (engineer
+            # grade; PHI-scrubbed upstream by ``gate._safe_reason_detail``).
+            # Fall through to a structured default that names the
+            # ``review_id`` so logs make it obvious which queued action
+            # this exception corresponds to.
+            if reason_detail:
+                developer_reason = reason_detail
+            else:
+                parts = [
+                    "Gate evaluation returned REQUIRE_HITL on a realtime=True "
+                    "call site"
+                ]
+                if review_id:
+                    parts.append(f"review_id={review_id}")
+                if required_role:
+                    parts.append(f"required_role={required_role}")
+                developer_reason = "; ".join(parts) + "."
+        rendered_message = (
+            message
+            if message
+            else (
+                f"Deferred review {review_id}" if review_id else "Deferred review"
+            )
+        )
+        super().__init__(
+            rendered_message,
+            request_id=request_id,
+            status_code=status_code,
+            user_facing_reason=user_facing_reason,
+            developer_reason=developer_reason,
+            fix_url=fix_url,
+            docs_url=docs_url,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        d = super().to_dict()
+        d.update(
+            review_id=self.review_id,
+            required_role=self.required_role,
+            gate_name=self.gate_name,
+            reason=self.reason,
+            reason_detail=self.reason_detail,
+            citation=self.citation,
+            expected_resolution=(
+                self.expected_resolution.isoformat()
+                if hasattr(self.expected_resolution, "isoformat")
+                else self.expected_resolution
+            ),
+            webhook_url=self.webhook_url,
+        )
+        return d
+
+
 class WrongKeyTier(VeraError):
     """Caller used an ``al_test_*`` key against a production-only endpoint, or vice versa.
 
@@ -902,6 +1029,8 @@ __all__ = [
     "WrongKeyTier",
     "TenantMissingOrInvalid",
     "ReviewerCredentialsInsufficient",
+    # Wave 2C PR B2 — deferred-review error class for @vera.gate(realtime=True)
+    "RequiresDeferredReview",
     # Mapping
     "CODE_TO_ERROR_CLASS",
 ]

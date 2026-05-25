@@ -90,11 +90,54 @@ degrades to audit-only capture (legacy `@vera.audit` semantics). When
 Phase 2 lands the endpoint, the decorator auto-graduates to full gate
 semantics without an SDK release.
 
-### `realtime=True`
+### Using `realtime=True` (deferred-review routing — 1.1.0)
 
-The `realtime=True` kwarg is plumbed through for callers configuring
-decorators now, but raises `NotImplementedError` at call time until
-the Phase 2 backend `REQUIRE_DEFERRED_REVIEW` ruling lands.
+`@vera.gate(realtime=True)` changes how `REQUIRE_HITL` rulings are
+routed at the call site. Use this when blocking the user thread on
+human review is unacceptable — e.g. a clinical scribe responding to
+a doctor's voice in real time cannot block waiting for an attending
+physician's signoff.
+
+```python
+@vera.gate(
+    realtime=True,
+    agent_type="scribe",
+    action_type="commit_chart_note",
+    tenant="acme",
+)
+def commit_chart_note(patient_id: str, note: str) -> Result:
+    ehr.commit(patient_id, note)
+
+try:
+    commit_chart_note(patient_id, note)
+except vera.RequiresDeferredReview as exc:
+    # The wrapped function was NOT invoked. Queue the action for
+    # the customer-side deferred-execution store and return a
+    # placeholder to the user immediately.
+    deferred_store.enqueue(
+        review_id=exc.review_id,
+        action=lambda: commit_chart_note(patient_id, note),
+    )
+    return draft_placeholder(note)
+except vera.PolicyBlock as exc:
+    # Hard block — surface to user, do not retry.
+    raise
+```
+
+Differences from the default (`realtime=False`):
+
+|                          | `realtime=False` (default)                          | `realtime=True`                                                              |
+|--------------------------|-----------------------------------------------------|------------------------------------------------------------------------------|
+| HITL exception           | `PendingReview` ("block and wait")                  | `RequiresDeferredReview` ("queue and continue")                              |
+| Wrapped function invoked on HITL? | Yes — captured as a draft                  | **No** — customer-side store executes it once the review.completed webhook fires |
+| ALLOW / BLOCK            | Unchanged                                           | Unchanged                                                                    |
+
+`RequiresDeferredReview` is **not** a subclass of `PendingReview`;
+existing `except PendingReview` handlers will NOT swallow the new
+exception. Resume the action out-of-band once the
+[`review.completed`](#) webhook fires (Wave 2B PR A3 shipped webhook
+delivery; pair with `vera review-status <review_id> --watch` for a
+manual operator workflow).
 
 ### Recommended migration sequence
 
