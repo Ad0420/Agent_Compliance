@@ -41,6 +41,7 @@ This is the test plan that closes the gaps surfaced by the eng review. Each NEW 
 | SSRF on webhook URL | security test: registered URL `http://169.254.169.254/...` → outbound blocked at delivery time, customer warned | gap |
 | Slack channel signature verification (if kept) | unit: Slack callback with wrong signing key → 401 | gap |
 | Approval pipeline migration (per F2) | migration test: existing polling Approvals continue working; new Review records flow through callback model; no double-counting | gap |
+| Review queue page — alt channel for HITL completion | integration: load `/compliance/reviews` → table lists all pending approvals across the org with filter-by-customer/gate/role; click row → Pattern B detail panel; submit Approve/Modify/Reject with required ≥10-char comment → POST `/v1/reviews/{review_id}/complete` succeeds (200); 403 surfaces "role insufficient" inline; 409 surfaces "already decided" + auto-close; 410 surfaces "expired" + auto-close; full HITL loop completes end-to-end via dashboard with no customer webhook involved. | covered |
 
 ## Phase 3 — Off-Vera checkpoint + offline verify
 
