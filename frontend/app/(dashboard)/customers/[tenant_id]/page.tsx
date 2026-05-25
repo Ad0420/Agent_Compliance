@@ -26,18 +26,23 @@ import {
   useCustomerAgents,
   usePatchCustomer,
 } from "@/hooks/use-customers";
-import { useActions } from "@/hooks/use-actions";
 import { StatusDot, type StatusVariant } from "@/components/ui/status-indicator";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Loading } from "@/components/ui/loading";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 import {
   CoverageMatrixCompact,
   CoverageMatrixFull,
 } from "@/components/dashboard/coverage-matrix";
 import { BaaUploadWidget } from "@/components/dashboard/baa-upload";
+import { DecisionsTab } from "@/components/customers/decisions-tab";
 import { formatRelativeTime } from "@/lib/utils";
 import type {
-  ActionRecord,
   BAAStatus,
   Customer,
   CustomerAgentCoverage,
@@ -415,24 +420,61 @@ function PopulatedSections({ customer }: { customer: Customer }) {
   );
   const agents = agentData?.items ?? [];
 
+  // Wave 2C PR C1: split the populated view into two tabs. Overview keeps
+  // the existing surface (Coverage Matrix + Status + BAA mgmt). Decisions
+  // hosts the Wave 2C decisions stream (Ruling + webhook status). Default
+  // tab is Overview so the page still opens to the AI Coverage Matrix —
+  // the same first-impression the pre-tab layout shipped with.
+  const [activeTab, setActiveTab] = React.useState<"overview" | "decisions">(
+    "overview",
+  );
+
   return (
-    <div className="space-y-12" data-testid="customer-populated">
-      {/* AI Coverage Matrix — ABOVE Status per Codex D1. */}
-      <section className="space-y-3">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--ink-2)]">
-          AI coverage matrix
-        </h2>
-        <CoverageMatrixFull agents={agents} isLoading={agentsLoading} />
-      </section>
+    <div className="space-y-6" data-testid="customer-populated">
+      <Tabs
+        value={activeTab}
+        onValueChange={(v) => setActiveTab(v as "overview" | "decisions")}
+      >
+        <TabsList variant="line" aria-label="Customer detail sections">
+          <TabsTrigger value="overview" data-testid="customer-tab-overview">
+            Overview
+          </TabsTrigger>
+          <TabsTrigger value="decisions" data-testid="customer-tab-decisions">
+            Decisions
+            {customer.decision_count_30d > 0 ? (
+              <span
+                aria-hidden="true"
+                className="ml-2 inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[color:var(--paper-3)] px-1.5 text-[11px] tabular-nums text-[color:var(--ink-2)]"
+              >
+                {customer.decision_count_30d.toLocaleString()}
+              </span>
+            ) : null}
+          </TabsTrigger>
+        </TabsList>
 
-      {/* Status section — count summary + rollup. */}
-      <StatusSection customer={customer} agents={agents} />
+        <TabsContent value="overview" className="space-y-12 pt-4">
+          {/* AI Coverage Matrix — ABOVE Status per Codex D1. */}
+          <section className="space-y-3">
+            <h2 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--ink-2)]">
+              AI coverage matrix
+            </h2>
+            <CoverageMatrixFull agents={agents} isLoading={agentsLoading} />
+          </section>
 
-      {/* Decisions stream. */}
-      <DecisionsStream tenant_id={customer.tenant_id} />
+          {/* Status section — count summary + rollup. */}
+          <StatusSection customer={customer} agents={agents} />
 
-      {/* BAA management — show current state + allow re-upload. */}
-      <BaaManagement customer={customer} />
+          {/* BAA management — show current state + allow re-upload. */}
+          <BaaManagement customer={customer} />
+        </TabsContent>
+
+        <TabsContent value="decisions" className="pt-4">
+          <DecisionsTab
+            tenant_id={customer.tenant_id}
+            enabled={activeTab === "decisions"}
+          />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
@@ -469,68 +511,6 @@ function StatusSection({
         </li>
       </ul>
     </section>
-  );
-}
-
-function DecisionsStream({ tenant_id }: { tenant_id: string }) {
-  const { data, isLoading } = useActions({ tenant_id, limit: 50 });
-
-  return (
-    <section className="space-y-3" data-testid="decisions-stream">
-      <div className="flex items-baseline justify-between">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--ink-2)]">
-          Recent decisions
-        </h2>
-        {data && data.total > 0 ? (
-          <span className="text-[12px] text-[color:var(--ink-3)] [font-feature-settings:'tnum']">
-            {data.total.toLocaleString()} total
-          </span>
-        ) : null}
-      </div>
-      {isLoading ? (
-        <div
-          aria-busy="true"
-          className="flex justify-center py-6 text-[color:var(--ink-3)]"
-        >
-          <Loading.Spinner size={20} label="Loading decisions" />
-        </div>
-      ) : !data || data.records.length === 0 ? (
-        <p className="text-[13px] text-[color:var(--ink-2)]">
-          No decisions captured for this customer yet.
-        </p>
-      ) : (
-        <DecisionsList records={data.records} />
-      )}
-    </section>
-  );
-}
-
-function DecisionsList({ records }: { records: ActionRecord[] }) {
-  return (
-    <div className="overflow-hidden rounded-md border border-[color:var(--ink-4)]">
-      <table className="w-full text-left text-[13px] [font-feature-settings:'tnum']">
-        <thead className="bg-[color:var(--paper-2)] text-[11px] font-semibold uppercase tracking-[0.08em] text-[color:var(--ink-2)]">
-          <tr>
-            <th scope="col" className="px-4 py-3">When</th>
-            <th scope="col" className="px-4 py-3">Agent</th>
-            <th scope="col" className="px-4 py-3">Action</th>
-            <th scope="col" className="px-4 py-3">Result</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-[color:var(--ink-4)]">
-          {records.map((rec) => (
-            <tr key={rec.id}>
-              <td className="px-4 py-3 text-[color:var(--ink-2)]">
-                {formatRelativeTime(rec.action_timestamp)}
-              </td>
-              <td className="px-4 py-3 text-[color:var(--ink)]">{rec.agent_name}</td>
-              <td className="px-4 py-3 text-[color:var(--ink)]">{rec.action_name}</td>
-              <td className="px-4 py-3 text-[color:var(--ink-2)]">{rec.result}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
   );
 }
 
