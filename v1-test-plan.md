@@ -53,10 +53,10 @@ This is the test plan that closes the gaps surfaced by the eng review. Each NEW 
 | `vera verify` against Vera's public key | integration: known-good hash → OK; tampered hash → FAIL | covered |
 | `vera verify --offline` against customer S3 + OTS | integration: Vera API blocked at firewall → verify passes using only S3 + OTS proof | covered |
 | Offline verify with tampered ActionRecord | integration: modify one record in DB copy → offline verify identifies broken link | covered |
-| OpenTimestamps calendar server unreachable | integration: block OTS calendar URLs → checkpoint write succeeds; `.ots` proof retries async; dashboard shows "anchor pending" | gap |
+| OpenTimestamps calendar server unreachable | integration: block OTS calendar URLs → checkpoint write succeeds; `.ots` proof retries async; dashboard shows "anchor pending" | deferred per [ADR 0001](docs/adr/0001-no-opentimestamps-in-v1.md) |
 | KMS key rotation mid-chain | integration: rotate key between checkpoint N and N+1 → `vera verify --offline` consults key history and verifies both | covered (Wave 3A.a — `kms_keys` history table + history-aware verify in `backend/app/services/kms.py` + `backend/app/services/checkpoint.py` + `backend/tests/test_kms_key_history.py`) |
 | Customer S3 trust revoked mid-flight | integration: revoke trust → next checkpoint fails gracefully, dashboard surfaces error, Vera-internal checkpoint still succeeds | gap |
-| Customer S3 ARN mistyped | integration: invalid bucket → onboarding flow rejects at setup, not at first checkpoint | gap |
+| Customer S3 ARN mistyped | integration: invalid bucket → onboarding flow rejects at setup, not at first checkpoint | covered (Wave 3A.d — `validate_s3_arn_syntax` + `POST /v1/organizations/me/off-vera-mirror/validate` in `backend/app/services/external_store.py` + `backend/app/routes/organizations.py` + `backend/tests/test_s3_arn_validation.py`) |
 | **Checkpoint cadence configurable** | unit: org with `cadence=hourly` produces 24 checkpoints/day; `cadence=daily` produces 1. Default for `al_test_*`=daily, `al_live_*`=hourly. | NEW — Merkle addition |
 | **Merkle proof generation — happy path** | integration: pick a record from a closed checkpoint window; `GET /v1/records/{id}/merkle-proof` returns valid `MerkleProof` + signed checkpoint metadata; `verify_proof()` against the returned root succeeds. | NEW |
 | **Merkle proof — record in pending checkpoint window** | integration: record written in current window (no checkpoint yet) → endpoint returns 409 `checkpoint_pending` with `Retry-After` header matching cadence. | NEW |
@@ -73,7 +73,7 @@ This is the test plan that closes the gaps surfaced by the eng review. Each NEW 
 | **Selective disclosure — verifier can't infer other customers** | integration: verifier with only the Cleveland Clinic export + the public checkpoint root cannot reconstruct or count any other customer's records (only sibling hashes are present, not other leaves). | NEW |
 | **KMS rotation between checkpoints — proof still verifies** | integration: rotate KMS key between checkpoint N and N+1; proof for a record in N verifies via `vera verify --merkle-proof` using the key history table (per Eng F10). | NEW — cross-references KMS rotation test |
 | **Hash chain still independently valid** | regression: existing chain verification continues to pass for the same records; Merkle exposure is additive, not replacing the chain. | NEW |
-| **OTS anchor on Merkle root** | integration: with OTS opt-in enabled, checkpoint's Merkle root is the OTS-anchored value (not the chain head); `vera verify --merkle-proof --include-ots` validates the OTS proof against the same root. | NEW |
+| **OTS anchor on Merkle root** | integration: with OTS opt-in enabled, checkpoint's Merkle root is the OTS-anchored value (not the chain head); `vera verify --merkle-proof --include-ots` validates the OTS proof against the same root. | deferred per [ADR 0001](docs/adr/0001-no-opentimestamps-in-v1.md) |
 
 ## Phase 4 — Audit PDF + Compliance Posture + AI Insights
 
