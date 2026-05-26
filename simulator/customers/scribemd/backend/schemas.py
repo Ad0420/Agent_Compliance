@@ -73,3 +73,47 @@ class DecideApprovalRequest(BaseModel):
     decision: Literal["approve", "reject"]
     approver: str = Field(..., min_length=1)
     note: Optional[str] = None
+
+
+# ── Review Inbox (W2.1 — in-band HITL) ─────────────────────────────────────
+
+
+class ReviewInboxItemResponse(BaseModel):
+    """A single pending HITL review the clinician needs to act on."""
+
+    approval_id: str
+    encounter_id: Optional[str]
+    status: Literal["pending", "approved", "rejected", "expired"]
+    risk_tier: Optional[str]
+    required_role: Optional[str]
+    action_name: Optional[str]
+    agent_name: Optional[str]
+    data_subject_id: Optional[str]
+    context_excerpt: Optional[dict[str, Any]]
+    decided_by: Optional[str]
+    decided_at: Optional[str]
+    decision_note: Optional[str]
+    requested_at: Optional[str]
+    expires_at: Optional[str]
+    created_at: Optional[str]
+    updated_at: Optional[str]
+
+
+class ReviewInboxListResponse(BaseModel):
+    items: list[ReviewInboxItemResponse]
+    total: int
+
+
+class DecideReviewRequest(BaseModel):
+    """Clinician's decision on a Review Inbox item.
+
+    Forwarded to Vera via the SDK's `complete_review` helper. The
+    `reviewer_role` is whatever role the signed-in user is acting under —
+    in the demo we hard-default to ``attending_physician`` because the
+    only seat is Dr. Adams. A real EHR would pick this off the user's
+    chart-access scope.
+    """
+
+    decision: Literal["approve", "reject"]
+    reviewer_role: str = Field(default="attending_physician", min_length=1)
+    note: Optional[str] = Field(default=None, max_length=2000)

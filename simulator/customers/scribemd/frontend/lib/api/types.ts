@@ -24,6 +24,12 @@ export type EncounterEventType =
   | "approval_decided"
   | "chart_committed"
   | "chart_blocked"
+  // W2.1 — set on the encounter row when the upstream `review.expired`
+  // webhook arrives before the clinician acts. Encounter terminates as
+  // `blocked` (no chart write) but with this distinguishing last_event
+  // so the EHR can surface "returned to scribe" instead of a generic
+  // rejection.
+  | "review_expired"
   | "error";
 
 export interface PatientSummary {
@@ -122,6 +128,47 @@ export function isTerminalEvent(event: EncounterEventType): boolean {
   return (
     event === "chart_committed" ||
     event === "chart_blocked" ||
+    event === "review_expired" ||
     event === "error"
   );
+}
+
+// ── Review Inbox (W2.1 in-band HITL) ─────────────────────────────────────
+
+export type ReviewInboxStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "expired";
+
+export type ReviewListFilter = ReviewInboxStatus | "all";
+
+export interface ReviewInboxItem {
+  approval_id: string;
+  encounter_id: string | null;
+  status: ReviewInboxStatus;
+  risk_tier: RiskTier | null;
+  required_role: string | null;
+  action_name: string | null;
+  agent_name: string | null;
+  data_subject_id: string | null;
+  context_excerpt: Record<string, unknown> | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  requested_at: string | null;
+  expires_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ReviewListResponse {
+  items: ReviewInboxItem[];
+  total: number;
+}
+
+export interface DecideReviewInput {
+  decision: "approve" | "reject";
+  reviewer_role?: string;
+  note?: string;
 }
