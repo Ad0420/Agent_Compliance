@@ -1485,6 +1485,26 @@ class VeraClient:
             metadata = dict(out.get("metadata") or {})
             metadata.setdefault("record_idempotency_key", idem)
             out["metadata"] = metadata
+        # W1.3 (audit-batch-422) — wire-boundary safety net for ``result``.
+        # ``vera.gate`` already normalises gate-vocabulary results before
+        # enqueue (see ``gate._capture_action``). This second normalisation
+        # catches:
+        #   * rows rehydrated from an on-disk spool that was written by a
+        #     pre-fix SDK version (without this, every spool record from
+        #     before the upgrade would 422 in perpetuity)
+        #   * direct callers of ``enqueue_action`` who pass gate-vocabulary
+        #     values without going through ``vera.gate``
+        # The mapping table lives in ``vera.gate`` so both layers share one
+        # source of truth.
+        from .gate import _normalize_result_for_wire  # local: avoid cycle
+        raw_result = out.get("result")
+        if isinstance(raw_result, str):
+            wire_result, original_result = _normalize_result_for_wire(raw_result)
+            if original_result is not None:
+                out["result"] = wire_result
+                metadata = dict(out.get("metadata") or {})
+                metadata.setdefault("gate_result", original_result)
+                out["metadata"] = metadata
         return out
 
     @staticmethod
