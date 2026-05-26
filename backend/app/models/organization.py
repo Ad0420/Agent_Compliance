@@ -12,7 +12,11 @@ class Organization(Base):
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    name: Mapped[str] = mapped_column(String, nullable=False)
+    # ``unique=True`` enforced by migration ``s9n1o2p3q4r5`` (W1.6 —
+    # closes ``two-scribemd-orgs``). Org names must be unique so the
+    # local bootstrap (``simulator/scripts/bootstrap_orgs.py``) can use
+    # ``SELECT ... WHERE name = ?`` as its idempotency anchor.
+    name: Mapped[str] = mapped_column(String, nullable=False, unique=True)
     alert_email: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Bridge column to Clerk organizations. Nullable so legacy / API-only orgs
     # created before the Clerk bridge continue to work; unique-when-set so
