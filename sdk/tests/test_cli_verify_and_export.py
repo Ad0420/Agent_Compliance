@@ -20,8 +20,21 @@ import io
 import json
 import os
 import tarfile
+import uuid
 from pathlib import Path
 from typing import Any
+
+
+def _new_uuid() -> str:
+    """Generate a uuid4 string for use as an ActionRecord id in tests.
+
+    The evidence-export CLI rejects record ids that don't match the
+    canonical UUID regex (Wave 3C.2 path-traversal hardening — see
+    ``vera._cli_verify._require_safe_record_id``). Tests that exercise
+    the export flow MUST use uuid-shaped record ids; ad-hoc string IDs
+    like ``"rec_001"`` are no longer accepted.
+    """
+    return str(uuid.uuid4())
 
 import httpx
 import pytest
@@ -468,18 +481,20 @@ def test_evidence_export_directory_layout(
     """Happy path: export two days, get manifest + 2 checkpoints + N records."""
     date_a = "2026-05-20"
     date_b = "2026-05-21"
-    p1 = _build_proof_payload(record_id="rec_001", sequence=2)
+    rid_1 = _new_uuid()
+    rid_2 = _new_uuid()
+    p1 = _build_proof_payload(record_id=rid_1, sequence=2)
     p1["tenant_id"] = "cleveland_clinic"
-    p2 = _build_proof_payload(record_id="rec_002", sequence=5)
+    p2 = _build_proof_payload(record_id=rid_2, sequence=5)
     p2["tenant_id"] = "cleveland_clinic"
     org_records = {
-        date_a: [("rec_001", 2)],
-        date_b: [("rec_002", 5)],
+        date_a: [(rid_1, 2)],
+        date_b: [(rid_2, 5)],
     }
     handler = _make_export_handler(
         [date_a, date_b],
         org_records,
-        {"rec_001": p1, "rec_002": p2},
+        {rid_1: p1, rid_2: p2},
     )
     _install_transport(monkeypatch, handler)
     for k, v in _make_runner_env().items():
@@ -508,8 +523,8 @@ def test_evidence_export_directory_layout(
     assert manifest["record_count"] == 2
     assert (out / f"checkpoints/{date_a}.json").exists()
     assert (out / f"checkpoints/{date_b}.json").exists()
-    assert (out / "records/rec_001.json").exists()
-    assert (out / "records/rec_002.json").exists()
+    assert (out / f"records/{rid_1}.json").exists()
+    assert (out / f"records/{rid_2}.json").exists()
 
 
 def test_evidence_export_selective_disclosure_excludes_other_customer(
@@ -524,17 +539,19 @@ def test_evidence_export_selective_disclosure_excludes_other_customer(
     """
     date_iso = "2026-05-20"
     # Two records: one for Cleveland Clinic, one for Memorial.
-    cc_proof = _build_proof_payload(record_id="rec_cc", sequence=2)
+    rid_cc = _new_uuid()
+    rid_mem = _new_uuid()
+    cc_proof = _build_proof_payload(record_id=rid_cc, sequence=2)
     cc_proof["tenant_id"] = "cleveland_clinic"
-    memorial_proof = _build_proof_payload(record_id="rec_mem", sequence=3)
+    memorial_proof = _build_proof_payload(record_id=rid_mem, sequence=3)
     memorial_proof["tenant_id"] = "memorial"
     org_records = {
-        date_iso: [("rec_cc", 2), ("rec_mem", 3)],
+        date_iso: [(rid_cc, 2), (rid_mem, 3)],
     }
     handler = _make_export_handler(
         [date_iso],
         org_records,
-        {"rec_cc": cc_proof, "rec_mem": memorial_proof},
+        {rid_cc: cc_proof, rid_mem: memorial_proof},
     )
     _install_transport(monkeypatch, handler)
     for k, v in _make_runner_env().items():
@@ -559,16 +576,17 @@ def test_evidence_export_selective_disclosure_excludes_other_customer(
     assert result.exit_code == 0, result.output
 
     # Cleveland Clinic's record is present.
-    assert (out / "records/rec_cc.json").exists()
+    assert (out / f"records/{rid_cc}.json").exists()
     # Memorial's record is NOT present.
-    assert not (out / "records/rec_mem.json").exists()
+    assert not (out / f"records/{rid_mem}.json").exists()
 
-    # The bundle should not contain "rec_mem" anywhere — including in
-    # any sibling hashes (those are SHA-256 digests, not record IDs,
-    # so this is automatic — we assert anyway to lock the contract).
+    # The bundle should not contain the foreign record id anywhere —
+    # including in any sibling hashes (those are SHA-256 digests, not
+    # record IDs, so this is automatic — we assert anyway to lock the
+    # contract).
     for path in (out / "records").iterdir():
         text = path.read_text()
-        assert "rec_mem" not in text
+        assert rid_mem not in text
 
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["customer_id"] == "cleveland_clinic"
@@ -584,11 +602,12 @@ def test_evidence_export_tarball_is_deterministic(
     requires byte-stability.
     """
     date_iso = "2026-05-20"
-    p1 = _build_proof_payload(record_id="rec_001", sequence=2)
+    rid_1 = _new_uuid()
+    p1 = _build_proof_payload(record_id=rid_1, sequence=2)
     p1["tenant_id"] = "cleveland_clinic"
-    org_records = {date_iso: [("rec_001", 2)]}
+    org_records = {date_iso: [(rid_1, 2)]}
     handler = _make_export_handler(
-        [date_iso], org_records, {"rec_001": p1}
+        [date_iso], org_records, {rid_1: p1}
     )
     _install_transport(monkeypatch, handler)
     for k, v in _make_runner_env().items():
@@ -629,7 +648,7 @@ def test_evidence_export_tarball_is_deterministic(
         with tarfile.open(fileobj=io.BytesIO(gz.read()), mode="r") as tf:
             names = tf.getnames()
     assert "manifest.json" in names
-    assert "records/rec_001.json" in names
+    assert f"records/{rid_1}.json" in names
     assert "checkpoints/2026-05-20.json" in names
 
 
@@ -638,11 +657,12 @@ def test_evidence_export_dir_skips_missing_checkpoint_days(
 ) -> None:
     """Days without a sealed checkpoint are skipped silently — no error."""
     date_present = "2026-05-20"
-    p1 = _build_proof_payload(record_id="rec_x", sequence=2)
+    rid_x = _new_uuid()
+    p1 = _build_proof_payload(record_id=rid_x, sequence=2)
     p1["tenant_id"] = "cleveland_clinic"
-    org_records = {date_present: [("rec_x", 2)]}
+    org_records = {date_present: [(rid_x, 2)]}
     handler = _make_export_handler(
-        [date_present], org_records, {"rec_x": p1}
+        [date_present], org_records, {rid_x: p1}
     )
     _install_transport(monkeypatch, handler)
     for k, v in _make_runner_env().items():
@@ -688,7 +708,7 @@ def test_evidence_export_multipage_pagination(
     org_records_full: list[tuple[str, int]] = []
     proofs: dict[str, dict] = {}
     for i in range(1, 501):
-        rid = f"rec_{i:04d}"
+        rid = _new_uuid()
         proof = _build_proof_payload(record_id=rid, sequence=i)
         proof["tenant_id"] = "cleveland_clinic"
         org_records_full.append((rid, i))
@@ -740,11 +760,12 @@ def test_export_bundle_proofs_verify_independently(
     from vera.verify.proof_payload import verify_proof_payload
 
     date_iso = "2026-05-20"
-    p1 = _build_proof_payload(record_id="rec_001", sequence=2)
+    rid_1 = _new_uuid()
+    p1 = _build_proof_payload(record_id=rid_1, sequence=2)
     p1["tenant_id"] = "cleveland_clinic"
-    org_records = {date_iso: [("rec_001", 2)]}
+    org_records = {date_iso: [(rid_1, 2)]}
     handler = _make_export_handler(
-        [date_iso], org_records, {"rec_001": p1}
+        [date_iso], org_records, {rid_1: p1}
     )
     _install_transport(monkeypatch, handler)
     for k, v in _make_runner_env().items():
@@ -765,7 +786,7 @@ def test_export_bundle_proofs_verify_independently(
     )
     assert result.exit_code == 0, result.output
 
-    proof = json.loads((out / "records/rec_001.json").read_text())
+    proof = json.loads((out / f"records/{rid_1}.json").read_text())
     res = verify_proof_payload(
         proof, hmac_secret=b"shared-hmac-secret"
     )
@@ -773,7 +794,238 @@ def test_export_bundle_proofs_verify_independently(
     assert res.reason == "ok"
 
 
+# ── Path-traversal guard on server-supplied filename components ─────────
+#
+# Threat model: a compromised Vera API (or a misbehaving local proxy)
+# returns a record id like ``"../etc/passwd"`` in the ``/v1/actions``
+# response. Without the regex guard added in the Phase 3 follow-up, the
+# SDK would happily write ``bundle_root/records/../etc/passwd.json`` —
+# escaping ``bundle_root``. The threat model is weak (authenticated
+# customer-controlled flow + the .json suffix narrows reach), but the
+# guard is free.
+
+
+def test_evidence_export_rejects_traversal_record_id(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Server returning ``id="../etc/passwd"`` → CLI aborts with a clear
+    error naming the offending value. Bundle write does NOT proceed.
+    """
+    date_iso = "2026-05-20"
+    bad_id = "../etc/passwd"
+    # Build a proof payload keyed by the bad id so the handler's
+    # ``/v1/actions`` response surfaces it. The proof body's content
+    # doesn't matter — the CLI aborts before fetching it.
+    proof = _build_proof_payload(record_id=bad_id, sequence=2)
+    proof["tenant_id"] = "cleveland_clinic"
+    org_records = {date_iso: [(bad_id, 2)]}
+    handler = _make_export_handler(
+        [date_iso], org_records, {bad_id: proof}
+    )
+    _install_transport(monkeypatch, handler)
+    for k, v in _make_runner_env().items():
+        monkeypatch.setenv(k, v)
+
+    out = tmp_path / "bundle"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "evidence-export",
+            "--since",
+            date_iso,
+            "--until",
+            date_iso,
+            "--out",
+            str(out),
+        ],
+    )
+    # Non-zero exit + clear error message naming the offending value.
+    assert result.exit_code != 0, (
+        f"Expected non-zero exit, got {result.exit_code}: {result.output!r}"
+    )
+    assert "UUID" in result.output
+    # The offending value is surfaced via ``repr`` (escape-quoted) for
+    # log-injection safety. Match on the substring; the surrounding
+    # quotes are an implementation detail.
+    assert "../etc/passwd" in result.output
+    # And the bundle was NOT written outside bundle_root.
+    assert not (tmp_path / "etc").exists()
+    assert not (tmp_path.parent / "etc").exists()
+
+
+def test_evidence_export_rejects_traversal_record_id_truncates_long_value(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A pathological 1KB record id is truncated to 80 chars in the
+    error message — avoids log injection via super-long blobs."""
+    date_iso = "2026-05-20"
+    bad_id = "A" * 1000  # not a uuid; way over the 80-char truncation cap
+    proof = _build_proof_payload(record_id=bad_id, sequence=2)
+    proof["tenant_id"] = "cleveland_clinic"
+    org_records = {date_iso: [(bad_id, 2)]}
+    handler = _make_export_handler(
+        [date_iso], org_records, {bad_id: proof}
+    )
+    _install_transport(monkeypatch, handler)
+    for k, v in _make_runner_env().items():
+        monkeypatch.setenv(k, v)
+
+    out = tmp_path / "bundle"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "evidence-export",
+            "--since",
+            date_iso,
+            "--until",
+            date_iso,
+            "--out",
+            str(out),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "UUID" in result.output
+    # Truncated — the full 1000-char blob must NOT appear.
+    assert "A" * 1000 not in result.output
+    # The ``...`` truncation marker indicates the value was clipped.
+    assert "..." in result.output
+
+
+def test_evidence_export_path_traversal_aborts_before_writing_other_records(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """If ANY record id fails the regex, the export aborts — the bundle
+    is suspect, and partial success would silently drop rows in a way
+    auditors couldn't see. Assert the export does NOT produce a bundle
+    with the (presumably valid) leading records."""
+    date_iso = "2026-05-20"
+    good_id = _new_uuid()
+    bad_id = "../../boom"
+    good_proof = _build_proof_payload(record_id=good_id, sequence=1)
+    good_proof["tenant_id"] = "cleveland_clinic"
+    bad_proof = _build_proof_payload(record_id=bad_id, sequence=2)
+    bad_proof["tenant_id"] = "cleveland_clinic"
+    # The /v1/actions handler returns records sorted by sequence DESC,
+    # so the bad id (seq=2) is processed first — the abort fires before
+    # the good record's file is written.
+    org_records = {date_iso: [(good_id, 1), (bad_id, 2)]}
+    handler = _make_export_handler(
+        [date_iso], org_records, {good_id: good_proof, bad_id: bad_proof}
+    )
+    _install_transport(monkeypatch, handler)
+    for k, v in _make_runner_env().items():
+        monkeypatch.setenv(k, v)
+
+    out = tmp_path / "bundle"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "evidence-export",
+            "--since",
+            date_iso,
+            "--until",
+            date_iso,
+            "--out",
+            str(out),
+        ],
+    )
+    assert result.exit_code != 0, result.output
+    # Bundle may have been partly created (checkpoint files land before
+    # the per-record loop), but the records dir must NOT contain a
+    # file for the good id either — the export aborted before producing
+    # a "looks-complete" bundle that's actually missing rows.
+    if (out / "records").exists():
+        assert not (out / f"records/{good_id}.json").exists()
+
+
+def test_require_safe_record_id_unit() -> None:
+    """Unit-level test of the regex guard.
+
+    The CLI surface tests above drive the full export flow; this test
+    exercises the guard directly so a future refactor that moves the
+    write site doesn't regress the guard's behaviour silently.
+    """
+    import click as _click
+    from vera._cli_verify import _require_safe_record_id
+
+    # Canonical UUID — accepted.
+    _require_safe_record_id("ffffffff-ffff-4fff-bfff-ffffffffffff")
+    # Real uuid4 — accepted.
+    import uuid as _uuid
+    _require_safe_record_id(str(_uuid.uuid4()))
+    # Mixed case is fine (regex allows ``[0-9a-fA-F-]``).
+    _require_safe_record_id("ABCDEFAB-CDEF-4abc-9DEF-ABCDEFABCDEF")
+
+    # Traversal — rejected.
+    for bad in [
+        "../etc/passwd",
+        "..",
+        "/absolute",
+        "name with spaces",
+        "name/with/slashes",
+        "name\nwith\nnewlines",
+        "name\x00with\x00null",
+        "",
+        "x" * 50,  # too long
+        "short",  # too short
+        None,
+        42,
+        ["nope"],
+    ]:
+        with pytest.raises(_click.ClickException) as excinfo:
+            _require_safe_record_id(bad)  # type: ignore[arg-type]
+        assert "UUID" in excinfo.value.message
+
+
+def test_require_safe_date_unit() -> None:
+    """Same as above for the date guard."""
+    import click as _click
+    from vera._cli_verify import _require_safe_date
+
+    _require_safe_date("2026-05-20")
+    _require_safe_date("1999-12-31")
+
+    for bad in [
+        "../../bad",
+        "2026/05/20",
+        "26-05-20",
+        "2026-5-20",
+        "",
+        None,
+        "2026-05-20T00:00:00",
+        "x" * 1000,
+    ]:
+        with pytest.raises(_click.ClickException) as excinfo:
+            _require_safe_date(bad)  # type: ignore[arg-type]
+        assert "YYYY-MM-DD" in excinfo.value.message
+
+
+def test_truncate_for_error_caps_at_80_chars() -> None:
+    """A pathological long value gets capped + escape-quoted via repr."""
+    from vera._cli_verify import _truncate_for_error
+
+    short = _truncate_for_error("hi")
+    assert "hi" in short
+    # repr adds quotes — assert the wrapping.
+    assert short.startswith("'") and short.endswith("'")
+
+    long = _truncate_for_error("A" * 1000)
+    # ``"A" * 80 + "..."`` then repr → wrapped in quotes. The 1000-char
+    # blob must NOT be in the output verbatim.
+    assert "A" * 1000 not in long
+    assert "..." in long
+
+
 # ── Skipped-record surfacing (stderr + manifest) ────────────────────────
+# Tail-window race: a record exists in the action list (200 from
+# /v1/actions) but its individual proof fetch returns 409
+# (checkpoint_pending) or 404 (record_not_found between enumeration and
+# proof fetch). Phase 3 follow-up: surface these to stderr + manifest
+# so the omission is auditable. Record IDs are real uuid4 strings to
+# satisfy the path-traversal guard (Wave 3C.2 follow-up).
 
 
 def _make_export_handler_with_proof_overrides(
@@ -785,12 +1037,6 @@ def _make_export_handler_with_proof_overrides(
     """Variant of ``_make_export_handler`` that lets a test force a
     specific HTTP status (409 / 404) for a given record_id's
     merkle-proof endpoint.
-
-    Mirrors the production race the brief addresses: a record exists
-    in the action list (200 from ``/v1/actions``) but its individual
-    proof fetch fails with 409 ``checkpoint_pending`` (tail window) or
-    404 ``record_not_found`` (deleted server-side between enumeration
-    and proof fetch).
     """
     seq_for_date: dict[str, int] = {}
     for date_iso in checkpoint_dates:
@@ -868,40 +1114,39 @@ def test_evidence_export_409_skip_surfaces_in_stderr_and_manifest(
       operator can't miss it.
     """
     date_iso = "2026-05-20"
-    p_ok_a = _build_proof_payload(record_id="rec_ok_a", sequence=2)
-    p_ok_a["tenant_id"] = "cleveland_clinic"
-    p_ok_b = _build_proof_payload(record_id="rec_ok_b", sequence=3)
-    p_ok_b["tenant_id"] = "cleveland_clinic"
-    # rec_tail will return 409 from the merkle-proof endpoint even
+    rid_ok_a = _new_uuid()
+    rid_ok_b = _new_uuid()
+    # rid_tail will return 409 from the merkle-proof endpoint even
     # though it's in the action list — the tail-window race.
-    p_tail = _build_proof_payload(record_id="rec_tail", sequence=4)
+    rid_tail = _new_uuid()
+    p_ok_a = _build_proof_payload(record_id=rid_ok_a, sequence=2)
+    p_ok_a["tenant_id"] = "cleveland_clinic"
+    p_ok_b = _build_proof_payload(record_id=rid_ok_b, sequence=3)
+    p_ok_b["tenant_id"] = "cleveland_clinic"
+    p_tail = _build_proof_payload(record_id=rid_tail, sequence=4)
     p_tail["tenant_id"] = "cleveland_clinic"
     org_records = {
         date_iso: [
-            ("rec_ok_a", 2),
-            ("rec_ok_b", 3),
-            ("rec_tail", 4),
+            (rid_ok_a, 2),
+            (rid_ok_b, 3),
+            (rid_tail, 4),
         ],
     }
     handler = _make_export_handler_with_proof_overrides(
         [date_iso],
         org_records,
         {
-            "rec_ok_a": p_ok_a,
-            "rec_ok_b": p_ok_b,
-            "rec_tail": p_tail,
+            rid_ok_a: p_ok_a,
+            rid_ok_b: p_ok_b,
+            rid_tail: p_tail,
         },
-        proof_status_overrides={"rec_tail": 409},
+        proof_status_overrides={rid_tail: 409},
     )
     _install_transport(monkeypatch, handler)
     for k, v in _make_runner_env().items():
         monkeypatch.setenv(k, v)
 
     out = tmp_path / "bundle"
-    # Click 8.3+: ``Result.stderr`` is always separate from stdout —
-    # we don't need a special CliRunner flag. The warning must land
-    # on stderr to be greppable by CI / pipeable distinct from the
-    # final "Exported ..." success line.
     runner = CliRunner()
     result = runner.invoke(
         cli,
@@ -920,21 +1165,21 @@ def test_evidence_export_409_skip_surfaces_in_stderr_and_manifest(
     # Manifest: skipped_records carries exactly the one ID + reason.
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["skipped_records"] == [
-        {"id": "rec_tail", "reason": "checkpoint_pending"}
+        {"id": rid_tail, "reason": "checkpoint_pending"}
     ]
     # record_count counts only the successful fetches.
     assert manifest["record_count"] == 2
 
     # stderr: structured warning that an operator/CI log can spot.
     assert "1 records skipped" in result.stderr
-    assert "rec_tail" in result.stderr
+    assert rid_tail in result.stderr
     assert "checkpoint_pending" in result.stderr
 
     # The skipped record's proof file is NOT written.
-    assert not (out / "records/rec_tail.json").exists()
+    assert not (out / f"records/{rid_tail}.json").exists()
     # The successful records' proofs ARE written.
-    assert (out / "records/rec_ok_a.json").exists()
-    assert (out / "records/rec_ok_b.json").exists()
+    assert (out / f"records/{rid_ok_a}.json").exists()
+    assert (out / f"records/{rid_ok_b}.json").exists()
 
 
 def test_evidence_export_404_skip_surfaces_as_record_not_found(
@@ -945,18 +1190,20 @@ def test_evidence_export_404_skip_surfaces_as_record_not_found(
     between enumeration and proof fetch" case.
     """
     date_iso = "2026-05-20"
-    p_ok = _build_proof_payload(record_id="rec_ok", sequence=2)
+    rid_ok = _new_uuid()
+    rid_gone = _new_uuid()
+    p_ok = _build_proof_payload(record_id=rid_ok, sequence=2)
     p_ok["tenant_id"] = "cleveland_clinic"
-    p_gone = _build_proof_payload(record_id="rec_gone", sequence=3)
+    p_gone = _build_proof_payload(record_id=rid_gone, sequence=3)
     p_gone["tenant_id"] = "cleveland_clinic"
     org_records = {
-        date_iso: [("rec_ok", 2), ("rec_gone", 3)],
+        date_iso: [(rid_ok, 2), (rid_gone, 3)],
     }
     handler = _make_export_handler_with_proof_overrides(
         [date_iso],
         org_records,
-        {"rec_ok": p_ok, "rec_gone": p_gone},
-        proof_status_overrides={"rec_gone": 404},
+        {rid_ok: p_ok, rid_gone: p_gone},
+        proof_status_overrides={rid_gone: 404},
     )
     _install_transport(monkeypatch, handler)
     for k, v in _make_runner_env().items():
@@ -980,12 +1227,12 @@ def test_evidence_export_404_skip_surfaces_as_record_not_found(
 
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["skipped_records"] == [
-        {"id": "rec_gone", "reason": "record_not_found"}
+        {"id": rid_gone, "reason": "record_not_found"}
     ]
     assert manifest["record_count"] == 1
 
     assert "1 records skipped" in result.stderr
-    assert "rec_gone" in result.stderr
+    assert rid_gone in result.stderr
     assert "record_not_found" in result.stderr
 
 
@@ -1002,11 +1249,12 @@ def test_evidence_export_no_skips_emits_empty_array_and_no_warning(
     bundles regardless of whether any records were skipped.
     """
     date_iso = "2026-05-20"
-    p1 = _build_proof_payload(record_id="rec_001", sequence=2)
+    rid = _new_uuid()
+    p1 = _build_proof_payload(record_id=rid, sequence=2)
     p1["tenant_id"] = "cleveland_clinic"
-    org_records = {date_iso: [("rec_001", 2)]}
+    org_records = {date_iso: [(rid, 2)]}
     handler = _make_export_handler(
-        [date_iso], org_records, {"rec_001": p1}
+        [date_iso], org_records, {rid: p1}
     )
     _install_transport(monkeypatch, handler)
     for k, v in _make_runner_env().items():
@@ -1045,18 +1293,27 @@ def test_evidence_export_skip_list_caps_at_50_in_stderr(
     — see manifest.json::skipped_records)`` summary line. The manifest
     contains the FULL list — the cap is purely a stderr-readability
     knob, not a data drop.
+
+    The actions endpoint returns ``sequence_number DESC``, so the
+    highest-seq record is enumerated first and appears in stderr; the
+    lowest-seq record is at position 55 and gets dropped by the 50-cap
+    into the "and N more" pointer.
     """
     date_iso = "2026-05-20"
     rows: list[tuple[str, int]] = []
     proofs: dict[str, dict] = {}
     overrides: dict[str, int] = {}
+    # Track the highest- and lowest-seq IDs explicitly so the
+    # cap-behavior assertions don't depend on guessing UUIDs.
+    rid_by_seq: dict[int, str] = {}
     for i in range(1, 56):  # 55 records, all return 409.
-        rid = f"rec_{i:03d}"
+        rid = _new_uuid()
         p = _build_proof_payload(record_id=rid, sequence=i)
         p["tenant_id"] = "cleveland_clinic"
         rows.append((rid, i))
         proofs[rid] = p
         overrides[rid] = 409
+        rid_by_seq[i] = rid
     org_records = {date_iso: rows}
     handler = _make_export_handler_with_proof_overrides(
         [date_iso], org_records, proofs, proof_status_overrides=overrides
@@ -1085,12 +1342,10 @@ def test_evidence_export_skip_list_caps_at_50_in_stderr(
     assert "55 records skipped" in result.stderr
     assert "(and 5 more" in result.stderr
     assert "manifest.json::skipped_records" in result.stderr
-    # The actions endpoint returns ``sequence_number DESC``, so
-    # rec_055 (highest seq) is enumerated first and appears in stderr;
-    # rec_001 (lowest seq) is at position 55 and gets dropped by the
-    # 50-cap into the "and N more" pointer.
-    assert "rec_055" in result.stderr
-    assert "rec_001" not in result.stderr
+    # Highest seq (55) is at position 0 → in stderr;
+    # lowest seq (1) is at position 54 → dropped by the 50-cap.
+    assert rid_by_seq[55] in result.stderr
+    assert rid_by_seq[1] not in result.stderr
     # Manifest still carries all 55 entries — the cap is a stderr
     # readability knob, not a data drop.
     manifest = json.loads((out / "manifest.json").read_text())

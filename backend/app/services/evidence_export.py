@@ -60,6 +60,7 @@ import hashlib
 import io
 import json
 import logging
+import re
 import tarfile
 from dataclasses import dataclass
 from datetime import date as date_cls, datetime, timedelta, timezone
@@ -76,6 +77,58 @@ from .hashing import canonicalize, extract_hashable_fields
 logger = logging.getLogger("vera.evidence_export")
 
 SCHEMA_VERSION = 1
+
+# Defense-in-depth: server-side guard mirroring the SDK CLI's
+# ``_require_safe_record_id`` / ``_require_safe_date`` checks (see
+# ``sdk/vera/_cli_verify.py``). Today the backend mints every
+# ``ActionRecord.id`` and ``Checkpoint.id`` as a uuid4 via
+# ``default=lambda: str(uuid.uuid4())`` and dates via
+# ``cp.created_at.date().isoformat()`` — both safe by construction.
+# This guard exists so a future refactor that, say, lets a caller
+# supply a record id can't silently re-introduce a path-traversal
+# write outside the in-memory tar (where ``tarfile.TarInfo(name=...)``
+# would happily honor ``"../etc/passwd"``).
+_UUID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _truncate_for_error(value: Any, *, limit: int = 80) -> str:
+    """Truncate ``value`` for an exception message; ``repr``-escapes
+    non-printables to neutralise log injection via crafted IDs."""
+    s = str(value) if value is not None else "<none>"
+    if len(s) > limit:
+        s = s[:limit] + "..."
+    return repr(s)
+
+
+def _require_safe_record_id(rid: Any) -> None:
+    """Raise ``ValueError`` if ``rid`` is not a UUID-shaped string."""
+    if not isinstance(rid, str) or not _UUID_RE.match(rid):
+        raise ValueError(
+            "evidence-export aborted: record id does not match the "
+            "expected UUID format "
+            f"(offending value={_truncate_for_error(rid)})."
+        )
+
+
+def _require_safe_checkpoint_id(cid: Any) -> None:
+    """Raise ``ValueError`` if ``cid`` is not a UUID-shaped string."""
+    if not isinstance(cid, str) or not _UUID_RE.match(cid):
+        raise ValueError(
+            "evidence-export aborted: checkpoint id does not match "
+            "the expected UUID format "
+            f"(offending value={_truncate_for_error(cid)})."
+        )
+
+
+def _require_safe_date(date_iso: Any) -> None:
+    """Raise ``ValueError`` if ``date_iso`` is not a YYYY-MM-DD string."""
+    if not isinstance(date_iso, str) or not _DATE_RE.match(date_iso):
+        raise ValueError(
+            "evidence-export aborted: date does not match the "
+            "expected YYYY-MM-DD format "
+            f"(offending value={_truncate_for_error(date_iso)})."
+        )
 
 
 @dataclass
@@ -333,6 +386,12 @@ async def build_evidence_bundle_tar_gz(
     tree_cache: dict[str, tuple[list[str], list[str], MerkleTree]] = {}
     cp_meta: dict[str, dict[str, Any]] = {}
     warnings: set[str] = set()
+    # Defense-in-depth: validate every checkpoint id up-front. Same
+    # rationale as the record-id pre-pass below — the guard MUST fire
+    # before any code path uses ``cp.id`` as a dict key or filename
+    # component (``tree_cache[cp.id]`` happens inside this loop).
+    for cp in checkpoints:
+        _require_safe_checkpoint_id(cp.id)
     for cp in checkpoints:
         prior = await _previous_seq(
             session, org_id=customer.org_id, this_seq=cp.sequence_at_checkpoint
@@ -383,6 +442,16 @@ async def build_evidence_bundle_tar_gz(
         }
 
     # Build per-record JSONs (canonical + chain hash + merkle path).
+    #
+    # Defense-in-depth: validate every record id up-front before doing
+    # ANY work for that record. The guard MUST fire before
+    # ``leaf_ids.index(r.id)`` (which would mask a bad id by falling
+    # into the "not found in window" skip-branch and silently dropping
+    # the row from the bundle). Today every id is uuid4 so this is
+    # a no-op; the guard hardens against a future refactor.
+    for r in records:
+        _require_safe_record_id(r.id)
+
     record_files: list[tuple[str, bytes]] = []
     manifest_records: list[dict[str, Any]] = []
     for r in records:
@@ -434,6 +503,13 @@ async def build_evidence_bundle_tar_gz(
         body = json.dumps(
             record_payload, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
+        # Defense-in-depth path-traversal guard: every ActionRecord.id
+        # is a uuid4 today, but a guard here prevents a future
+        # refactor (e.g. accepting a caller-supplied record id) from
+        # silently re-introducing a way to drive ``tarfile.TarInfo``
+        # to write at ``../etc/passwd``.
+        _require_safe_record_id(r.id)
+        _require_safe_checkpoint_id(cp.id)
         record_files.append((f"records/{r.id}.json", body))
         manifest_records.append(
             {
@@ -466,6 +542,12 @@ async def build_evidence_bundle_tar_gz(
         body = json.dumps(meta, sort_keys=True, separators=(",", ":")).encode(
             "utf-8"
         )
+        # Defense-in-depth: same path-traversal guard as the per-record
+        # write site above. Both ``cp.id`` and the date field are
+        # UUID/ISO-shaped by construction; the regex protects the
+        # filename slot against future refactors.
+        _require_safe_checkpoint_id(cp.id)
+        _require_safe_date(meta["date"])
         checkpoint_files.append((f"checkpoints/{cp.id}.json", body))
         manifest_checkpoints.append(
             {
