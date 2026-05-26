@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { formatDate, cn } from "@/lib/utils";
 import { PERMISSION_COLORS } from "@/lib/constants";
-import { Check, Loader2, Bell, Key, Webhook } from "lucide-react";
+import { Check, Loader2, Bell, Key, Webhook, Archive } from "lucide-react";
 import { updateAlertEmail } from "@/lib/api-client";
 
 /**
@@ -112,6 +112,27 @@ export default function SettingsPage() {
         <CardContent>
           <Button asChild size="sm">
             <Link href="/settings/integrations">Open Integrations →</Link>
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <Archive className="h-4 w-4 text-muted-foreground" />
+            <CardTitle className="text-base">Off-Vera evidence mirror</CardTitle>
+          </div>
+          <p className="text-xs text-muted-foreground mt-1">
+            Configure the S3 bucket Vera writes sealed checkpoints into.
+            The mirror is the regulator-ready copy of your evidence
+            trail if Vera ever became unreachable.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <Button asChild size="sm">
+            <Link href="/settings/integrations/off-vera-mirror">
+              Configure mirror →
+            </Link>
           </Button>
         </CardContent>
       </Card>
