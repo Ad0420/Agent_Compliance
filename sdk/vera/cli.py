@@ -2149,6 +2149,19 @@ def review_status_cmd(
     sys.exit(REVIEW_STATUS_EXIT_OK)
 
 
+# ---------------------------------------------------------------------------
+# Wave 3C.2 — ``vera verify --merkle-proof`` + ``vera evidence-export``.
+# Implementation lives in ``_cli_verify.py`` to keep this file focused on
+# the older subcommands and to minimise the surface area Wave 3C.1's
+# verify-subpackage refactor needs to touch on rebase.
+# ---------------------------------------------------------------------------
+
+from ._cli_verify import evidence_export_cmd, verify_cmd  # noqa: E402
+
+cli.add_command(verify_cmd)
+cli.add_command(evidence_export_cmd)
+
+
 def main() -> None:
     cli()
 

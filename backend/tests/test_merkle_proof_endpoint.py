@@ -165,12 +165,23 @@ async def test_proof_happy_path_reconstructs_root_and_validates_signature(
         "merkle_root",
         "checkpoint_id",
         "checkpoint_signed_at",
+        # Wave 3C.2 — checkpoint-identity fields for offline signature verify.
+        "checkpoint_org_id",
+        "checkpoint_sequence",
+        "checkpoint_hash_at_checkpoint",
         "kms_key_id",
         "kms_signature",
         "kms_algorithm",
         "kms_public_key_pem",
     ):
         assert field in body, f"missing field {field!r} in proof payload"
+
+    # Wave 3C.2 — the identity fields must match the checkpoint row so a
+    # downstream offline verifier can rebuild the signing message.
+    assert body["checkpoint_org_id"] == org.id
+    assert body["checkpoint_sequence"] > 0
+    assert isinstance(body["checkpoint_hash_at_checkpoint"], str)
+    assert len(body["checkpoint_hash_at_checkpoint"]) == 64  # sha256 hex
 
     # (a) Reconstruct the root via the path — pure-Python verifier in
     # the service module; this is what an offline auditor will do.

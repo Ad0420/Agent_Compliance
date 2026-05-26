@@ -1,0 +1,707 @@
+"""Integration tests for ``vera verify --merkle-proof`` + ``vera evidence-export``
+(Wave 3C.2).
+
+Uses ``httpx.MockTransport`` rather than spinning up a real backend —
+we're testing the SDK's wire-shape contract (URL paths, header
+threading, exit-code mapping, bundle layout, determinism). The
+backend's contract is exercised by the backend test suite.
+
+For the end-to-end "vera evidence-export → vera verify --offline" loop,
+see ``tests/test_evidence_export_offline_roundtrip.py`` — that one is
+gated on Wave 3C.1 landing ``--offline``.
+"""
+
+from __future__ import annotations
+
+import gzip
+import hashlib
+import hmac
+import io
+import json
+import os
+import tarfile
+from pathlib import Path
+from typing import Any
+
+import httpx
+import pytest
+from click.testing import CliRunner
+
+from vera.cli import cli
+from vera._cli_verify import verify_merkle_proof_for_record
+from vera.verify.proof import ALGO_HMAC_SHA256, build_checkpoint_message
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────
+
+# Capture the real ``httpx.Client`` reference at import time so the test
+# helpers can re-instantiate it after ``monkeypatch.setattr(cv.httpx,
+# "Client", ...)`` has been applied to the module-attribute lookup chain.
+# Without this, the patched ``httpx.Client`` symbol would recursively
+# call our fake-client lambda.
+_REAL_HTTPX_CLIENT = httpx.Client
+
+
+def _install_transport(
+    monkeypatch: pytest.MonkeyPatch, handler
+) -> None:
+    """Patch ``vera._cli_verify.httpx.Client`` to dispatch via ``handler``."""
+    import vera._cli_verify as cv
+
+    transport = httpx.MockTransport(handler)
+
+    def fake_client(*args: Any, **kwargs: Any) -> httpx.Client:
+        kwargs.pop("transport", None)
+        return _REAL_HTTPX_CLIENT(transport=transport, **kwargs)
+
+    monkeypatch.setattr(cv.httpx, "Client", fake_client)
+
+
+def _sha256(left: str, right: str) -> str:
+    return hashlib.sha256((left + right).encode("utf-8")).hexdigest()
+
+
+def _build_proof_payload(
+    *,
+    record_id: str = "rec_001",
+    org_id: str = "org_abc",
+    sequence: int = 42,
+    secret: bytes = b"shared-hmac-secret",
+    signed_at: str = "2026-05-25T14:30:00",
+) -> dict:
+    """Produce a happy-path proof payload signed with HMAC."""
+    leaves = ["a" * 64, "b" * 64, "c" * 64, "d" * 64]
+    # Power-of-2 leaves so padding doesn't kick in.
+    level0 = leaves
+    level1 = [_sha256(level0[0], level0[1]), _sha256(level0[2], level0[3])]
+    root = _sha256(level1[0], level1[1])
+    leaf_index = 1
+    # Path for leaf_index 1: sibling at idx 0 (left), then sibling at idx 1 (right).
+    path = [
+        {"sibling_hash": level0[0], "direction": "left"},
+        {"sibling_hash": level1[1], "direction": "right"},
+    ]
+    hash_at_cp = "f" * 64
+    message = build_checkpoint_message(
+        org_id=org_id,
+        sequence=sequence,
+        hash_at_checkpoint=hash_at_cp,
+        signed_at=signed_at,
+    )
+    sig = hmac.new(secret, message, hashlib.sha256).hexdigest()
+    return {
+        "action_record_id": record_id,
+        "action_record_canonical": "{}",
+        "leaf_hash": leaves[leaf_index],
+        "merkle_path": path,
+        "merkle_root": root,
+        "checkpoint_id": "cp_001",
+        "checkpoint_signed_at": signed_at,
+        "checkpoint_org_id": org_id,
+        "checkpoint_sequence": sequence,
+        "checkpoint_hash_at_checkpoint": hash_at_cp,
+        "kms_key_id": "key-fingerprint",
+        "kms_signature": sig,
+        "kms_algorithm": ALGO_HMAC_SHA256,
+        "kms_public_key_pem": None,
+    }
+
+
+def _build_checkpoint_body(
+    *,
+    date_iso: str,
+    org_id: str = "org_abc",
+    sequence: int = 42,
+    prior_sequence: int = 0,
+    record_count: int = 4,
+    merkle_root: str = "deadbeef" * 8,
+) -> dict:
+    return {
+        "checkpoint_id": f"cp_{date_iso}",
+        "org_id": org_id,
+        "merkle_root": merkle_root,
+        "kms_key_id": "key-fingerprint",
+        "signature": "00" * 32,
+        "signed_at": f"{date_iso}T00:00:00.000",
+        "head_action_id": "rec_004",
+        "record_count": record_count,
+        "prior_checkpoint_id": None,
+        "sequence_at_checkpoint": sequence,
+        "hash_at_checkpoint": "f" * 64,
+        # Wave 3C.2 reads this if present; the byte-stable response
+        # from the existing endpoint doesn't yet, so we leave it out
+        # — the SDK falls back to its running prior_sequence.
+    }
+
+
+def _build_actions_body(record_ids: list[str], start_seq: int = 1) -> dict:
+    """``GET /v1/actions`` response shape (records list)."""
+    return {
+        "records": [
+            {"id": rid, "sequence_number": start_seq + idx}
+            for idx, rid in enumerate(record_ids)
+        ]
+    }
+
+
+# ── ``vera verify --merkle-proof`` via CliRunner + MockTransport ────────
+
+
+def _make_runner_env() -> dict[str, str]:
+    return {
+        "VERA_API_KEY": "al_test_" + "x" * 32,
+        "VERA_API_URL": "https://api.test.vera",
+    }
+
+
+def test_verify_merkle_proof_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stub the httpx call inside ``verify_merkle_proof_for_record``.
+
+    We patch ``httpx.Client`` to a MockTransport-backed instance so the
+    full code path including error mapping runs without hitting the
+    wire.
+    """
+    payload = _build_proof_payload()
+    secret = b"shared-hmac-secret"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/records/rec_001/merkle-proof"
+        assert request.headers["Authorization"].startswith("Bearer ")
+        return httpx.Response(200, json=payload)
+
+    _install_transport(monkeypatch, handler)
+    monkeypatch.setenv("HMAC_SECRET", secret.decode("utf-8"))
+    exit_code, message = verify_merkle_proof_for_record(
+        "rec_001",
+        api_url="https://api.test.vera",
+        headers={"Authorization": "Bearer al_test_x"},
+        hmac_secret=secret,
+    )
+    assert exit_code == 0, message
+    assert "OK Record rec_001 verified" in message
+    assert "Merkle root" in message
+    assert "KMS key" in message
+
+
+def test_verify_merkle_proof_tampered_leaf_returns_exit_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _build_proof_payload()
+    payload["leaf_hash"] = "0" + payload["leaf_hash"][1:]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    _install_transport(monkeypatch, handler)
+    exit_code, message = verify_merkle_proof_for_record(
+        "rec_001",
+        api_url="https://api.test.vera",
+        headers={"Authorization": "Bearer al_test_x"},
+        hmac_secret=b"shared-hmac-secret",
+    )
+    assert exit_code == 1
+    assert "Merkle path verification failed" in message
+    assert "merkle_path_mismatch" in message
+
+
+def test_verify_merkle_proof_tampered_sibling_returns_exit_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _build_proof_payload()
+    payload["merkle_path"][0]["sibling_hash"] = (
+        "0" + payload["merkle_path"][0]["sibling_hash"][1:]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    _install_transport(monkeypatch, handler)
+    exit_code, _ = verify_merkle_proof_for_record(
+        "rec_001",
+        api_url="https://api.test.vera",
+        headers={"Authorization": "Bearer al_test_x"},
+        hmac_secret=b"shared-hmac-secret",
+    )
+    assert exit_code == 1
+
+
+def test_verify_merkle_proof_wrong_root_returns_exit_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _build_proof_payload()
+    payload["merkle_root"] = "9" * 64
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    _install_transport(monkeypatch, handler)
+    exit_code, _ = verify_merkle_proof_for_record(
+        "rec_001",
+        api_url="https://api.test.vera",
+        headers={"Authorization": "Bearer al_test_x"},
+        hmac_secret=b"shared-hmac-secret",
+    )
+    assert exit_code == 1
+
+
+def test_verify_merkle_proof_bad_signature_returns_exit_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _build_proof_payload()
+    payload["kms_signature"] = "00" * 32  # Merkle path intact; sig flipped.
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    _install_transport(monkeypatch, handler)
+    exit_code, message = verify_merkle_proof_for_record(
+        "rec_001",
+        api_url="https://api.test.vera",
+        headers={"Authorization": "Bearer al_test_x"},
+        hmac_secret=b"shared-hmac-secret",
+    )
+    assert exit_code == 1
+    assert "signature_invalid" in message
+
+
+def test_verify_merkle_proof_hmac_no_secret_is_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per brief: HMAC + no shared secret → exit 0 with warning line."""
+    payload = _build_proof_payload()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    _install_transport(monkeypatch, handler)
+    exit_code, message = verify_merkle_proof_for_record(
+        "rec_001",
+        api_url="https://api.test.vera",
+        headers={"Authorization": "Bearer al_test_x"},
+        hmac_secret=None,
+    )
+    assert exit_code == 0
+    assert "unverified (no HMAC secret)" in message
+
+
+def test_verify_merkle_proof_404_returns_exit_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            404, json={"code": "record_not_found", "detail": "nope"}
+        )
+
+    _install_transport(monkeypatch, handler)
+    exit_code, message = verify_merkle_proof_for_record(
+        "rec_001",
+        api_url="https://api.test.vera",
+        headers={"Authorization": "Bearer al_test_x"},
+    )
+    assert exit_code == 1
+    assert "not found" in message
+
+
+def test_verify_merkle_proof_409_returns_exit_1_tail_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(409, json={"code": "checkpoint_pending"})
+
+    _install_transport(monkeypatch, handler)
+    exit_code, message = verify_merkle_proof_for_record(
+        "rec_001",
+        api_url="https://api.test.vera",
+        headers={"Authorization": "Bearer al_test_x"},
+    )
+    assert exit_code == 1
+    assert "tail window" in message
+
+
+def test_verify_merkle_proof_auth_failure_returns_exit_2(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, text="unauthorized")
+
+    _install_transport(monkeypatch, handler)
+    exit_code, _ = verify_merkle_proof_for_record(
+        "rec_001",
+        api_url="https://api.test.vera",
+        headers={"Authorization": "Bearer al_test_x"},
+    )
+    assert exit_code == 2
+
+
+# ── CLI surface via CliRunner ───────────────────────────────────────────
+
+
+def test_cli_verify_requires_merkle_proof_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without --merkle-proof we exit 2 with a usage hint, not 0."""
+    for k, v in _make_runner_env().items():
+        monkeypatch.setenv(k, v)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["verify"])
+    assert result.exit_code == 2
+
+
+def test_cli_verify_calls_endpoint_and_exits_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _build_proof_payload()
+    secret = b"shared-hmac-secret"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    _install_transport(monkeypatch, handler)
+    for k, v in _make_runner_env().items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setenv("MY_HMAC", secret.decode("utf-8"))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "verify",
+            "--merkle-proof",
+            "rec_001",
+            "--hmac-secret-env",
+            "MY_HMAC",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "OK Record rec_001" in result.output
+
+
+# ── ``vera evidence-export`` ────────────────────────────────────────────
+
+
+def _make_export_handler(
+    checkpoint_dates: list[str],
+    org_record_map: dict[str, list[tuple[str, int]]],
+    proofs: dict[str, dict],
+    *,
+    customer_filter: str = None,
+):
+    """Build a MockTransport handler for an evidence-export run.
+
+    ``checkpoint_dates`` is the ordered list of YYYY-MM-DD dates with
+    a checkpoint sealed. ``org_record_map`` maps each date to the list
+    of ``(record_id, sequence_number)`` rows in that checkpoint's
+    window. ``proofs`` maps record_id → proof payload.
+    """
+    seq_for_date: dict[str, int] = {}
+    for date_iso in checkpoint_dates:
+        max_seq = max(s for _, s in org_record_map.get(date_iso, [])) if org_record_map.get(date_iso) else 0
+        seq_for_date[date_iso] = max_seq
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.startswith("/v1/checkpoints/"):
+            date_iso = path.split("/")[-1]
+            if date_iso not in checkpoint_dates:
+                return httpx.Response(
+                    404, json={"code": "checkpoint_not_found"}
+                )
+            body = _build_checkpoint_body(
+                date_iso=date_iso,
+                sequence=seq_for_date[date_iso],
+                record_count=len(org_record_map.get(date_iso, [])),
+            )
+            return httpx.Response(200, json=body)
+        if path == "/v1/actions":
+            tenant_filter = request.url.params.get("tenant_id")
+            since_seq = int(
+                request.url.params.get("since_sequence_number", "0")
+            )
+            # Flatten all known records.
+            records: list[dict] = []
+            for date_iso, lst in org_record_map.items():
+                for rid, seq in lst:
+                    if seq <= since_seq:
+                        continue
+                    # Tenant filter: in the test, we attach tenant_id to
+                    # the proof payload's customer_tenant_id field.
+                    proof = proofs.get(rid, {})
+                    rec_tenant = proof.get("tenant_id")
+                    if tenant_filter and rec_tenant != tenant_filter:
+                        continue
+                    records.append(
+                        {
+                            "id": rid,
+                            "sequence_number": seq,
+                            "tenant_id": rec_tenant,
+                        }
+                    )
+            records.sort(key=lambda r: r["sequence_number"])
+            return httpx.Response(200, json={"records": records})
+        if path.startswith("/v1/records/") and path.endswith(
+            "/merkle-proof"
+        ):
+            rid = path.split("/")[3]
+            if rid not in proofs:
+                return httpx.Response(404, json={"code": "record_not_found"})
+            return httpx.Response(200, json=proofs[rid])
+        return httpx.Response(404, text=f"unknown path {path}")
+
+    return handler
+
+
+def test_evidence_export_directory_layout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Happy path: export two days, get manifest + 2 checkpoints + N records."""
+    date_a = "2026-05-20"
+    date_b = "2026-05-21"
+    p1 = _build_proof_payload(record_id="rec_001", sequence=2)
+    p1["tenant_id"] = "cleveland_clinic"
+    p2 = _build_proof_payload(record_id="rec_002", sequence=5)
+    p2["tenant_id"] = "cleveland_clinic"
+    org_records = {
+        date_a: [("rec_001", 2)],
+        date_b: [("rec_002", 5)],
+    }
+    handler = _make_export_handler(
+        [date_a, date_b],
+        org_records,
+        {"rec_001": p1, "rec_002": p2},
+    )
+    _install_transport(monkeypatch, handler)
+    for k, v in _make_runner_env().items():
+        monkeypatch.setenv(k, v)
+
+    out = tmp_path / "bundle"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "evidence-export",
+            "--since",
+            date_a,
+            "--until",
+            date_b,
+            "--out",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    # Verify the layout.
+    assert (out / "manifest.json").exists()
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["checkpoint_count"] == 2
+    assert manifest["record_count"] == 2
+    assert (out / f"checkpoints/{date_a}.json").exists()
+    assert (out / f"checkpoints/{date_b}.json").exists()
+    assert (out / "records/rec_001.json").exists()
+    assert (out / "records/rec_002.json").exists()
+
+
+def test_evidence_export_selective_disclosure_excludes_other_customer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """``--customer cleveland_clinic`` excludes other tenants' records.
+
+    Building on the brief: the verifier with only this export must NOT
+    be able to identify or count other customers' records. Their
+    sibling hashes appear in Merkle paths (necessary for proof folding)
+    but are bare SHA-256 hex — no PHI, no identity.
+    """
+    date_iso = "2026-05-20"
+    # Two records: one for Cleveland Clinic, one for Memorial.
+    cc_proof = _build_proof_payload(record_id="rec_cc", sequence=2)
+    cc_proof["tenant_id"] = "cleveland_clinic"
+    memorial_proof = _build_proof_payload(record_id="rec_mem", sequence=3)
+    memorial_proof["tenant_id"] = "memorial"
+    org_records = {
+        date_iso: [("rec_cc", 2), ("rec_mem", 3)],
+    }
+    handler = _make_export_handler(
+        [date_iso],
+        org_records,
+        {"rec_cc": cc_proof, "rec_mem": memorial_proof},
+    )
+    _install_transport(monkeypatch, handler)
+    for k, v in _make_runner_env().items():
+        monkeypatch.setenv(k, v)
+
+    out = tmp_path / "bundle"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "evidence-export",
+            "--customer",
+            "cleveland_clinic",
+            "--since",
+            date_iso,
+            "--until",
+            date_iso,
+            "--out",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    # Cleveland Clinic's record is present.
+    assert (out / "records/rec_cc.json").exists()
+    # Memorial's record is NOT present.
+    assert not (out / "records/rec_mem.json").exists()
+
+    # The bundle should not contain "rec_mem" anywhere — including in
+    # any sibling hashes (those are SHA-256 digests, not record IDs,
+    # so this is automatic — we assert anyway to lock the contract).
+    for path in (out / "records").iterdir():
+        text = path.read_text()
+        assert "rec_mem" not in text
+
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["customer_id"] == "cleveland_clinic"
+    assert manifest["record_count"] == 1
+
+
+def test_evidence_export_tarball_is_deterministic(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Two consecutive runs with the same input → byte-identical .tar.gz.
+
+    Auditors will diff archives across exports; the brief explicitly
+    requires byte-stability.
+    """
+    date_iso = "2026-05-20"
+    p1 = _build_proof_payload(record_id="rec_001", sequence=2)
+    p1["tenant_id"] = "cleveland_clinic"
+    org_records = {date_iso: [("rec_001", 2)]}
+    handler = _make_export_handler(
+        [date_iso], org_records, {"rec_001": p1}
+    )
+    _install_transport(monkeypatch, handler)
+    for k, v in _make_runner_env().items():
+        monkeypatch.setenv(k, v)
+    # Pin the manifest.exported_at so the comparison is meaningful.
+    monkeypatch.setenv(
+        "VERA_EVIDENCE_EXPORT_FAKE_NOW", "2026-05-25T00:00:00+00:00"
+    )
+
+    out_a = tmp_path / "a.tar.gz"
+    out_b = tmp_path / "b.tar.gz"
+    runner = CliRunner()
+    for out in (out_a, out_b):
+        result = runner.invoke(
+            cli,
+            [
+                "evidence-export",
+                "--since",
+                date_iso,
+                "--until",
+                date_iso,
+                "--out",
+                str(out),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+    bytes_a = out_a.read_bytes()
+    bytes_b = out_b.read_bytes()
+    assert bytes_a == bytes_b, (
+        f"deterministic tarball broken: {len(bytes_a)} vs {len(bytes_b)} bytes; "
+        f"hashes {hashlib.sha256(bytes_a).hexdigest()} vs "
+        f"{hashlib.sha256(bytes_b).hexdigest()}"
+    )
+
+    # Sanity: the tarball actually contains manifest.json + the proof.
+    with gzip.open(out_a, "rb") as gz:
+        with tarfile.open(fileobj=io.BytesIO(gz.read()), mode="r") as tf:
+            names = tf.getnames()
+    assert "manifest.json" in names
+    assert "records/rec_001.json" in names
+    assert "checkpoints/2026-05-20.json" in names
+
+
+def test_evidence_export_dir_skips_missing_checkpoint_days(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Days without a sealed checkpoint are skipped silently — no error."""
+    date_present = "2026-05-20"
+    p1 = _build_proof_payload(record_id="rec_x", sequence=2)
+    p1["tenant_id"] = "cleveland_clinic"
+    org_records = {date_present: [("rec_x", 2)]}
+    handler = _make_export_handler(
+        [date_present], org_records, {"rec_x": p1}
+    )
+    _install_transport(monkeypatch, handler)
+    for k, v in _make_runner_env().items():
+        monkeypatch.setenv(k, v)
+    out = tmp_path / "bundle"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "evidence-export",
+            "--since",
+            "2026-05-18",
+            "--until",
+            "2026-05-21",
+            "--out",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # Only the present day is in the bundle.
+    assert (out / f"checkpoints/{date_present}.json").exists()
+    assert not (out / "checkpoints/2026-05-19.json").exists()
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["checkpoint_count"] == 1
+    assert manifest["record_count"] == 1
+
+
+# ── End-to-end: export → verify proof against export ────────────────────
+
+
+def test_export_bundle_proofs_verify_independently(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Each per-record proof in the bundle must verify standalone.
+
+    This is the "verifier with only this export" property — the test
+    asserts that we can take a record's proof.json from the export,
+    feed it into ``verify_proof_payload``, and pass with only the
+    HMAC secret (no further round-trip to Vera).
+    """
+    from vera.verify.proof import verify_proof_payload
+
+    date_iso = "2026-05-20"
+    p1 = _build_proof_payload(record_id="rec_001", sequence=2)
+    p1["tenant_id"] = "cleveland_clinic"
+    org_records = {date_iso: [("rec_001", 2)]}
+    handler = _make_export_handler(
+        [date_iso], org_records, {"rec_001": p1}
+    )
+    _install_transport(monkeypatch, handler)
+    for k, v in _make_runner_env().items():
+        monkeypatch.setenv(k, v)
+    out = tmp_path / "bundle"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "evidence-export",
+            "--since",
+            date_iso,
+            "--until",
+            date_iso,
+            "--out",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+
+    proof = json.loads((out / "records/rec_001.json").read_text())
+    res = verify_proof_payload(
+        proof, hmac_secret=b"shared-hmac-secret"
+    )
+    assert res.ok is True, res
+    assert res.reason == "ok"
