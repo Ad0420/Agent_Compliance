@@ -501,6 +501,95 @@ export async function generateAuditPdf(
   return { filename };
 }
 
+// ── Phase 4 Wave 2 C2 — AI Insights on Compliance ───────────────────────
+//
+// Backed by ``POST /v1/compliance/insights`` (Stream B2 in flight). The
+// route invokes Haiku against the last 30-day decisions window and
+// returns 3-5 short recommendation cards plus a verbatim disclaimer the
+// surface must render unmodified.
+//
+// Error envelope (from the B2 brief):
+//   429 { error: { code: "rate_limit_exceeded", message } } + Retry-After
+//   504 { error: { code: "insights_timeout", message } }
+//   generic 5xx with FastAPI ``{detail: ...}`` or flat ``{message: ...}``
+//
+// The C2 modal narrows on ``readInsightsErrorCode`` to render the
+// inline-banner copy — see frontend/components/compliance/insights-surface.tsx.
+
+export type Severity = "HIGH" | "MEDIUM" | "LOW";
+
+export interface ComplianceInsight {
+  id: string;
+  title: string;
+  severity: Severity;
+  quoted_source: string;
+  description: string;
+  suggested_action: string;
+}
+
+export interface ComplianceInsightsResponse {
+  insights: ComplianceInsight[];
+  disclaimer: string;
+  generated_at: string; // ISO 8601
+  window_days: number;
+  // The B2 brief documents this as a structured snapshot but doesn't pin
+  // its shape — keep it open so a B2 contract change doesn't break the
+  // C2 surface (we don't render the snapshot in v1).
+  posture_snapshot: Record<string, unknown>;
+}
+
+export const INSIGHTS_ERROR_CODES = {
+  rateLimitExceeded: "rate_limit_exceeded",
+  insightsTimeout: "insights_timeout",
+} as const;
+
+export type InsightsErrorCode =
+  | (typeof INSIGHTS_ERROR_CODES)[keyof typeof INSIGHTS_ERROR_CODES]
+  | "unknown";
+
+/**
+ * Read the structured error code off an ApiError raised by
+ * ``generateComplianceInsights``. Returns ``"unknown"`` when the
+ * envelope did not carry one of the two B2-documented codes so the
+ * caller renders the generic fallback message.
+ *
+ * Tolerates the same flat + nested envelope shapes ``readAuditPdfErrorCode``
+ * accepts — see that function's docstring for rationale.
+ */
+export function readInsightsErrorCode(err: unknown): InsightsErrorCode {
+  if (!(err instanceof ApiError)) return "unknown";
+  const detail = err.detail;
+  if (!detail || typeof detail !== "object") return "unknown";
+  let code: unknown = (detail as Record<string, unknown>).code;
+  if (typeof code !== "string") {
+    const nested = (detail as Record<string, unknown>).error;
+    if (nested && typeof nested === "object") {
+      code = (nested as Record<string, unknown>).code;
+    }
+  }
+  if (code === INSIGHTS_ERROR_CODES.rateLimitExceeded)
+    return INSIGHTS_ERROR_CODES.rateLimitExceeded;
+  if (code === INSIGHTS_ERROR_CODES.insightsTimeout)
+    return INSIGHTS_ERROR_CODES.insightsTimeout;
+  return "unknown";
+}
+
+/**
+ * Kick off Haiku insight generation against the caller's last 30-day
+ * decisions window. Returns 3-5 ``ComplianceInsight`` cards plus the
+ * verbatim disclaimer the surface must render unmodified.
+ *
+ * Fire-on-click — use react-query's ``useMutation``, not ``useQuery``;
+ * the call is intentionally not memoised so each "Show insights" press
+ * re-runs the generation pass.
+ */
+export function generateComplianceInsights(): Promise<ComplianceInsightsResponse> {
+  return request("/v1/compliance/insights", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
 export function updateAlertEmail(alert_email: string | null): Promise<Organization> {
   return request("/v1/organizations/me/alert-email", {
     method: "PATCH",
