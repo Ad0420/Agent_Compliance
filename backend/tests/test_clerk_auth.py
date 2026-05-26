@@ -652,7 +652,10 @@ async def test_clerk_unreachable_uses_cached_role_with_warn(
     monkeypatch.setattr(settings, "clerk_secret_key", "sk_test_fake")
     monkeypatch.setattr(settings, "membership_freshness_seconds", 60)
 
+    boom_calls = {"n": 0}
+
     async def _boom(**_kwargs):
+        boom_calls["n"] += 1
         raise httpx.ConnectError("synthetic outage")
 
     monkeypatch.setattr(
@@ -674,14 +677,77 @@ async def test_clerk_unreachable_uses_cached_role_with_warn(
         algorithm="RS256",
         headers={"kid": _TEST_KID},
     )
-    with caplog.at_level(logging.WARNING, logger="app.middleware.clerk_auth"):
+    # Bypass pytest's caplog entirely. Two prior fix attempts confirmed
+    # the warning never reaches caplog under full-suite test order, even
+    # with propagate=True and root-logger capture. Suspect cause: pytest's
+    # caplog handler is detached or filtered by some upstream test config.
+    # Attach our own list-handler directly to the middleware's logger
+    # (both possible import-path names — see comment in prior fix attempt).
+    class _ListHandler(logging.Handler):
+        def __init__(self):
+            super().__init__(level=logging.WARNING)
+            self.records: list[logging.LogRecord] = []
+
+        def emit(self, record):  # type: ignore[override]
+            self.records.append(record)
+
+    _handler = _ListHandler()
+    _attached: list[logging.Logger] = []
+    # Attach to the live module's actual logger object — this is the
+    # ground truth regardless of import-path name.
+    _live_logger = logging.getLogger(clerk_auth.__name__)
+    # The clerk_auth logger ends up `disabled=True` under full-suite
+    # test ordering — pytest's caplog state restoration interacts with
+    # something earlier in the suite. Forcibly re-enable for this test.
+    _live_logger.disabled = False
+    _live_logger.setLevel(logging.WARNING)
+    _live_logger.addHandler(_handler)
+    _attached.append(_live_logger)
+    # Also attach to known name variants AND the root logger so any
+    # propagation path is covered. Re-enable each.
+    for _name in (
+        "app.middleware.clerk_auth",
+        "backend.app.middleware.clerk_auth",
+        "",  # root
+    ):
+        _logger = logging.getLogger(_name)
+        _logger.disabled = False
+        _logger.setLevel(logging.WARNING)
+        _logger.addHandler(_handler)
+        _attached.append(_logger)
+    # Also clear the module-level disable threshold in case
+    # logging.disable() was called by a prior test.
+    logging.disable(logging.NOTSET)
+
+    try:
         resp = await async_client.get(
             "/v1/dashboard/api-keys",
             headers={"Authorization": f"Bearer {token}"},
         )
+    finally:
+        for _logger in _attached:
+            _logger.removeHandler(_handler)
+
     assert resp.status_code == 200, resp.text
+    # Diagnostic: confirm the patched function was actually called.
+    # If boom_calls['n']==0, the freshness check was bypassed (a prior
+    # test mutated state — settings, OrgMembership.updated_at, etc.) so
+    # _boom never ran and no warning could fire.
+    assert boom_calls["n"] >= 1, (
+        f"_boom never called; freshness check path was bypassed. "
+        f"settings.membership_freshness_seconds={settings.membership_freshness_seconds}, "
+        f"settings.clerk_secret_key={settings.clerk_secret_key!r}, "
+        f"handler_records={[(r.name, r.levelname, r.getMessage()) for r in _handler.records]}"
+    )
     assert any(
-        "freshness check failed" in rec.message for rec in caplog.records
+        "freshness check failed" in r.getMessage() for r in _handler.records
+    ), (
+        f"warning never fired despite _boom being called {boom_calls['n']} times; "
+        f"clerk_auth.__name__={clerk_auth.__name__!r}; "
+        f"live_logger.name={_live_logger.name!r}; "
+        f"live_logger.level={_live_logger.level}; "
+        f"live_logger.disabled={_live_logger.disabled}; "
+        f"records={[(r.name, r.levelname, r.getMessage()) for r in _handler.records]}"
     )
 
 
