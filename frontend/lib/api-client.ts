@@ -368,6 +368,139 @@ export function getMerkleProof(
   );
 }
 
+// ── Phase 4 Wave 1 C3 — Generate audit PDF on Customer detail ────────────
+//
+// Backed by ``POST /v1/audits/{customer_id}`` (Stream A1 in flight). The
+// route returns ``application/pdf`` bytes with a ``Content-Disposition``
+// suggesting the filename — we stream that into a browser download
+// (same shape as ``downloadEvidenceBundle`` above).
+//
+// Error envelope (from A1 brief):
+//   403 { error: { code: "baa_expired", message: ... } }
+//   404 (customer not in caller's org)
+//   504 { error: { code: "pdf_render_timeout", message: ... } }
+//
+// We re-emit ``error.code`` on the thrown ``ApiError.detail`` so the
+// modal can map it to inline-banner copy. The exported error-code
+// constants below are the contract surface — the modal imports them
+// rather than stringly-typing the codes inline.
+
+export const AUDIT_PDF_SECTION_KEYS = [
+  "cover",
+  "scope",
+  "audit_controls",
+  "hitl_evidence",
+  "demographic_monitoring",
+  "workforce_training",
+  "baa_chain",
+  "technical_appendix",
+] as const;
+
+export type AuditPdfSectionKey = (typeof AUDIT_PDF_SECTION_KEYS)[number];
+
+export type AuditPdfBranding = "customer" | "vera-neutral";
+
+export interface AuditPdfInput {
+  date_from: string; // YYYY-MM-DD
+  date_to: string; // YYYY-MM-DD
+  sections: AuditPdfSectionKey[];
+  branding: AuditPdfBranding;
+}
+
+export const AUDIT_PDF_ERROR_CODES = {
+  baaExpired: "baa_expired",
+  pdfRenderTimeout: "pdf_render_timeout",
+} as const;
+
+/**
+ * Read the ``error.code`` field off an ApiError raised by
+ * ``generateAuditPdf``. Returns null when the envelope did not carry a
+ * structured code so callers can fall back to a generic message.
+ *
+ * Tolerates both shapes the backend might emit:
+ *   - flat envelope: ``{ code: "...", message: "..." }``
+ *   - nested envelope: ``{ error: { code: "...", message: "..." } }``
+ *
+ * The latter is what the A1 brief specifies; the former matches the
+ * dashboard's pre-existing flat-envelope convention (PR #201 onwards).
+ * Accepting both keeps the modal robust against the precise wire shape
+ * A1 lands.
+ */
+export function readAuditPdfErrorCode(err: unknown): string | null {
+  if (!(err instanceof ApiError)) return null;
+  const detail = err.detail;
+  if (!detail || typeof detail !== "object") return null;
+  const flat = (detail as Record<string, unknown>).code;
+  if (typeof flat === "string") return flat;
+  const nested = (detail as Record<string, unknown>).error;
+  if (nested && typeof nested === "object") {
+    const code = (nested as Record<string, unknown>).code;
+    if (typeof code === "string") return code;
+  }
+  return null;
+}
+
+/**
+ * Generate an audit PDF and stream it to a browser download. The
+ * backend renders synchronously (~5-30s), so the caller should show a
+ * spinner for the duration. Returns the filename the backend suggested
+ * via ``Content-Disposition`` so the caller can log / confirm.
+ *
+ * On non-2xx, throws an ``ApiError`` whose ``detail`` carries the
+ * structured error envelope. Use ``readAuditPdfErrorCode`` to map.
+ */
+export async function generateAuditPdf(
+  customer_id: string,
+  input: AuditPdfInput,
+): Promise<{ filename: string }> {
+  const headers = await getHeaders();
+  const response = await fetch(
+    `${BASE_URL}/v1/audits/${encodeURIComponent(customer_id)}`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(input),
+    },
+  );
+  if (!response.ok) {
+    // We don't know whether the backend emits flat ``{code, message}``
+    // or nested ``{error: {code, message}}`` — accept both. ``carrier``
+    // is the raw envelope so ``readAuditPdfErrorCode`` can narrow.
+    const carrier = await response.json().catch(() => null);
+    const flatMessage =
+      carrier && typeof carrier === "object" && typeof (carrier as Record<string, unknown>).message === "string"
+        ? ((carrier as Record<string, unknown>).message as string)
+        : null;
+    const nestedMessage =
+      carrier &&
+      typeof carrier === "object" &&
+      (carrier as Record<string, unknown>).error &&
+      typeof (carrier as Record<string, unknown>).error === "object"
+        ? ((carrier as { error: Record<string, unknown> }).error.message as
+            | string
+            | undefined) ?? null
+        : null;
+    const message =
+      flatMessage ??
+      nestedMessage ??
+      `Audit PDF generation failed (${response.status})`;
+    throw new ApiError(response.status, message, carrier ?? undefined);
+  }
+  const disposition = response.headers.get("content-disposition") || "";
+  const match = /filename="([^"]+)"/.exec(disposition);
+  const filename = match?.[1] || `audit-${customer_id}.pdf`;
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  return { filename };
+}
+
 export function updateAlertEmail(alert_email: string | null): Promise<Organization> {
   return request("/v1/organizations/me/alert-email", {
     method: "PATCH",

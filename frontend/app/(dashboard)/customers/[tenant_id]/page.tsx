@@ -40,6 +40,7 @@ import {
   CoverageMatrixFull,
 } from "@/components/dashboard/coverage-matrix";
 import { BaaUploadWidget } from "@/components/dashboard/baa-upload";
+import { AuditPdfModal } from "@/components/customers/audit-pdf-modal";
 import { DecisionsTab } from "@/components/customers/decisions-tab";
 import { VerificationPanel } from "@/components/customers/verification-panel";
 import { formatRelativeTime } from "@/lib/utils";
@@ -163,11 +164,24 @@ function CustomerDetailBody({ customer }: { customer: Customer }) {
 }
 
 function CustomerHeader({ customer }: { customer: Customer }) {
+  const [auditModalOpen, setAuditModalOpen] = React.useState(false);
+  const customerDisplayName = customer.display_name ?? customer.tenant_id;
+
   return (
     <header className="space-y-3" data-testid="customer-header">
-      <h1 className="font-display text-4xl font-normal leading-tight text-[color:var(--ink)]">
-        {customer.display_name ?? customer.tenant_id}
-      </h1>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <h1 className="font-display text-4xl font-normal leading-tight text-[color:var(--ink)]">
+          {customerDisplayName}
+        </h1>
+        <button
+          type="button"
+          onClick={() => setAuditModalOpen(true)}
+          className="inline-flex h-9 items-center justify-center rounded-[10px] border border-[color:var(--ink)] bg-[color:var(--ink)] px-4 text-[14px] font-medium text-[color:var(--paper)] transition-colors hover:bg-[color:var(--ink-2)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--ink)]"
+          data-testid="audit-pdf-trigger"
+        >
+          Generate audit PDF
+        </button>
+      </div>
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
         <StatusDot
           variant={STATUS_VARIANT[customer.status]}
@@ -189,6 +203,12 @@ function CustomerHeader({ customer }: { customer: Customer }) {
           {customer.contact_email}
         </p>
       ) : null}
+      <AuditPdfModal
+        open={auditModalOpen}
+        onOpenChange={setAuditModalOpen}
+        tenant_id={customer.tenant_id}
+        customer_display_name={customerDisplayName}
+      />
     </header>
   );
 }
