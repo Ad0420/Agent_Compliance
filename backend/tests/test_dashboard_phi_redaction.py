@@ -57,6 +57,7 @@ from app.models import (
 )
 from app.services import auth as auth_service
 from app.services.dashboard_views import (
+    _redact_decision,
     _safe_approval_context,
     is_dashboard_request,
     serialize_approval_for_dashboard,
@@ -311,6 +312,138 @@ def test_serialize_approval_for_dashboard_is_pure(db_session):
     assert result["risk_tier"] == "high"
 
 
+def test_redact_decision_strips_note_and_approver_pii():
+    """W2.2 — dashboard view of ``Approval.decisions[]`` must strip the
+    free-text ``note`` (PHI narrative carrier) and the ``approver`` field
+    (``"{reviewer_id}:{reviewer_role}"`` — reviewer_id is customer-side
+    PII). Derived ``reviewer_role`` is re-emitted so the UI can render
+    'Approved by attending_physician' without the clinician's identity.
+    """
+    vote = {
+        "decision": "approve",
+        "approver": "alice@hospital.example:attending_physician",
+        # PHI-laden reviewer comment from the in-band EHR review surface.
+        "note": (
+            "Approved — MRN-31504806 CT shows pancreatitis, treated "
+            "with IV LR and ondansetron. Patient stable for discharge."
+        ),
+        "decided_at": "2026-05-24T13:00:00",
+        "signature": "sig:abc123",
+        "key_id": "kid-1",
+    }
+    result = _redact_decision(vote)
+    assert result["decision"] == "approve"
+    assert result["decided_at"] == "2026-05-24T13:00:00"
+    assert result["signature"] == "sig:abc123"
+    assert result["key_id"] == "kid-1"
+    assert result["reviewer_role"] == "attending_physician"
+    # PII / PHI carriers MUST NOT survive.
+    assert "approver" not in result, "approver leaked (carries reviewer_id PII)"
+    assert "note" not in result, "note leaked (PHI narrative carrier)"
+    # Negative content check — no fragment of the PHI / PII survives.
+    result_str = str(result)
+    assert "alice@hospital.example" not in result_str
+    assert "MRN-31504806" not in result_str
+    assert "pancreatitis" not in result_str
+
+
+def test_redact_decision_handles_legacy_approver_without_role():
+    """Pre-W2.1 votes (decided via legacy /v1/approvals/{id}/decide)
+    persisted ``approver`` as a plain "{name}" or "api_key:{prefix}". The
+    role is unknown — emit no derived ``reviewer_role`` rather than
+    inventing one. The ``approver`` is still stripped because it can
+    still be PII (or an API key prefix that points at one person)."""
+    legacy = {
+        "decision": "reject",
+        "approver": "dr-bob",
+        "note": "Not authorized.",
+        "decided_at": "2026-05-24T13:00:00",
+        "signature": "sig:1",
+        "key_id": "kid-1",
+    }
+    result = _redact_decision(legacy)
+    assert "approver" not in result
+    assert "note" not in result
+    assert "reviewer_role" not in result, (
+        "Should NOT invent a role when the legacy vote didn't record one."
+    )
+    assert result["decision"] == "reject"
+
+    # ``api_key:xyz`` shaped approvers (cancel path) — colon present but
+    # the segment after is a key prefix, not a role. Today we still emit
+    # it as ``reviewer_role`` because the dashboard can't distinguish
+    # these without more context; downstream renderers should treat
+    # ``reviewer_role`` as advisory text. Document the behaviour so it's
+    # an intentional decision, not a surprise.
+    api_key_vote = {
+        "decision": "cancel",
+        "approver": "api_key:vera_prod",
+        "decided_at": "2026-05-24T13:00:00",
+        "signature": "sig:1",
+        "key_id": "kid-1",
+    }
+    api_result = _redact_decision(api_key_vote)
+    assert api_result.get("reviewer_role") == "vera_prod"
+    assert "approver" not in api_result
+
+
+def test_serialize_approval_for_dashboard_redacts_decisions(db_session):
+    """End-to-end: serializer applies ``_redact_decision`` to every vote.
+
+    Build an Approval with two reviewer votes — one with PHI in the
+    note, one with PII in the approver — and confirm both are gone.
+    """
+    approval = Approval(
+        id="ap-redact-1",
+        org_id="org-1",
+        requested_by_agent="agent",
+        action_name="commit",
+        data_subject_id="patient-42",
+        action_summary="PHI-laden summary",
+        context={},
+        risk_tier="high",
+        approvers_required=1,
+        status="approved",
+        decisions=[
+            {
+                "decision": "approve",
+                "approver": "alice@hospital.example:attending_physician",
+                "note": "MRN-31504806 — controlled substance approved.",
+                "decided_at": "2026-05-24T13:00:00",
+                "signature": "sig-1",
+                "key_id": "kid-1",
+            },
+            {
+                "decision": "approve",
+                "approver": "drbob@hospital.example:dea_licensed_physician",
+                "note": "Dual-attestation — co-signing for Schedule II.",
+                "decided_at": "2026-05-24T13:05:00",
+                "signature": "sig-2",
+                "key_id": "kid-1",
+            },
+        ],
+        requested_at=datetime(2026, 5, 24, 12, 0, 0),
+        reviewed_below_threshold=False,
+    )
+    result = serialize_approval_for_dashboard(approval)
+    assert len(result["decisions"]) == 2
+    for vote in result["decisions"]:
+        assert "approver" not in vote
+        assert "note" not in vote
+        assert vote["signature"].startswith("sig-")
+    # Roles are surfaced — the dashboard can render the resolved status
+    # ("Approved by attending_physician + dea_licensed_physician") without
+    # the reviewer-id PII.
+    roles = {v["reviewer_role"] for v in result["decisions"]}
+    assert roles == {"attending_physician", "dea_licensed_physician"}
+    # No fragment of the PHI / PII survived the serializer.
+    body = str(result)
+    assert "alice@hospital.example" not in body
+    assert "drbob@hospital.example" not in body
+    assert "MRN-31504806" not in body
+    assert "controlled substance" not in body
+
+
 def test_is_dashboard_request_predicate():
     """``api_key is None`` ↔ dashboard caller; populated APIKey ↔ SDK."""
     assert is_dashboard_request(None) is True
@@ -411,7 +544,7 @@ async def test_approvals_dashboard_preserves_operational_metadata(
     approval.decisions = [
         {
             "decision": "approve",
-            "approver": "dr-smith",
+            "approver": "dr-smith:attending_physician",
             "decided_at": "2026-05-24T13:00:00",
             "signature": "sig-abc",
             "key_id": "kid-1",
@@ -432,7 +565,86 @@ async def test_approvals_dashboard_preserves_operational_metadata(
     assert body["status"] == "pending"
     assert body["requested_at"] is not None
     assert len(body["decisions"]) == 1
-    assert body["decisions"][0]["approver"] == "dr-smith"
+    vote = body["decisions"][0]
+    # W2.2: reviewer-id PII stripped, role derived.
+    assert "approver" not in vote, "approver (reviewer_id) leaked on dashboard"
+    assert vote.get("reviewer_role") == "attending_physician"
+    assert vote["decision"] == "approve"
+    assert vote["signature"] == "sig-abc"
+
+
+@pytest.mark.asyncio
+async def test_approvals_dashboard_strips_decision_note_and_approver(
+    async_client, db_session, clerk_seeded, keypair
+):
+    """W2.2 — dashboard must strip the reviewer ``note`` (free-text PHI
+    carrier) and ``approver`` (carries reviewer_id PII) from every
+    ``decisions[]`` entry. The signed vote's signature + key_id stay so
+    the audit chain story holds."""
+    approval = await _seed_approval(db_session, org_id=clerk_seeded["org_id"])
+    approval.decisions = [
+        {
+            "decision": "approve",
+            "approver": "alice@hospital.example:attending_physician",
+            "note": (
+                "Approved — MRN-31504806 CT confirms pancreatitis, "
+                "patient stable for discharge."
+            ),
+            "decided_at": "2026-05-24T13:00:00",
+            "signature": "sig-1",
+            "key_id": "kid-1",
+        },
+    ]
+    await db_session.commit()
+
+    resp = await async_client.get(
+        f"/v1/approvals/{approval.id}",
+        headers=_clerk_headers(keypair, clerk_seeded),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    [vote] = body["decisions"]
+    assert "note" not in vote, "decisions[].note leaked (PHI narrative)"
+    assert "approver" not in vote, "decisions[].approver leaked (reviewer_id PII)"
+    # Role still surfaced for the read-only status indicator.
+    assert vote.get("reviewer_role") == "attending_physician"
+    # Negative content scan — no fragment of the PHI or PII survives.
+    body_str = resp.text
+    assert "alice@hospital.example" not in body_str
+    assert "MRN-31504806" not in body_str
+    assert "pancreatitis" not in body_str
+
+
+@pytest.mark.asyncio
+async def test_approvals_sdk_preserves_decision_note_and_approver(
+    async_client, db_session, clerk_seeded
+):
+    """CRITICAL non-regression for W2.2: SDK callers (API key) MUST
+    still see the full ``decisions[]`` shape — ``approver`` for HITL
+    polling correlation, ``note`` for the customer's in-band review
+    surface. Breaking this breaks every integration."""
+    approval = await _seed_approval(db_session, org_id=clerk_seeded["org_id"])
+    approval.decisions = [
+        {
+            "decision": "approve",
+            "approver": "alice@hospital.example:attending_physician",
+            "note": "Approved — MRN-31504806 CT confirms pancreatitis.",
+            "decided_at": "2026-05-24T13:00:00",
+            "signature": "sig-1",
+            "key_id": "kid-1",
+        }
+    ]
+    await db_session.commit()
+
+    resp = await async_client.get(
+        f"/v1/approvals/{approval.id}",
+        headers=_sdk_headers(clerk_seeded),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    [vote] = body["decisions"]
+    assert vote["approver"] == "alice@hospital.example:attending_physician"
+    assert "MRN-31504806" in vote["note"]
 
 
 @pytest.mark.asyncio

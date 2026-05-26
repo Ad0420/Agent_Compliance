@@ -47,6 +47,7 @@ from ..models import (
 )
 from ..schemas.action import ActionRecordListResponse, ActionRecordResponse
 from ..schemas.approval import ApprovalListResponse, ApprovalResponse
+from ..services.dashboard_views import serialize_approval_for_dashboard
 from ..services.export import generate_pdf, stream_csv
 from ..services.verification import verify_chain
 
@@ -215,8 +216,16 @@ async def dashboard_list_approvals(
     total = (await session.execute(count_query)).scalar() or 0
     query = query.order_by(Approval.requested_at.desc()).limit(limit).offset(offset)
     rows = (await session.execute(query)).scalars().all()
+    # W2.2 — this route is dashboard-only (Clerk-gated under
+    # ``/v1/dashboard/*``); apply the same PHI-strip serializer used by
+    # the API-key-shared ``/v1/approvals`` route when called via Clerk
+    # session. The ``dashboard_compliance`` namespace doesn't see SDK
+    # callers, so the strip is unconditional here.
     return ApprovalListResponse(
-        approvals=[ApprovalResponse.model_validate(r) for r in rows],
+        approvals=[
+            ApprovalResponse.model_validate(serialize_approval_for_dashboard(r))
+            for r in rows
+        ],
         total=total,
     )
 
@@ -240,7 +249,8 @@ async def dashboard_get_approval(
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="Approval not found")
-    return ApprovalResponse.model_validate(row)
+    # W2.2 — same PHI strip as the list route above.
+    return ApprovalResponse.model_validate(serialize_approval_for_dashboard(row))
 
 
 @router.get("/violations")

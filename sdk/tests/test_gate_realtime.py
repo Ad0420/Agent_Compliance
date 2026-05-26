@@ -131,9 +131,12 @@ def test_default_require_hitl_still_raises_pending_review():
     with pytest.raises(PendingReview) as ei:
         wrapped()
     assert ei.value.review_id == "rev_1"
-    # Default branch still invokes for the draft and records as pending_review.
+    # Default branch still invokes for the draft and records the HITL
+    # capture. W1.3 (audit-batch-422) — wire ``result`` is ``pending``;
+    # original gate verdict in ``metadata.gate_result``.
     items = list(client._queue.queue)
-    assert items[0]["result"] == "pending_review"
+    assert items[0]["result"] == "pending"
+    assert items[0]["metadata"]["gate_result"] == "pending_review"
     client.close()
 
 
@@ -232,7 +235,9 @@ def test_realtime_require_hitl_captures_with_realtime_provenance():
 
     items = list(client._queue.queue)
     assert len(items) == 1
-    assert items[0]["result"] == "pending_review"
+    # W1.3 (audit-batch-422) — wire ``result`` normalised to ``pending``.
+    assert items[0]["result"] == "pending"
+    assert items[0]["metadata"]["gate_result"] == "pending_review"
     assert items[0]["metadata"]["review_id"] == "rev_capture_1"
     # Audit ledger must distinguish realtime-deferred from sync-pending
     # so retrospective reporting can separate the two patterns.
@@ -385,7 +390,9 @@ def test_wire_require_deferred_review_routes_regardless_of_realtime_flag():
     assert ei.value.review_id == "rev_wire_1"
     assert ei.value.gate_name == "deferred_by_policy"
     items = list(client._queue.queue)
-    assert items[0]["result"] == "pending_review"
+    # W1.3 (audit-batch-422) — wire ``result`` normalised to ``pending``.
+    assert items[0]["result"] == "pending"
+    assert items[0]["metadata"]["gate_result"] == "pending_review"
     assert items[0]["outcome"]["deferred_review_wire_effect"] is True
     client.close()
 
@@ -463,7 +470,9 @@ def test_async_realtime_require_hitl_raises_requires_deferred_review():
     assert ei.value.review_id == "rev_async_b2"
     assert ei.value.required_role == "attending_physician"
     items = list(client._queue.queue)
-    assert items[0]["result"] == "pending_review"
+    # W1.3 (audit-batch-422) — wire ``result`` normalised to ``pending``.
+    assert items[0]["result"] == "pending"
+    assert items[0]["metadata"]["gate_result"] == "pending_review"
     assert items[0]["outcome"]["realtime"] is True
     client.close()
 

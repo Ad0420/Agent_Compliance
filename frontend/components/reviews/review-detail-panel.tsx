@@ -1,45 +1,68 @@
 "use client";
 
 /**
- * ReviewDetailPanel — Wave 2D PR C2.
+ * ReviewDetailPanel — Wave 2D PR C2 + W2.2 (read-only HIPAA hardening).
  *
  * Pattern B split work surface (per
  * dashboard-design-system.md §Layout patterns line 219+): the page wraps
  * the table in the left content area, and renders this panel as the
  * fixed-width right panel (360-420px) when a row is selected.
  *
- * Anatomy
- * =======
+ * W2.2 — Read-only metadata (HIPAA min-necessary)
+ * ===============================================
+ * The Vera dashboard is operated by AI-vendor staff (e.g. Abridge
+ * employees), not the vendor's customers (hospital clinicians). Under
+ * 45 CFR 164.502(b) minimum-necessary, vendor staff don't need to
+ * authorize or reject agent decisions — that's the customer's
+ * clinician's job, completed in-band via the customer's EHR (W2.1).
+ *
+ * This panel is therefore read-only metadata only:
+ *
  *   ┌───────────────────────────────────────┐
- *   │ Review header (action + close)         │
+ *   │ Risk badge + status header             │
  *   ├───────────────────────────────────────┤
- *   │ Decision context (left content)        │
- *   │   - agent + action + summary           │
- *   │   - gate citation + fix_url link       │
- *   │   - input data (collapsible JSON view) │
- *   │   - requested at / expires at          │
+ *   │ Decision context (gate metadata)       │
+ *   │   - action_name + requesting agent     │
+ *   │   - customer tenant_id                 │
+ *   │   - gate_name + citation               │
+ *   │   - required_role                      │
+ *   │   - requested_at / expires_at          │
+ *   │   - http/https fix_url (whitelisted)   │
  *   ├───────────────────────────────────────┤
- *   │ Action box (Approve / Modify / Reject) │
- *   │   (CompleteReviewForm)                 │
+ *   │ Status indicator (NOT an action box)   │
+ *   │   - pending: "Waiting on customer EHR" │
+ *   │   - resolved: status + role + when     │
+ *   │   - expired: brick "Expired without    │
+ *   │              callback"                 │
  *   └───────────────────────────────────────┘
  *
- * The "context" we render on the left is the Approval row from
- * /v1/approvals — Approval.context carries gate metadata (gate_name,
- * required_role, citation, fix_url) once Wave 2B A2 lands; older
- * approvals just show the basic action / agent / data subject.
+ * What we deliberately do NOT render
+ * ----------------------------------
+ *  * ``action_summary`` — backend strips it for dashboard callers
+ *    (services/dashboard_views.py); the UI doesn't reference the field
+ *    at all so a future serializer change can't accidentally leak PHI.
+ *  * ``data_subject_id`` — same; stripped server-side. The customer
+ *    tenant_id we DO render is the AI vendor's customer (hospital),
+ *    not the patient.
+ *  * ``reason_detail`` / ``input`` / arbitrary context blob — backend
+ *    whitelists ``Approval.context`` to gate-metadata keys only; the
+ *    UI doesn't attempt to read narrative fields off the context map
+ *    so adding a PHI key to the whitelist by mistake would not leak
+ *    through this panel.
+ *  * Approve / Modify / Reject buttons — removed in W2.2. The HITL
+ *    path is ScribeMD's in-band callback only.
  */
 
 import * as React from "react";
-import { X, ExternalLink, ChevronDown, ChevronRight } from "lucide-react";
+import { X, ExternalLink } from "lucide-react";
 
-import { CompleteReviewForm } from "./complete-review-form";
 import { SeverityBadge, type Severity } from "@/components/ui/severity-badge";
 import {
   formatAbsoluteUTC,
   formatRelativeTime,
   formatTimeUntil,
 } from "@/lib/utils";
-import type { Approval, RiskTier } from "@/lib/api-types";
+import type { Approval, ApprovalStatus, RiskTier } from "@/lib/api-types";
 
 const RISK_SEVERITY: Record<RiskTier, Severity> = {
   critical: "HIGH",
@@ -53,6 +76,14 @@ const RISK_LABEL: Record<RiskTier, string> = {
   high: "HIGH",
   medium: "MEDIUM",
   low: "LOW",
+};
+
+const STATUS_LABEL: Record<ApprovalStatus, string> = {
+  pending: "Pending",
+  approved: "Approved",
+  rejected: "Rejected",
+  expired: "Expired",
+  cancelled: "Cancelled",
 };
 
 function stringField(ctx: Record<string, unknown>, key: string): string | null {
@@ -84,6 +115,29 @@ function safeHttpUrl(raw: string): string | null {
   }
 }
 
+/**
+ * Pull the most recent ``reviewer_role`` off the redacted decisions
+ * list (see ``services/dashboard_views._redact_decision``). The
+ * dashboard renders "Approved by attending_physician" without ever
+ * touching the customer-side reviewer's identifier — that's left
+ * stripped server-side for HIPAA min-necessary.
+ *
+ * Falls back to ``null`` for legacy votes whose ``approver`` field
+ * didn't carry the role half (pre-W2.1 decisions written through the
+ * legacy ``/v1/approvals/{id}/decide`` route).
+ */
+function latestReviewerRole(
+  decisions: Approval["decisions"],
+): string | null {
+  for (let i = decisions.length - 1; i >= 0; i -= 1) {
+    const vote = decisions[i];
+    if (typeof vote.reviewer_role === "string" && vote.reviewer_role.length > 0) {
+      return vote.reviewer_role;
+    }
+  }
+  return null;
+}
+
 export interface ReviewDetailPanelProps {
   approval: Approval;
   onClose: () => void;
@@ -99,8 +153,6 @@ export function ReviewDetailPanel({
   onClose,
   customerDisplayName,
 }: ReviewDetailPanelProps) {
-  const [inputExpanded, setInputExpanded] = React.useState(false);
-
   const ctx = approval.context ?? {};
   const gateName = stringField(ctx, "gate_name");
   const requiredRole = stringField(ctx, "required_role");
@@ -111,17 +163,12 @@ export function ReviewDetailPanel({
   // a compromised gate pack can't slip an XSS payload through the
   // reviewer's UI. See ``safeHttpUrl`` above for the threat-model note.
   const fixUrl = rawFixUrl ? safeHttpUrl(rawFixUrl) : null;
-  const reasonDetail = stringField(ctx, "reason_detail");
 
-  // Renderable preview of the action's input data when the gate
-  // payload is included on Approval.context (Wave 2B may serialise the
-  // request payload here for the reviewer's benefit). Bounded format
-  // so a pathological 1 MB payload doesn't blow up the right panel.
-  const inputData = (ctx as { input?: unknown }).input;
-  const hasInput = inputData !== undefined && inputData !== null;
-  const inputJson = hasInput
-    ? JSON.stringify(inputData, null, 2).slice(0, 8000)
-    : null;
+  const isExpiredByClock =
+    !!approval.expires_at &&
+    formatTimeUntil(approval.expires_at) === "expired";
+  const isPending = approval.status === "pending";
+  const reviewerRole = latestReviewerRole(approval.decisions);
 
   return (
     <aside
@@ -137,8 +184,11 @@ export function ReviewDetailPanel({
             <SeverityBadge severity={RISK_SEVERITY[approval.risk_tier]}>
               {RISK_LABEL[approval.risk_tier]}
             </SeverityBadge>
-            <span className="text-[12px] uppercase tracking-[0.06em] text-[color:var(--ink-3)]">
-              Pending review
+            <span
+              data-testid="review-detail-panel-status-tag"
+              className="text-[12px] uppercase tracking-[0.06em] text-[color:var(--ink-3)]"
+            >
+              {STATUS_LABEL[approval.status]}
             </span>
           </div>
           <h2 className="truncate text-[16px] font-medium text-[color:var(--ink)]">
@@ -165,24 +215,8 @@ export function ReviewDetailPanel({
           className="space-y-4 border-b border-[color:var(--ink-4)] pb-5"
         >
           <DetailRow label="Customer">
-            {customerDisplayName ?? approval.data_subject_id ?? "—"}
+            {customerDisplayName ?? "—"}
           </DetailRow>
-
-          {approval.action_summary ? (
-            <DetailRow label="Summary">
-              <p className="text-[13px] text-[color:var(--ink)] leading-relaxed">
-                {approval.action_summary}
-              </p>
-            </DetailRow>
-          ) : null}
-
-          {reasonDetail ? (
-            <DetailRow label="Reason">
-              <p className="text-[13px] text-[color:var(--ink)] leading-relaxed">
-                {reasonDetail}
-              </p>
-            </DetailRow>
-          ) : null}
 
           {gateName ? (
             <DetailRow label="Gate">
@@ -251,62 +285,134 @@ export function ReviewDetailPanel({
               <span
                 className={
                   "text-[13px] tabular-nums " +
-                  (formatTimeUntil(approval.expires_at) === "expired"
+                  (isExpiredByClock
                     ? "text-[color:var(--brick)]"
                     : "text-[color:var(--ink)]")
                 }
                 title={formatAbsoluteUTC(approval.expires_at)}
               >
-                {formatTimeUntil(approval.expires_at) === "expired"
+                {isExpiredByClock
                   ? "Expired"
                   : formatTimeUntil(approval.expires_at)}
               </span>
             </DetailRow>
           ) : null}
-
-          {hasInput && inputJson ? (
-            <div>
-              <button
-                type="button"
-                onClick={() => setInputExpanded((v) => !v)}
-                aria-expanded={inputExpanded}
-                data-testid="review-detail-panel-input-toggle"
-                className="inline-flex items-center gap-1 text-[12px] font-medium uppercase tracking-[0.06em] text-[color:var(--ink-2)] hover:text-[color:var(--ink)]"
-              >
-                {inputExpanded ? (
-                  <ChevronDown aria-hidden="true" className="size-3" />
-                ) : (
-                  <ChevronRight aria-hidden="true" className="size-3" />
-                )}
-                Input data
-              </button>
-              {inputExpanded ? (
-                <pre
-                  data-testid="review-detail-panel-input-json"
-                  className="mt-2 max-h-72 overflow-auto rounded-[8px] bg-[color:var(--paper-3)] px-3 py-2 text-[12px] text-[color:var(--ink)] leading-relaxed"
-                >
-                  <code>{inputJson}</code>
-                </pre>
-              ) : null}
-            </div>
-          ) : null}
         </section>
 
         <section
-          aria-label="Record decision"
-          className="space-y-4 pt-5"
+          aria-label="Review status"
+          data-testid="review-detail-panel-status-section"
+          className="space-y-2 pt-5"
         >
           <h3 className="text-[12px] font-medium uppercase tracking-[0.06em] text-[color:var(--ink-2)]">
-            Record decision
+            Review status
           </h3>
-          <CompleteReviewForm
+          <ReviewStatusIndicator
             approval={approval}
-            onSuccess={onClose}
-            onTerminalError={onClose}
+            isPending={isPending}
+            isExpiredByClock={isExpiredByClock}
+            reviewerRole={reviewerRole}
           />
         </section>
       </div>
     </aside>
+  );
+}
+
+interface ReviewStatusIndicatorProps {
+  approval: Approval;
+  isPending: boolean;
+  isExpiredByClock: boolean;
+  reviewerRole: string | null;
+}
+
+/**
+ * Read-only status block. Replaces the W2.2-removed Approve/Modify/
+ * Reject action box.
+ *
+ * The vendor's compliance officer reads this to answer "did the
+ * customer's clinician get to it yet, and if so what did they decide?"
+ * — never to *take* the decision. That stays in-band per HIPAA scope.
+ */
+function ReviewStatusIndicator({
+  approval,
+  isPending,
+  isExpiredByClock,
+  reviewerRole,
+}: ReviewStatusIndicatorProps) {
+  // Treat clock-expired-but-still-pending rows as "expired" for the
+  // status copy — the row will flip on the next backend sweeper pass.
+  // Surfacing it early keeps the dashboard honest.
+  if (approval.status === "expired" || (isPending && isExpiredByClock)) {
+    return (
+      <p
+        data-testid="review-detail-panel-status-expired"
+        className="rounded-[8px] bg-[color:var(--brick-bg)] px-4 py-3 text-[13px] text-[color:var(--brick)]"
+      >
+        Expired without a callback from the customer EHR. No clinician
+        decision was recorded before the review window closed.
+      </p>
+    );
+  }
+  if (approval.status === "cancelled") {
+    return (
+      <p
+        data-testid="review-detail-panel-status-cancelled"
+        className="rounded-[8px] bg-[color:var(--paper-3)] px-4 py-3 text-[13px] text-[color:var(--ink-2)]"
+      >
+        Review was cancelled before a clinician decision was recorded.
+      </p>
+    );
+  }
+  if (approval.status === "approved" || approval.status === "rejected") {
+    const verb = approval.status === "approved" ? "Approved" : "Rejected";
+    const whenIso = approval.decided_at ?? approval.resolved_at;
+    return (
+      <div
+        data-testid={
+          approval.status === "approved"
+            ? "review-detail-panel-status-approved"
+            : "review-detail-panel-status-rejected"
+        }
+        className="space-y-1 rounded-[8px] bg-[color:var(--paper-3)] px-4 py-3"
+      >
+        <p className="text-[13px] font-medium text-[color:var(--ink)]">
+          {verb} in the customer EHR
+          {reviewerRole ? (
+            <>
+              {" "}
+              by{" "}
+              <code className="rounded-[4px] bg-[color:var(--paper)] px-1.5 py-0.5 text-[12px] text-[color:var(--ink)]">
+                {reviewerRole}
+              </code>
+            </>
+          ) : null}
+          .
+        </p>
+        {whenIso ? (
+          <p className="text-[12px] text-[color:var(--ink-3)] tabular-nums">
+            <time
+              dateTime={whenIso}
+              title={formatAbsoluteUTC(whenIso)}
+            >
+              {formatRelativeTime(whenIso)}
+            </time>
+            <span className="ml-2">{formatAbsoluteUTC(whenIso)}</span>
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+  // Pending — the only common case.
+  return (
+    <p
+      data-testid="review-detail-panel-status-pending"
+      className="rounded-[8px] bg-[color:var(--paper-3)] px-4 py-3 text-[13px] text-[color:var(--ink-2)]"
+    >
+      Pending in customer EHR — waiting for clinician callback. The
+      Vera dashboard is read-only; clinician decisions are recorded
+      in-band via the customer&rsquo;s EHR integration.
+    </p>
   );
 }
 

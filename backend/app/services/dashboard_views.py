@@ -63,6 +63,67 @@ _SAFE_APPROVAL_CONTEXT_KEYS: frozenset[str] = frozenset(
 )
 
 
+# Whitelist of keys that are safe to surface on each ``decisions[]`` entry
+# for the dashboard. The persisted vote dict (see
+# ``services/approvals.decide_approval``) carries:
+#
+#   * ``decision``    — approve / reject / cancel (operational metadata)
+#   * ``approver``    — formatted as ``"{reviewer_id}:{reviewer_role}"``
+#                       by ``services/reviews.complete_review``. The
+#                       ``reviewer_id`` half is PII for customer-side
+#                       reviewers (clinician emails / identifiers); the
+#                       AI vendor's compliance staff don't need it under
+#                       HIPAA min-necessary. ``approver`` is therefore
+#                       DROPPED from the dashboard view — we surface the
+#                       role portion as a separate ``reviewer_role``
+#                       field via ``_redact_decision`` below.
+#   * ``note``        — free-text reviewer comment (up to 5000 chars).
+#                       Frequently carries narrative PHI when the in-band
+#                       reviewer references the clinical context
+#                       ("Approved — patient's CT shows pancreatitis…").
+#                       DROPPED.
+#   * ``decided_at``  — timestamp; not PHI.
+#   * ``signature``   — KMS signature over the vote; required for the
+#                       audit story. Not PHI (deterministic ciphertext).
+#   * ``key_id``      — KMS key identifier. Not PHI.
+_SAFE_DECISION_KEYS: frozenset[str] = frozenset(
+    {
+        "decision",
+        "decided_at",
+        "signature",
+        "key_id",
+    }
+)
+
+
+def _redact_decision(vote: dict) -> dict:
+    """Project one ``decisions[]`` entry down to dashboard-safe fields.
+
+    Strips the PII ``approver`` (reviewer_id + role mashup) and the
+    free-text ``note`` (PHI carrier). Re-emits a derived
+    ``reviewer_role`` so the dashboard can still render "approved by
+    attending_physician" without exposing which specific clinician
+    pressed the button.
+
+    The full vote — including ``approver`` and ``note`` — stays
+    available to SDK callers (API-key auth) via the unredacted shape.
+    """
+    safe = {key: vote[key] for key in _SAFE_DECISION_KEYS if key in vote}
+    # ``approver`` is "{reviewer_id}:{reviewer_role}" for W2.1 reviews
+    # completed via /v1/reviews/{id}/complete. Older /v1/approvals/.../decide
+    # callers may have written a plain "{name}" or "{api_key:prefix}";
+    # only split when the colon is present so legacy votes still pass
+    # through without inventing a fake role.
+    approver = vote.get("approver")
+    if isinstance(approver, str) and ":" in approver:
+        # Take the last colon as the separator — reviewer_id may itself
+        # contain colons (rare but legal in the schema).
+        _, _, reviewer_role = approver.rpartition(":")
+        if reviewer_role:
+            safe["reviewer_role"] = reviewer_role
+    return safe
+
+
 def _safe_approval_context(context: dict | None) -> dict:
     """Project ``Approval.context`` down to the dashboard-safe whitelist.
 
@@ -106,12 +167,18 @@ def serialize_approval_for_dashboard(approval: Approval) -> dict[str, Any]:
     * IDs, FKs, status, risk tier, approver counts, timestamps — all
       operational metadata the vendor's compliance team needs to monitor
       chain health, expiry countdowns, and webhook delivery.
-    * ``decisions`` — the signed-vote list. Reviewer names + decision
-      strings are not PHI; the signatures themselves are required for
-      the audit story.
+    * ``decisions`` — the signed-vote list, projected through
+      ``_redact_decision``. The reviewer's free-text ``note`` is
+      stripped (PHI narrative carrier) and the ``approver`` field
+      (``"{reviewer_id}:{reviewer_role}"``) is replaced by the derived
+      ``reviewer_role`` only — reviewer_id is customer-side staff PII
+      that the vendor's compliance UI doesn't need under HIPAA
+      min-necessary. The KMS signature + key_id stay so the chain
+      auditor still has the signed-vote proof.
     * ``reviewed_below_threshold`` — surfaces enforcement violations to
       the compliance officer; not PHI.
     """
+    decisions = [_redact_decision(v) for v in (approval.decisions or [])]
     return {
         "id": approval.id,
         "org_id": approval.org_id,
@@ -125,7 +192,7 @@ def serialize_approval_for_dashboard(approval: Approval) -> dict[str, Any]:
         "risk_tier": approval.risk_tier,
         "approvers_required": approval.approvers_required,
         "status": approval.status,
-        "decisions": approval.decisions or [],
+        "decisions": decisions,
         "requested_at": approval.requested_at,
         "expires_at": approval.expires_at,
         "resolved_at": approval.resolved_at,
@@ -192,4 +259,5 @@ __all__ = [
     "serialize_approval_for_dashboard",
     "serialize_decision_for_dashboard",
     "is_dashboard_request",
+    "_redact_decision",
 ]
