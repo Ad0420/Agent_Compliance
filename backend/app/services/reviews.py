@@ -663,6 +663,15 @@ async def _complete_review_locked(
     # service so the chain vote signature, dual webhook emission, and
     # status-machine all stay in lock-step with the legacy
     # POST /v1/approvals/{id}/decide path.
+    #
+    # W1.1 follow-up: ``decide_approval`` now also performs the
+    # reviewer-role check itself (backported from this very function).
+    # Forward the validated ``reviewer_role`` so the downstream check
+    # is a tautological pass rather than a ``reviewer_role_required``
+    # rejection. The double-check is intentional — A4's check fires
+    # first under the per-review asyncio lock so chain records are
+    # written for below-threshold callbacks before the row-level DB
+    # lock is even acquired.
     decision = ApprovalDecision(
         decision=data.decision,
         # ``approver`` is the canonical identifier the signed vote
@@ -671,6 +680,7 @@ async def _complete_review_locked(
         # signatures.
         approver=f"{data.reviewer_id}:{data.reviewer_role}",
         note=data.note,
+        reviewer_role=data.reviewer_role,
     )
     resolved = await decide_approval(session, org_id, review_id, decision)
 
