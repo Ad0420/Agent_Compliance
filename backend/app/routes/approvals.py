@@ -80,13 +80,29 @@ async def decide_approval_route(
     approval_id: str,
     data: ApprovalDecision,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, object] = Depends(require_permission("admin")),
+    auth: tuple[str, object] = Depends(require_permission("write")),
 ):
-    """Human reviewer approves or rejects. Requires admin key for MVP.
+    """Human reviewer approves or rejects.
 
     EU AI Act Art. 14: for dual-verification (approvers_required=2),
     two distinct approvers must each vote approve before status becomes 'approved'.
     Any single 'reject' vote immediately rejects the approval.
+
+    Wave 2D follow-up W1.1 — auth relaxation
+    ----------------------------------------
+    Permission relaxed from ``admin`` → ``write``. Closes
+    phase2-acceptance-findings
+    ``require_permission-admin-too-strict-on-decide`` (Medium): real
+    reviewers (attending physicians, nurses, etc.) should never need
+    admin keys to register a decision. The security boundary is now
+    the reviewer-role check inside
+    ``services.approvals.decide_approval`` — when the approval is
+    gated, the request must supply a ``reviewer_role`` that satisfies
+    ``Approval.context.required_role``; insufficient roles are
+    rejected 403 with an audit record + ``reviewed_below_threshold``
+    flag flip. The API-key permission only gates *whether* the caller
+    can hit the endpoint at all; the role check gates *which*
+    decisions they can record on gated approvals.
     """
     org_id, _ = auth
     approval = await decide_approval(session, org_id, approval_id, data)
