@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **`records/<id>.json` now includes `previous_hash` per record** —
+  Phase 3 follow-up. Lets `vera verify --offline` enforce the chain
+  rule `sha256(previous_hash + action_record_canonical) == leaf_hash`
+  as a hard fail rather than soft-failing with
+  `previous_hash_unavailable`. The reason code for a chain-rule
+  mismatch is now `leaf_hash_mismatch` (was `canonical_leaf_mismatch`).
+  Legacy bundles produced before this change are still accepted —
+  they soft-fail with `previous_hash_unavailable` for backwards
+  compatibility. The `GET /v1/records/{id}/merkle-proof` payload also
+  carries `previous_hash` so `vera evidence-export` picks it up
+  automatically.
+
 ### Added
 - **`vera verify --merkle-proof <record_id>`** — online verification of
   a single record. Fetches the Merkle proof from Vera, folds the path

@@ -169,12 +169,22 @@ async def test_proof_happy_path_reconstructs_root_and_validates_signature(
         "checkpoint_org_id",
         "checkpoint_sequence",
         "checkpoint_hash_at_checkpoint",
+        # Phase 3 follow-up — previous_hash so offline verifiers can
+        # enforce ``sha256(previous_hash + canonical) == leaf_hash``.
+        "previous_hash",
         "kms_key_id",
         "kms_signature",
         "kms_algorithm",
         "kms_public_key_pem",
     ):
         assert field in body, f"missing field {field!r} in proof payload"
+
+    # Phase 3 follow-up: ``previous_hash`` in the payload must match
+    # the value persisted on the record. An offline verifier feeds it
+    # into the chain rule below; drift here would silently fail every
+    # bundle export's chain-rule check.
+    record_for_prev = await db_session.get(ActionRecord, middle_id)
+    assert body["previous_hash"] == (record_for_prev.previous_hash or "")
 
     # Wave 3C.2 — the identity fields must match the checkpoint row so a
     # downstream offline verifier can rebuild the signing message.

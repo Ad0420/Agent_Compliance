@@ -378,6 +378,25 @@ async def test_evidence_export_archive_contains_only_customer_records(
             "disclosure bundle"
         )
 
+    # Phase 3 follow-up: each record carries its ``previous_hash`` so
+    # an offline verifier can enforce
+    # ``sha256(previous_hash + canonical) == leaf_hash``. Without this
+    # the verifier soft-fails with ``previous_hash_unavailable`` and
+    # can only check Merkle path inclusion, not the canonical bytes.
+    db_previous_hashes = {
+        r.id: (r.previous_hash or "")
+        for r in (
+            await db_session.execute(
+                select(ActionRecord).where(
+                    ActionRecord.org_id == org.id,
+                    ActionRecord.tenant_id == "cleveland_clinic",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    }
+
     # Per-record verification.
     for record_meta in manifest["records"]:
         rec_bytes = members[f"records/{record_meta['id']}.json"]
@@ -388,6 +407,16 @@ async def test_evidence_export_archive_contains_only_customer_records(
         assert cp_file in members
         cp_json = json.loads(members[cp_file])
         assert cp_json["merkle_root"] == rec["merkle_root"]
+        # ``previous_hash`` per record, matching the DB row.
+        assert "previous_hash" in rec, (
+            f"record {record_meta['id']} bundle JSON missing previous_hash"
+        )
+        expected_prev = db_previous_hashes[record_meta["id"]]
+        assert rec["previous_hash"] == expected_prev, (
+            f"record {record_meta['id']}: previous_hash in bundle "
+            f"({rec['previous_hash']!r}) does not match DB "
+            f"({expected_prev!r})"
+        )
 
 
 # ── Evidence export: invalid range ─────────────────────────────────
