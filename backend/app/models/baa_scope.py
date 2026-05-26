@@ -61,7 +61,15 @@ class BAAScope(Base):
         server_default=sa.false(),
         default=False,
     )
-    granted_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # ``server_default`` mirrors the pattern on ``created_at``: callers that
+    # explicitly pass ``granted_at`` (e.g. the BAA upload route using the
+    # operator-supplied ``signed_at``) still win, but a caller that omits it —
+    # or accidentally passes ``None`` — gets ``now()`` from the DB rather than
+    # a ``NOT NULL`` violation. Original DDL had no default; prod was failing
+    # every insert that didn't supply a value explicitly.
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )

@@ -163,6 +163,46 @@ async def test_baa_agreement_rejects_inverted_dates(db_session, make_org_and_cus
 
 
 @pytest.mark.asyncio
+async def test_baa_scope_granted_at_defaults_to_now_when_omitted(
+    db_session, make_org_and_customer
+):
+    """Regression: production ``baa_scopes`` inserts were failing with
+    ``null value in column "granted_at" violates not-null constraint``
+    whenever the row was built without supplying ``granted_at``.
+
+    The model column should now carry ``server_default=func.now()`` (matching
+    the sibling ``created_at``), so a BAAScope constructed without
+    ``granted_at`` persists with a DB-supplied timestamp instead of crashing
+    the transaction.
+
+    Payload shape matches the failing row from the prod logs (narrow scope,
+    ``is_unrestricted=False``)."""
+    org, cust = await make_org_and_customer("baa-granted-at-default")
+    baa = BAAAgreement(org_id=org.id, customer_id=cust.id, status="active")
+    db_session.add(baa)
+    await db_session.commit()
+    await db_session.refresh(baa)
+
+    before = _now()
+    scope = BAAScope(
+        baa_agreement_id=baa.id,
+        covered_services=["chart_entry", "triage", "prescribe"],
+        covered_agent_types=["scribe", "triage", "prior_auth"],
+        is_unrestricted=False,
+        # NOTE: granted_at deliberately omitted — that's the prod failure
+        # mode this regression test covers.
+    )
+    db_session.add(scope)
+    await db_session.commit()
+    await db_session.refresh(scope)
+
+    assert scope.granted_at is not None
+    # The DB default should be applied at insert time, so the value lands
+    # at-or-after `before` (allowing for slight clock skew).
+    assert scope.granted_at >= before.replace(microsecond=0)
+
+
+@pytest.mark.asyncio
 async def test_baa_scope_is_unrestricted_default_false(db_session, make_org_and_customer):
     """New BAAScope rows default to is_unrestricted=False (the strict
     enumerated semantics). Legacy backfill to True lands in PR 4/5."""
