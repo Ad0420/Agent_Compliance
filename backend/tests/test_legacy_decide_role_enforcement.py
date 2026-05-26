@@ -324,6 +324,36 @@ async def test_decide_gated_unknown_role_fails_closed(
     assert refreshed.reviewed_below_threshold is True
 
 
+# ── 422: empty-string reviewer_role rejected at schema boundary ────────────
+
+
+@pytest.mark.asyncio
+async def test_decide_empty_reviewer_role_returns_422(
+    async_client, org_and_key, db_session
+):
+    """422: empty-string reviewer_role rejected by Pydantic min_length=1.
+
+    Mirrors A4's ReviewCompletionInput.reviewer_role contract — empty
+    strings shouldn't reach the service-layer fail-closed branch where
+    they'd otherwise produce a 403. The 422 keeps the validation
+    surface aligned across the two endpoints so a single human acting
+    through either endpoint sees the same rejection.
+    """
+    org, raw_key, _ = org_and_key
+    approval = await _seed_gated_approval(db_session, org.id)
+
+    response = await async_client.post(
+        f"/v1/approvals/{approval.id}/decide",
+        json={
+            "decision": "approve",
+            "approver": "dr_smith",
+            "reviewer_role": "",
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert response.status_code == 422, response.text
+
+
 # ── 400: missing reviewer_role on a gated approval ─────────────────────────
 
 

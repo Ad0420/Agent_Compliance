@@ -55,6 +55,13 @@ class ApprovalDecision(BaseModel):
     note: Optional[str] = Field(default=None, max_length=5000)
     reviewer_role: Optional[str] = Field(
         default=None,
+        # min_length=1 mirrors A4's ReviewCompletionInput.reviewer_role
+        # and gives an empty string a clean 422 rejection at the schema
+        # boundary instead of falling through to the service's
+        # fail-closed 403. The Optional + min_length combination is
+        # Pydantic-valid: None passes (legacy callers), "" is rejected,
+        # any non-empty string is forwarded to is_role_sufficient.
+        min_length=1,
         max_length=64,
         description=(
             "Optional reviewer-role claim. When the target Approval has "
