@@ -33,11 +33,38 @@ class ApprovalCreate(BaseModel):
 
 
 class ApprovalDecision(BaseModel):
-    """A human reviewer approves or rejects a pending request."""
+    """A human reviewer approves or rejects a pending request.
+
+    Phase 2 Wave 2D follow-up W1.1 — ``reviewer_role`` was backported
+    from A4's ``ReviewCompletionInput`` so the legacy
+    ``POST /v1/approvals/{id}/decide`` endpoint can enforce the same
+    reviewer-role hierarchy ``/v1/reviews/{id}/complete`` does. The
+    field is ``Optional`` for backward-compat with callers deciding on
+    un-gated approvals (``Approval.context.required_role is None``), but
+    when the approval IS gated the service layer rejects calls that
+    omit the field (400 ``reviewer_role_required``). See
+    ``services.approvals.decide_approval`` for the enforcement and
+    ``backend/tests/test_legacy_decide_role_enforcement.py`` for the
+    contract tests. Length constraint mirrors A4's
+    ``ReviewCompletionInput.reviewer_role`` (max 64) so a single human
+    acting through either endpoint sees the same validation surface.
+    """
 
     decision: str = Field(..., pattern="^(approve|reject)$")
     approver: str = Field(..., min_length=1, max_length=500)
     note: Optional[str] = Field(default=None, max_length=5000)
+    reviewer_role: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "Optional reviewer-role claim. When the target Approval has "
+            "``context.required_role`` set, the service layer compares "
+            "this via ``services.reviewer_roles.is_role_sufficient`` and "
+            "rejects insufficient or missing values. When the Approval "
+            "is un-gated (no ``required_role``), this field is ignored "
+            "— preserves legacy behaviour for callers that pre-date W1.1."
+        ),
+    )
 
 
 class ApprovalDecisionRecord(BaseModel):
