@@ -414,17 +414,14 @@ def _make_export_handler(
             return httpx.Response(200, json=body)
         if path == "/v1/actions":
             tenant_filter = request.url.params.get("tenant_id")
-            since_seq = int(
-                request.url.params.get("since_sequence_number", "0")
-            )
-            # Flatten all known records.
+            offset = int(request.url.params.get("offset", "0"))
+            limit = int(request.url.params.get("limit", "200"))
+            # Flatten all known records, then return ``DESC`` paginated
+            # — matching the real route's ordering contract
+            # (backend/app/routes/actions.py::list_actions).
             records: list[dict] = []
             for date_iso, lst in org_record_map.items():
                 for rid, seq in lst:
-                    if seq <= since_seq:
-                        continue
-                    # Tenant filter: in the test, we attach tenant_id to
-                    # the proof payload's customer_tenant_id field.
                     proof = proofs.get(rid, {})
                     rec_tenant = proof.get("tenant_id")
                     if tenant_filter and rec_tenant != tenant_filter:
@@ -436,8 +433,11 @@ def _make_export_handler(
                             "tenant_id": rec_tenant,
                         }
                     )
-            records.sort(key=lambda r: r["sequence_number"])
-            return httpx.Response(200, json={"records": records})
+            records.sort(
+                key=lambda r: r["sequence_number"], reverse=True
+            )
+            page = records[offset : offset + limit]
+            return httpx.Response(200, json={"records": page})
         if path.startswith("/v1/records/") and path.endswith(
             "/merkle-proof"
         ):
@@ -656,6 +656,60 @@ def test_evidence_export_dir_skips_missing_checkpoint_days(
     manifest = json.loads((out / "manifest.json").read_text())
     assert manifest["checkpoint_count"] == 1
     assert manifest["record_count"] == 1
+
+
+# ── Pagination: walks multiple pages and stops at prior_sequence ────────
+
+
+def test_evidence_export_multipage_pagination(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """500 records in a single checkpoint window → multiple pages walked.
+
+    The real ``/v1/actions`` route caps ``limit`` at 200 and orders
+    ``sequence_number DESC``. Our enumerator MUST walk pages via
+    ``offset`` until it sees a record at or below ``prior_sequence``.
+    Building 500 records lets us assert at least 3 page-walks happened
+    (200 + 200 + 100) without smearing into a slow integration test.
+    """
+    date_iso = "2026-05-20"
+    org_records_full: list[tuple[str, int]] = []
+    proofs: dict[str, dict] = {}
+    for i in range(1, 501):
+        rid = f"rec_{i:04d}"
+        proof = _build_proof_payload(record_id=rid, sequence=i)
+        proof["tenant_id"] = "cleveland_clinic"
+        org_records_full.append((rid, i))
+        proofs[rid] = proof
+    handler = _make_export_handler(
+        [date_iso],
+        {date_iso: org_records_full},
+        proofs,
+    )
+    _install_transport(monkeypatch, handler)
+    for k, v in _make_runner_env().items():
+        monkeypatch.setenv(k, v)
+    out = tmp_path / "bundle"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "evidence-export",
+            "--since",
+            date_iso,
+            "--until",
+            date_iso,
+            "--out",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    # All 500 records made it into the bundle — confirms pagination
+    # walked the full window.
+    record_files = list((out / "records").iterdir())
+    assert len(record_files) == 500
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["record_count"] == 500
 
 
 # ── End-to-end: export → verify proof against export ────────────────────

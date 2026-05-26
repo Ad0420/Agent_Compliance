@@ -307,6 +307,9 @@ def _http_get_json(
         return None, 200, resp.text
 
 
+_ACTIONS_PAGE_LIMIT_MAX = 200  # Server caps ``limit`` at 200 (le=200).
+
+
 def _enumerate_record_ids_in_window(
     client: httpx.Client,
     api_url: str,
@@ -315,26 +318,40 @@ def _enumerate_record_ids_in_window(
     prior_sequence: int,
     upper_sequence: int,
     customer_tenant_id: Optional[str],
-    page_limit: int = 500,
+    page_limit: int = _ACTIONS_PAGE_LIMIT_MAX,
 ) -> list[str]:
     """List record IDs in ``(prior_sequence, upper_sequence]``.
 
-    Uses ``GET /v1/actions`` paginated by ``since_sequence_number``.
+    Uses ``GET /v1/actions`` with **offset-based pagination** — the
+    backend route at ``backend/app/routes/actions.py::list_actions``
+    supports ``limit``/``offset`` only (no ``since_sequence_number``
+    filter; that's a future enhancement). Records are returned in
+    ``sequence_number DESC`` order. We walk pages until either:
+
+    1. We see a record whose ``sequence_number`` is at or below
+       ``prior_sequence`` (we've walked past our window — stop), or
+    2. The page is shorter than ``page_limit`` (no more rows).
+
     Server-side filters by ``tenant_id`` when ``customer_tenant_id`` is
     set — the same filter the customer dashboard uses, so the
     "selective disclosure" guarantee is enforced by the same code path
     (no chance the SDK leaks rows the server wouldn't have).
 
     Cross-org STAFF callers go through this same path; the server's
-    Wave 3B.3 IAM enforcement ensures the result set is constrained to
-    the X-Org-Id-resolved org.
+    Wave 3B.3 IAM enforcement constrains the result set to the
+    ``X-Org-Id``-resolved org. STAFF tier cannot pass ``tenant_id``
+    (the server returns 403 ``staff_phi_filter_forbidden``) — that
+    surfaces in the CLI as a transport error, which is the correct
+    behaviour: staff sessions cannot run customer-scoped evidence
+    exports today.
     """
+    page_limit = min(page_limit, _ACTIONS_PAGE_LIMIT_MAX)
     ids: list[str] = []
-    cursor = prior_sequence
+    offset = 0
     while True:
         params: dict[str, str] = {
             "limit": str(page_limit),
-            "since_sequence_number": str(cursor),
+            "offset": str(offset),
         }
         if customer_tenant_id:
             params["tenant_id"] = customer_tenant_id
@@ -343,30 +360,39 @@ def _enumerate_record_ids_in_window(
         body, status, raw = _http_get_json(client, url, headers)
         if status != 200 or body is None:
             raise click.ClickException(
-                f"failed to list actions at {url}: status={status} body={raw[:200]}"
+                f"failed to list actions at {url}: "
+                f"status={status} body={raw[:200]}"
             )
-        records = body.get("records") or body if isinstance(body, list) else body.get("records") or []
+        # ``/v1/actions`` returns an ``ActionRecordListResponse`` with a
+        # ``records: list[...]`` field. Defensive ``isinstance(body,
+        # list)`` branch covers a bare-list shape we don't currently
+        # emit, but a forward-compat consumer may want to keep working
+        # against either shape.
+        if isinstance(body, list):
+            records = body
+        else:
+            records = body.get("records") or []
         if not records:
             break
-        any_in_window = False
+        # Records are sorted ``sequence_number DESC``. Stop walking as
+        # soon as we pass below ``prior_sequence``.
+        saw_below_window = False
         for r in records:
             seq = r.get("sequence_number")
             rid = r.get("id")
             if seq is None or rid is None:
                 continue
             if seq <= prior_sequence:
-                continue
+                saw_below_window = True
+                break
             if seq > upper_sequence:
+                # Window is half-open above; should be rare since the
+                # checkpoint sealed at ``upper_sequence`` is the latest
+                # by definition, but skip defensively.
                 continue
             ids.append(rid)
-            any_in_window = True
-            cursor = max(cursor, seq)
-        # Stop when the page didn't produce any in-window rows AND
-        # the cursor has either advanced past upper_sequence or didn't
-        # advance at all (server returned a stale page).
-        if not any_in_window or cursor >= upper_sequence:
-            break
-        if len(records) < page_limit:
+        offset += page_limit
+        if saw_below_window or len(records) < page_limit:
             break
     return ids
 
