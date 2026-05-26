@@ -1089,7 +1089,7 @@ the `GET /v1/records/{id}/merkle-proof` response body verbatim
 |---|---|---|
 | `action_record_id` | string | The record this proof is for. |
 | `action_record_canonical` | string | Canonical JSON bytes that hashed into the chain at insert time. |
-| `previous_hash` | hex string | Predecessor leaf in the per-org hash chain. Empty string for the first record. Required so an offline verifier can enforce the chain rule `sha256(previous_hash + canonical) == leaf_hash`; without it the verifier can only prove Merkle path inclusion. |
+| `previous_hash` | string | Predecessor leaf in the per-org hash chain. The literal sentinel `"GENESIS"` for the first record in a chain (not an empty string), otherwise the prior record's hex `leaf_hash`. Required so an offline verifier can enforce the chain rule `sha256(previous_hash + canonical) == leaf_hash`; without it the verifier can only prove Merkle path inclusion. |
 | `leaf_hash` | hex | SHA-256(`previous_hash` + `action_record_canonical`). |
 | `merkle_path` | array | Sibling hashes from leaf to root: `[{sibling_hash, direction}, ...]`. `direction` is `"left"` or `"right"`. |
 | `merkle_root` | hex | The root of the Merkle tree for this checkpoint window. |

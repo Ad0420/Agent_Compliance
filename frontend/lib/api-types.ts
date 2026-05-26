@@ -856,6 +856,13 @@ export interface MerkleProofPayload {
   merkle_root: string;
   checkpoint_id: string;
   checkpoint_signed_at: string;
+  // Phase 3 follow-up: ``previous_hash`` is the predecessor leaf in
+  // the per-org chain (literal sentinel ``"GENESIS"`` for the first
+  // record). Required so an in-browser or offline verifier can
+  // enforce ``sha256(previous_hash + canonical) == leaf_hash`` rather
+  // than just folding the Merkle path. Added to the backend payload
+  // in the same wave; frontend type stays in sync.
+  previous_hash: string;
   kms_key_id: string;
   kms_signature: string;
   kms_algorithm: string;

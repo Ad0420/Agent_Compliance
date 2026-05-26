@@ -383,8 +383,12 @@ async def test_evidence_export_archive_contains_only_customer_records(
     # ``sha256(previous_hash + canonical) == leaf_hash``. Without this
     # the verifier soft-fails with ``previous_hash_unavailable`` and
     # can only check Merkle path inclusion, not the canonical bytes.
+    # ``ActionRecord.previous_hash`` is ``Text, nullable=False`` and
+    # the first record in any chain receives the literal sentinel
+    # ``"GENESIS"`` from ``ChainState.latest_hash`` — never an empty
+    # string. Assert direct equality from the DB row.
     db_previous_hashes = {
-        r.id: (r.previous_hash or "")
+        r.id: r.previous_hash
         for r in (
             await db_session.execute(
                 select(ActionRecord).where(
