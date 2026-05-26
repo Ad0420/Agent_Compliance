@@ -30,7 +30,7 @@ from typing import Optional
 import click
 import httpx
 
-from .verify.proof import (
+from .verify.proof_payload import (
     REASON_MERKLE_PATH_MISMATCH,
     REASON_SIGNATURE_ALGORITHM_UNSUPPORTED,
     REASON_SIGNATURE_INVALID,
@@ -208,11 +208,23 @@ def verify_merkle_proof_for_record(
     ),
 )
 @click.option(
+    "--offline",
+    "offline_bundle",
+    type=click.Path(exists=False, dir_okay=True, file_okay=True, resolve_path=True),
+    default=None,
+    help=(
+        "Path to an evidence bundle (directory or tarball) to verify "
+        "offline. NO network calls are made — only the bundle on disk "
+        "is read. Required for the Phase 3 acceptance gate (Vera API "
+        "firewalled). Routes through vera.verify.offline.run_offline_verify."
+    ),
+)
+@click.option(
     "--timeout",
     type=float,
     default=30.0,
     show_default=True,
-    help="Request timeout in seconds.",
+    help="Request timeout in seconds (online modes only).",
 )
 @click.option(
     "--hmac-secret-env",
@@ -228,24 +240,55 @@ def verify_merkle_proof_for_record(
 )
 def verify_cmd(
     merkle_proof_record_id: Optional[str],
+    offline_bundle: Optional[str],
     timeout: float,
     hmac_secret_env: Optional[str],
 ) -> None:
     """Verify Vera-issued evidence.
 
-    Today this command's single supported mode is ``--merkle-proof
-    <action_record_id>``: download the proof from Vera and re-validate
-    it locally (Wave 3C.2). Wave 3C.1 is adding a ``--offline`` flag
-    on the same command for bundle-driven verification.
-    """
-    if merkle_proof_record_id is None:
-        click.echo(
-            "vera verify currently requires --merkle-proof <record_id>. "
-            "Pass --help for usage.",
-            err=True,
-        )
-        sys.exit(2)
+    Three supported modes (Wave 3C.1 + 3C.2 merged):
 
+    * ``--merkle-proof <action_record_id>`` (3C.2): download the proof
+      from Vera and re-validate it locally.
+    * ``--offline <bundle_path>`` (3C.1): verify a previously-exported
+      evidence bundle on disk. NO network calls.
+    * No flags: online chain-reachability check via /v1/verify.
+    """
+    # ── --offline routes to 3C.1's pipeline ─────────────────────────
+    if offline_bundle is not None:
+        if merkle_proof_record_id is not None:
+            click.echo(
+                "vera verify: --merkle-proof and --offline are mutually "
+                "exclusive.",
+                err=True,
+            )
+            sys.exit(2)
+        from .verify.cli import (
+            EXIT_BUNDLE_ERROR,
+            EXIT_OK,
+            EXIT_UNEXPECTED,
+            EXIT_VERIFICATION_FAILED,
+            _print_summary,
+        )
+        from .verify.offline import BundleError, run_offline_verify
+
+        try:
+            result = run_offline_verify(offline_bundle)
+        except BundleError as exc:
+            click.echo(f"FAIL Bundle error: {exc}", err=True)
+            sys.exit(EXIT_BUNDLE_ERROR)
+        except Exception as exc:  # noqa: BLE001 — top-level CLI catch-all
+            click.echo(f"FAIL Unexpected error: {exc}", err=True)
+            sys.exit(EXIT_UNEXPECTED)
+        _print_summary(result)
+        sys.exit(EXIT_OK if result.ok else EXIT_VERIFICATION_FAILED)
+
+    # ── No flags routes to 3C.1's online chain check ─────────────────
+    if merkle_proof_record_id is None:
+        from .verify.cli import _run_online_verify
+        sys.exit(_run_online_verify(timeout))
+
+    # ── --merkle-proof routes to 3C.2's per-record verifier ──────────
     hmac_secret: Optional[bytes] = None
     if hmac_secret_env:
         raw = os.environ.get(hmac_secret_env, "")

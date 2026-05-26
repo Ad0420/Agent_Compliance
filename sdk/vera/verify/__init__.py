@@ -1,43 +1,69 @@
-"""``vera.verify`` — offline Merkle proof + checkpoint verification.
+"""``vera verify`` — checkpoint + Merkle-proof verification for the SDK.
 
-Wave 3C.2 (this PR) seeds the subpackage with the proof-validation
-primitives needed by ``vera verify --merkle-proof`` and
-``vera evidence-export``. Wave 3C.1 (in parallel) is refactoring the
-existing ``verify`` CLI flow into this same subpackage and adding a
-``--offline`` flag that consumes the evidence-export bundle.
+Phase 3 Wave 3C.1 extracts the verify pipeline from ``vera.cli`` into a
+proper subpackage so the offline path can be tested in isolation and so
+``vera verify --merkle-proof`` / ``vera verify --offline`` share the same
+pure-Python verifiers.
 
-Subpackage contract (Wave 3C.2 baseline — 3C.1 may extend on rebase):
+Layering:
 
-* :mod:`vera.verify.proof` — pure-Python primitives (no httpx, no I/O):
-    - :func:`verify_merkle_path`
-    - :func:`recompute_leaf_hash`
-    - :func:`recompute_checkpoint_root_via_proof`
-    - :func:`verify_kms_signature_for_proof`
-    - :func:`verify_proof_payload` — full verifier with structured result
-    - :class:`ProofVerificationResult` — pass/fail + reason code
+* :mod:`vera.verify.proof` — pure Merkle-path validation. No I/O.
+  Mirrors :func:`backend.app.services.merkle_proof.verify_proof_payload`
+  so a verifier built from this module reconstructs the same root the
+  backend sealed.
+* :mod:`vera.verify.signature` — pure KMS-signature verification.
+  Asymmetric (RSA-PSS / ECDSA via PEM public key) and HMAC paths. No I/O.
+* :mod:`vera.verify.api` — HTTP client that hits Vera's
+  ``/v1/checkpoints/{date}`` and ``/v1/records/{id}/merkle-proof``.
+  Uses the existing :class:`vera.client.VeraClient` for auth + base URL.
+* :mod:`vera.verify.offline` — entire offline pipeline. Reads a bundle
+  directory, calls into ``proof`` + ``signature``, returns a structured
+  result. No network.
+* :mod:`vera.verify.cli` — Click wiring. Thin layer over ``offline`` /
+  ``api`` that turns a result into an exit code and printed table.
 
-Touch points for 3C.1:
-* If 3C.1 wants to share the ``MerkleProofPayload`` shape, the
-  authoritative reference is :class:`backend.app.services.merkle_proof.MerkleProofPayload`.
-* The bundle layout produced by ``vera evidence-export`` (see
-  :mod:`vera.cli.evidence_export_cmd`) is the input shape 3C.1's
-  ``--offline`` is expected to consume.
+Public surface (re-exported here): ``run_verify``, ``VerifyResult``,
+``RecordVerification``, ``verify_merkle_path``, ``verify_signature``.
+``vera.verify.cli.register_verify_commands`` wires the ``verify`` Click
+group onto an existing CLI group.
+
+Why a subpackage and not more methods on :class:`VeraClient`: the
+offline pipeline needs to be importable + callable WITHOUT a configured
+``VeraClient`` (no API key, no base URL) — an OCR investigator running
+``vera verify --offline /tmp/bundle/`` must not be required to set
+``VERA_API_KEY``. Keeping the offline path file-system-only makes that
+contract checkable.
 """
 
+from __future__ import annotations
+
+from .offline import (
+    BundleManifest,
+    RecordVerification,
+    VerifyResult,
+    run_offline_verify,
+)
 from .proof import (
-    ProofVerificationResult,
-    recompute_checkpoint_root_via_proof,
-    recompute_leaf_hash,
-    verify_kms_signature_for_proof,
+    canonical_record_to_leaf_hash,
     verify_merkle_path,
-    verify_proof_payload,
+)
+from .signature import (
+    SignatureResult,
+    verify_signature,
 )
 
+# Convenience alias — the documented entry point is ``run_verify``;
+# ``run_offline_verify`` is the long-form for clarity inside the module.
+run_verify = run_offline_verify
+
 __all__ = [
-    "ProofVerificationResult",
-    "recompute_checkpoint_root_via_proof",
-    "recompute_leaf_hash",
-    "verify_kms_signature_for_proof",
+    "BundleManifest",
+    "RecordVerification",
+    "SignatureResult",
+    "VerifyResult",
+    "canonical_record_to_leaf_hash",
+    "run_offline_verify",
+    "run_verify",
     "verify_merkle_path",
-    "verify_proof_payload",
+    "verify_signature",
 ]

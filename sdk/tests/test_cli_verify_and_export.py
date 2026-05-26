@@ -29,7 +29,7 @@ from click.testing import CliRunner
 
 from vera.cli import cli
 from vera._cli_verify import verify_merkle_proof_for_record
-from vera.verify.proof import ALGO_HMAC_SHA256, build_checkpoint_message
+from vera.verify.proof_payload import ALGO_HMAC_SHA256, build_checkpoint_message
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -336,15 +336,27 @@ def test_verify_merkle_proof_auth_failure_returns_exit_2(
 # ── CLI surface via CliRunner ───────────────────────────────────────────
 
 
-def test_cli_verify_requires_merkle_proof_flag(
+def test_cli_verify_no_flags_attempts_online_chain_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Without --merkle-proof we exit 2 with a usage hint, not 0."""
+    """Post-3C.1/3C.2 merge: ``vera verify`` with no flags is no longer
+    a usage error — it routes through ``_run_online_verify`` (3C.1's
+    legacy chain-reachability check). In a test env with no Vera API
+    reachable, that exits 1 (network failure), NOT 2 (usage).
+
+    The test asserts the merged behavior so future changes that
+    accidentally restore the "requires a flag" gate are caught.
+    """
     for k, v in _make_runner_env().items():
         monkeypatch.setenv(k, v)
     runner = CliRunner()
     result = runner.invoke(cli, ["verify"])
-    assert result.exit_code == 2
+    # Exit 1 = chain-check failed (no network in tests); exit 2 would
+    # mean we regressed to the pre-merge usage-error gate.
+    assert result.exit_code != 2, (
+        f"Expected online chain check (exit 1 on no network); got "
+        f"exit 2 (usage error). Output: {result.output!r}"
+    )
 
 
 def test_cli_verify_calls_endpoint_and_exits_zero(
@@ -725,7 +737,7 @@ def test_export_bundle_proofs_verify_independently(
     feed it into ``verify_proof_payload``, and pass with only the
     HMAC secret (no further round-trip to Vera).
     """
-    from vera.verify.proof import verify_proof_payload
+    from vera.verify.proof_payload import verify_proof_payload
 
     date_iso = "2026-05-20"
     p1 = _build_proof_payload(record_id="rec_001", sequence=2)
