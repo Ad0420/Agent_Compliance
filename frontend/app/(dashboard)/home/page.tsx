@@ -13,8 +13,10 @@
  *
  *   1. Needs your attention — EmptyState in v1; Phase 2+ will hydrate
  *      with expiring BAAs, pending reviews, webhook failures.
- *   2. Chain integrity — reuses the existing `useChainVerification()`
- *      hook so the Home read matches the topbar pill on every load.
+ *   2. Chain integrity — Wave 3D.1 ``ChainIntegrityTile`` reads the
+ *      ``GET /v1/dashboard/chain-integrity`` aggregate (status + latest
+ *      checkpoint + chain depth + KMS key + cadence) so the Home tile
+ *      stays in lockstep with the topbar pill on every load.
  *   3. Recent activity — last 5 ActionRecord rows across the org with a
  *      "See all →" affordance. Each row links to the customer detail stub
  *      at /customers/{tenant_id}. (Limit dropped from 20 → 5 per PR #198
@@ -28,9 +30,11 @@ import Link from "next/link";
 import { useAuth } from "@/hooks/use-auth";
 import { useActions } from "@/hooks/use-actions";
 import { useChainVerification } from "@/hooks/use-verification";
+import { useChainIntegrity } from "@/hooks/use-chain-integrity";
 import { StatusDot } from "@/components/ui/status-indicator";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Loading } from "@/components/ui/loading";
+import { ChainIntegrityTile } from "@/components/home/chain-integrity-tile";
 import { ResumeSetupBanner } from "@/components/wizard/resume-setup-banner";
 import { formatRelativeTime } from "@/lib/utils";
 import type { ActionRecord } from "@/lib/api-types";
@@ -71,6 +75,7 @@ function getTenantId(action: ActionRecord): string | null {
 export default function HomePage() {
   const { organization, isLoading: authLoading } = useAuth();
   const { data: chain, isLoading: chainLoading } = useChainVerification();
+  const { data: integrity, isLoading: integrityLoading } = useChainIntegrity();
   const { data: actionsData, isLoading: actionsLoading } = useActions({ limit: RECENT_ACTIVITY_LIMIT });
 
   const actions = actionsData?.records ?? [];
@@ -136,10 +141,19 @@ export default function HomePage() {
             />
           </section>
 
-          {/* ───────────────── Chain integrity ───────────────── */}
+          {/* ───────────────── Chain integrity ─────────────────
+              Phase 3 Wave 3D.1 — full tile with status indicator,
+              latest checkpoint, chain depth, KMS key, cadence, and a
+              "Download evidence bundle" CTA. Reads from the
+              ``GET /v1/dashboard/chain-integrity`` aggregate so the
+              tile and the topbar pill (``useChainVerification``) stay
+              consistent without duplicating chain math. */}
           <section aria-labelledby="chain-integrity-heading" className="space-y-4">
             <SectionHeader id="chain-integrity-heading">Chain integrity</SectionHeader>
-            <ChainIntegrityRow loading={chainLoading} chain={chain} />
+            <ChainIntegrityTile
+              loading={integrityLoading}
+              data={integrity}
+            />
           </section>
 
           {/* ───────────────── Recent activity ───────────────── */}
@@ -169,46 +183,6 @@ function SectionHeader({ id, children }: { id?: string; children: React.ReactNod
     >
       {children}
     </h2>
-  );
-}
-
-function ChainIntegrityRow({
-  loading,
-  chain,
-}: {
-  loading: boolean;
-  chain: { is_valid: boolean; records_checked: number; first_invalid_sequence: number | null; message: string } | undefined;
-}) {
-  if (loading || !chain) {
-    return (
-      <div
-        aria-busy="true"
-        className="flex h-6 items-center text-[color:var(--ink-3)]"
-        data-testid="chain-integrity-loading"
-      >
-        <Loading.Spinner size={14} label="Verifying chain integrity" />
-      </div>
-    );
-  }
-  const variant = chain.is_valid ? "ok" : "error";
-  const label = chain.is_valid ? "Chain intact" : "Chain broken";
-  return (
-    <div className="space-y-1.5" data-testid="chain-integrity-row">
-      <StatusDot variant={variant} label={label} />
-      <p className="text-[13px] text-[color:var(--ink-2)] tabular-nums">
-        {chain.is_valid ? (
-          <>
-            {chain.records_checked} record{chain.records_checked === 1 ? "" : "s"} checked
-            {chain.message ? ` · ${chain.message}` : null}
-          </>
-        ) : (
-          <>
-            First broken at sequence {chain.first_invalid_sequence ?? "unknown"}
-            {chain.message ? ` · ${chain.message}` : null}
-          </>
-        )}
-      </p>
-    </div>
   );
 }
 

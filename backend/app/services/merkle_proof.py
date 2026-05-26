@@ -76,6 +76,16 @@ class MerkleProofPayload:
 
     Field-for-field what the Wave 3B.2 brief specifies. The router turns
     this into a JSON body verbatim; tests check the same shape.
+
+    Wave 3C.2 added three checkpoint-identity fields
+    (``checkpoint_org_id``, ``checkpoint_sequence``,
+    ``checkpoint_hash_at_checkpoint``) so the payload is fully
+    self-contained for offline signature verification. The KMS signature
+    is over ``f"{org_id}:{sequence}:{hash}:{timestamp}"`` (see
+    ``services.checkpoint._checkpoint_message``); without these fields,
+    an offline verifier would need a second round-trip to fetch the
+    checkpoint row. Including them is additive — pre-3C.2 consumers
+    that ignore unknown JSON keys keep working unchanged.
     """
 
     action_record_id: str
@@ -85,6 +95,11 @@ class MerkleProofPayload:
     merkle_root: str
     checkpoint_id: str
     checkpoint_signed_at: str
+    # ── Wave 3C.2: signature-verification material ────────────────────
+    checkpoint_org_id: str
+    checkpoint_sequence: int
+    checkpoint_hash_at_checkpoint: str
+    # ── KMS fields ────────────────────────────────────────────────────
     kms_key_id: str
     kms_signature: str
     kms_algorithm: str
@@ -99,6 +114,9 @@ class MerkleProofPayload:
             "merkle_root": self.merkle_root,
             "checkpoint_id": self.checkpoint_id,
             "checkpoint_signed_at": self.checkpoint_signed_at,
+            "checkpoint_org_id": self.checkpoint_org_id,
+            "checkpoint_sequence": self.checkpoint_sequence,
+            "checkpoint_hash_at_checkpoint": self.checkpoint_hash_at_checkpoint,
             "kms_key_id": self.kms_key_id,
             "kms_signature": self.kms_signature,
             "kms_algorithm": self.kms_algorithm,
@@ -281,6 +299,9 @@ async def build_proof(
         merkle_root=proof.root,
         checkpoint_id=sealing.id,
         checkpoint_signed_at=sealing.created_at.isoformat(),
+        checkpoint_org_id=sealing.org_id,
+        checkpoint_sequence=sealing.sequence_at_checkpoint,
+        checkpoint_hash_at_checkpoint=sealing.hash_at_checkpoint,
         kms_key_id=sealing.key_id or "",
         kms_signature=sealing.signature,
         kms_algorithm=kms_algorithm,

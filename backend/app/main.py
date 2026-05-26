@@ -28,6 +28,7 @@ from .routes import (
     webhooks_router,
     kms_router,
     records_router,
+    dashboard_chain_integrity_router,
 )
 from .routes.dashboard_demo import router as dashboard_demo_router
 from .routes.dashboard_api_keys import router as dashboard_api_keys_router
@@ -202,6 +203,11 @@ app.include_router(dashboard_compliance_namespace_router)
 # Phase 3 Wave 3D.3 — Settings → Off-Vera S3 mirror configuration surface.
 # /v1/dashboard/s3-export-config + /v1/dashboard/s3-export-arn{,/validate,/probe}.
 app.include_router(dashboard_s3_mirror_router)
+# Phase 3 Wave 3D.1 — Home page Chain Integrity tile. The router defines its
+# own /v1/dashboard prefix; auth is dual-mode (API key OR Clerk JWT) via
+# ``require_permission_with_context`` so the same endpoint serves the SDK
+# health-check use case AND the dashboard tile.
+app.include_router(dashboard_chain_integrity_router, prefix="/v1")
 # Clerk webhooks — signature-verified via Svix, no bearer auth. Mounted at
 # /v1 so the public path is /v1/clerk/webhooks (matches the env.example doc).
 app.include_router(clerk_webhooks_router, prefix="/v1")

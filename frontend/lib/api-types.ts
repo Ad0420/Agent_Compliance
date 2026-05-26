@@ -800,3 +800,38 @@ export interface S3MirrorErrorDetail {
   message: string;
   hint?: string;
 }
+
+// ───────────────────────────────────────────────────────────────────────
+// Phase 3 Wave 3D.1 — Home page Chain Integrity tile.
+//
+// Single-call aggregate that answers "is our evidence trail intact right
+// now?". Backend: ``GET /v1/dashboard/chain-integrity`` →
+// ``app.schemas.chain_integrity.ChainIntegrityResponse``.
+// ───────────────────────────────────────────────────────────────────────
+
+export type ChainIntegrityStatus = "ok" | "warn" | "error";
+
+export type CheckpointCadence = "hourly" | "daily" | "disabled";
+
+export interface LatestCheckpointSummary {
+  checkpoint_id: string;
+  /** ISO-8601 timestamp without timezone (UTC by contract). */
+  sealed_at: string;
+  sequence: number;
+  record_count: number;
+}
+
+export interface KmsKeySummary {
+  key_id: string;
+  algorithm: string;
+}
+
+export interface ChainIntegrityResponse {
+  status: ChainIntegrityStatus;
+  /** Regulator-ready, plain-English one-liner. */
+  message: string;
+  latest_checkpoint: LatestCheckpointSummary | null;
+  chain_depth: number;
+  kms_key: KmsKeySummary | null;
+  cadence: CheckpointCadence;
+}

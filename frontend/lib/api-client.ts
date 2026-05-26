@@ -42,6 +42,7 @@ import type {
   S3MirrorConfig,
   S3MirrorValidateInput,
   S3MirrorValidateResponse,
+  ChainIntegrityResponse,
 } from "./api-types";
 
 export class ApiError extends Error {
@@ -172,6 +173,11 @@ export function createCheckpoint(): Promise<Checkpoint> {
 
 export function verifyAllCheckpoints(): Promise<CheckpointVerifyAllResponse> {
   return request("/v1/verify/checkpoints/verify", { method: "POST" });
+}
+
+// Phase 3 Wave 3D.1 — Home Chain Integrity tile aggregate.
+export function getChainIntegrity(): Promise<ChainIntegrityResponse> {
+  return request("/v1/dashboard/chain-integrity");
 }
 
 // Agents
