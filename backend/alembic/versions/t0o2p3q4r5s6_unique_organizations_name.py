@@ -1,8 +1,24 @@
 """add UNIQUE constraint on organizations.name (W1.6 — two-scribemd-orgs)
 
-Revision ID: s9n1o2p3q4r5
-Revises: r8m0n1o2p3q4
+Revision ID: t0o2p3q4r5s6
+Revises: s9n1o2p3q4r5
 Create Date: 2026-05-26
+
+Chain-fix note
+--------------
+
+This migration was originally authored with revision id
+``s9n1o2p3q4r5`` and ``down_revision = "r8m0n1o2p3q4"``. The sibling
+PR (``s9n1o2p3q4r5_baa_scope_granted_at_default``) chose the same
+revision id and branched from the same parent, producing a duplicate
+revision + multi-head graph on ``main`` (Alembic refused to upgrade
+with ``Revision s9n1o2p3q4r5 is present more than once`` / ``Multiple
+head revisions``). The fix re-IDs this migration to ``t0o2p3q4r5s6``
+and chains it after the baa_scope migration so the linear graph is:
+
+    r8m0n1o2p3q4
+    └── s9n1o2p3q4r5  (baa_scope granted_at default)
+        └── t0o2p3q4r5s6  (this migration — unique organizations.name)
 
 Phase 2 acceptance finding ``two-scribemd-orgs`` (Medium): the
 bootstrap script previously called ``POST /v1/register`` (now 410
@@ -72,8 +88,8 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision = "s9n1o2p3q4r5"
-down_revision = "r8m0n1o2p3q4"
+revision = "t0o2p3q4r5s6"
+down_revision = "s9n1o2p3q4r5"
 branch_labels = None
 depends_on = None
 

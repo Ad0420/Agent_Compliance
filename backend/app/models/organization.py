@@ -12,7 +12,7 @@ class Organization(Base):
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
     )
-    # ``unique=True`` enforced by migration ``s9n1o2p3q4r5`` (W1.6 —
+    # ``unique=True`` enforced by migration ``t0o2p3q4r5s6`` (W1.6 —
     # closes ``two-scribemd-orgs``). Org names must be unique so the
     # local bootstrap (``simulator/scripts/bootstrap_orgs.py``) can use
     # ``SELECT ... WHERE name = ?`` as its idempotency anchor.
