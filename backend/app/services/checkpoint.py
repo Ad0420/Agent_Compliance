@@ -119,6 +119,31 @@ async def create_checkpoint(session: AsyncSession, org_id: str) -> Checkpoint:
         await session.commit()
         await session.refresh(checkpoint)
 
+    # Phase 3 Wave 3B.1 — Customer S3 mirror export. Schedules a
+    # background asyncio task; never blocks checkpoint sealing on the
+    # S3 round-trip. Idempotent: re-running on an already-exported
+    # checkpoint writes a 'skipped' row. Inner exporter handles the
+    # "org has no s3_export_arn" case by recording a structured
+    # ``skipped`` row.
+    #
+    # Gated by ``settings.checkpoint_export_enabled`` so test code
+    # can disable it (the in-memory StaticPool test DB doesn't tolerate
+    # the export task's parallel session writes during concurrent-
+    # action regression tests — see
+    # ``test_checkpoint_does_not_race_with_concurrent_inserts``).
+    # Tests that exercise the exporter call ``schedule_export`` or
+    # ``export_checkpoint_to_customer_mirror`` directly.
+    from ..config import settings as _settings
+    if _settings.checkpoint_export_enabled:
+        try:
+            from .checkpoint_export import schedule_export
+            schedule_export(checkpoint.id)
+        except Exception:
+            logger.warning(
+                "Failed to schedule customer mirror export for checkpoint %s",
+                checkpoint.id, exc_info=True,
+            )
+
     # Publish to external store (best-effort — failure doesn't roll back checkpoint)
     try:
         proof = ExternalProof(
