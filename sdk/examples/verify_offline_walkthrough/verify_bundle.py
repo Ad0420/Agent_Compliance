@@ -104,7 +104,14 @@ def _extract_bundle(bundle_path: Path) -> Path:
     with tarfile.open(bundle_path, "r:gz") as tar:
         for member in tar.getmembers():
             _safe_extract_member(member, work)
-        tar.extractall(work)  # noqa: S202 — every member validated above
+        # Defence-in-depth: pass tarfile's built-in `data` filter on 3.12+
+        # (it became opt-in there and will be the default in 3.14). We
+        # already validated every member by hand above; the filter is
+        # additive insurance, not a replacement.
+        if sys.version_info >= (3, 12):
+            tar.extractall(work, filter="data")
+        else:
+            tar.extractall(work)  # noqa: S202 — every member validated above
     return work
 
 
@@ -230,13 +237,15 @@ def verify_bundle(bundle_path: Path) -> dict[str, Any]:
     verified_checkpoint_ids: set[str] = set()
     for cp_path in sorted(checkpoints_dir.glob("*.json")):
         cp = _load_json(cp_path)
-        checkpoint_by_id[cp["id"]] = cp
+        # Field names match GET /v1/checkpoints/{date} (Wave 3B.1):
+        # checkpoint_id, kms_key_id, etc. See sdk/README.md#bundle-shape.
+        checkpoint_by_id[cp["checkpoint_id"]] = cp
 
-        kms_row = kms_keys.get(cp["key_id"])
+        kms_row = kms_keys.get(cp["kms_key_id"])
         if kms_row is None:
             raise VerificationError(
                 "kms_key_not_in_history",
-                f"checkpoint {cp['id']} signed by {cp['key_id']!r} which is "
+                f"checkpoint {cp['checkpoint_id']} signed by {cp['kms_key_id']!r} which is "
                 f"not in kms_keys.json — bundle is incomplete.",
             )
 
@@ -250,9 +259,9 @@ def verify_bundle(bundle_path: Path) -> dict[str, Any]:
         if not ok:
             raise VerificationError(
                 "signature_invalid",
-                f"checkpoint {cp['id']} signature does not validate against {cp['key_id']!r}.",
+                f"checkpoint {cp['checkpoint_id']} signature does not validate against {cp['kms_key_id']!r}.",
             )
-        verified_checkpoint_ids.add(cp["id"])
+        verified_checkpoint_ids.add(cp["checkpoint_id"])
 
     # Walk every record proof. Each must (a) fold to the claimed root,
     # (b) reference a checkpoint we already validated, and (c) reference

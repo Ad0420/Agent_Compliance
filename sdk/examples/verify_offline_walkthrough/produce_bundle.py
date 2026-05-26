@@ -274,21 +274,34 @@ def build_bundle(out_path: Path) -> Path:
         root = _merkle_root(levels)
         head_hash_at_checkpoint = record_hashes[window["record_ids"][-1]]
 
+        # Field names match the GET /v1/checkpoints/{date} response body
+        # (Wave 3B.1): `checkpoint_id`, `kms_key_id`, `head_action_id`,
+        # `prior_checkpoint_id`. The bundle adds two fields the live
+        # endpoint omits — `date` (for window grouping when the bundle
+        # spans multiple days) and `algorithm` (so an HMAC-vs-asymmetric
+        # bundle is self-describing without cross-referencing kms_keys.json
+        # on every checkpoint). See sdk/README.md#bundle-shape.
         checkpoint = {
-            "id": window["id"],
+            "checkpoint_id": window["id"],
             "org_id": org_id,
             "date": window["date"],
             "sequence_at_checkpoint": window["sequence_at_checkpoint"],
             "hash_at_checkpoint": head_hash_at_checkpoint,
             "merkle_root": root,
             "signed_at": window["signed_at"],
-            "key_id": KMS_KEY_ID,
+            "kms_key_id": KMS_KEY_ID,
             "algorithm": "hmac-sha256",
             "record_count": len(leaves),
+            "head_action_id": window["record_ids"][-1],
+            "prior_checkpoint_id": (
+                checkpoint_summaries[-1]["checkpoint_id"]
+                if checkpoint_summaries
+                else None
+            ),
         }
         checkpoint["signature"] = _sign_hmac(_checkpoint_message(checkpoint), HMAC_SECRET)
 
-        cp_path = work / "checkpoints" / f"{checkpoint['id']}.json"
+        cp_path = work / "checkpoints" / f"{checkpoint['checkpoint_id']}.json"
         cp_path.write_text(json.dumps(checkpoint, indent=2, sort_keys=True))
 
         for idx, rid in enumerate(window["record_ids"]):
@@ -299,7 +312,7 @@ def build_bundle(out_path: Path) -> Path:
                 "leaf_hash": record_hashes[rid],
                 "merkle_path": _merkle_proof_path(levels, idx),
                 "merkle_root": root,
-                "checkpoint_id": checkpoint["id"],
+                "checkpoint_id": checkpoint["checkpoint_id"],
                 "checkpoint_signed_at": checkpoint["signed_at"],
                 "kms_key_id": KMS_KEY_ID,
                 "kms_signature": checkpoint["signature"],
@@ -318,7 +331,7 @@ def build_bundle(out_path: Path) -> Path:
 
         checkpoint_summaries.append(
             {
-                "id": checkpoint["id"],
+                "checkpoint_id": checkpoint["checkpoint_id"],
                 "date": checkpoint["date"],
                 "record_count": checkpoint["record_count"],
                 "merkle_root": root,

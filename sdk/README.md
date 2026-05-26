@@ -1059,22 +1059,27 @@ bundle.tar.gz
 | `kms_algorithm` | string | Dominant signing algorithm. `hmac-sha256` (LocalKMS), `kms-hmac-sha256` (AWS KMS HMAC), `rsa-pss-sha256`, or `ecdsa-p256-sha256`. |
 | `hmac_secret_required` | bool | `true` if any checkpoint in the bundle is HMAC-signed. |
 
-**`checkpoints/<id>.json`** — one per sealed checkpoint. Mirrors the
-`GET /v1/checkpoints/{date}` response body verbatim (Wave 3B.1):
+**`checkpoints/<id>.json`** — one per sealed checkpoint. Field names
+match the `GET /v1/checkpoints/{date}` response body (Wave 3B.1), with
+two additions the bundle requires (`date` for window grouping;
+`algorithm` so an HMAC-vs-asymmetric bundle is self-describing without
+a `kms_keys.json` cross-lookup):
 
 | Field | Type | Description |
 |---|---|---|
-| `id` | string | Stable checkpoint identifier. |
+| `checkpoint_id` | string | Stable checkpoint identifier. |
 | `org_id` | string | Owning organization. |
-| `date` | ISO date | The day this checkpoint sealed. |
+| `date` | ISO date | The day this checkpoint sealed. Bundle-only — not on the live endpoint. |
 | `sequence_at_checkpoint` | int | Last record sequence number sealed under this checkpoint. |
 | `hash_at_checkpoint` | hex | Chain head hash at seal time. |
 | `merkle_root` | hex | Merkle root over the records in this checkpoint window. |
 | `signed_at` | ISO timestamp | KMS signing timestamp. |
-| `key_id` | string | KMS key that signed this checkpoint. Look up in `kms_keys.json`. |
-| `algorithm` | string | One of `hmac-sha256`, `kms-hmac-sha256`, `rsa-pss-sha256`, `ecdsa-p256-sha256`. |
+| `kms_key_id` | string | KMS key that signed this checkpoint. Look up in `kms_keys.json`. |
+| `algorithm` | string | One of `hmac-sha256`, `kms-hmac-sha256`, `rsa-pss-sha256`, `ecdsa-p256-sha256`. Bundle-only — the live endpoint omits this since the current key's algorithm is fetched from `/v1/kms/keys` (Wave 3A.a). |
 | `signature` | hex | KMS signature over the canonical message bytes. |
 | `record_count` | int | Records sealed under this checkpoint. |
+| `head_action_id` | string \| null | Last action record id sealed under this checkpoint (passthrough from the live endpoint). |
+| `prior_checkpoint_id` | string \| null | The previous checkpoint's id, or `null` for the first checkpoint (passthrough from the live endpoint). |
 
 **`records/<record_id>.json`** — one Merkle proof per record. Mirrors
 the `GET /v1/records/{id}/merkle-proof` response body verbatim
