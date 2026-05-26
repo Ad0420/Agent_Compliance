@@ -23,6 +23,7 @@ from .routes import (
     approvals_router,
     gates_router,
     reviews_router,
+    staff_router,
     webhooks_router,
     kms_router,
 )
@@ -159,6 +160,7 @@ app.include_router(policies_router, prefix="/v1")
 app.include_router(approvals_router, prefix="/v1")
 app.include_router(gates_router, prefix="/v1")
 app.include_router(reviews_router, prefix="/v1")
+app.include_router(staff_router, prefix="/v1")
 app.include_router(webhooks_router, prefix="/v1")
 # Phase 3 Wave 3A.a — KMS key history (eng review finding 1A).
 # Read-only history dump consumed by Wave 3C `vera verify --offline`.

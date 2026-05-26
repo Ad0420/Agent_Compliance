@@ -10,6 +10,7 @@ from .policies import router as policies_router
 from .approvals import router as approvals_router
 from .gates import router as gates_router
 from .reviews import router as reviews_router
+from .staff import router as staff_router
 from .webhooks import router as webhooks_router
 from .kms import router as kms_router
 
@@ -31,6 +32,7 @@ __all__ = [
     "approvals_router",
     "gates_router",
     "reviews_router",
+    "staff_router",
     "webhooks_router",
     "kms_router",
 ]

@@ -20,6 +20,7 @@ from .customer_agent import CustomerAgent
 from .baa_agreement import BAAAgreement
 from .baa_scope import BAAScope
 from .kms_key import KmsKey
+from .staff_audit import StaffAuditLog
 
 __all__ = [
     "Base",
@@ -46,4 +47,5 @@ __all__ = [
     "BAAAgreement",
     "BAAScope",
     "KmsKey",
+    "StaffAuditLog",
 ]

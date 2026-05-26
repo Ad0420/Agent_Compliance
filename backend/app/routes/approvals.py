@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
@@ -17,9 +17,31 @@ from ..services.approvals import (
     list_approvals,
     request_approval,
 )
-from ..services.auth import require_permission
+from ..services.auth import (
+    AuthContext,
+    require_permission,
+    require_permission_with_context,
+)
+from ..services.iam import IamTier, audit_staff_read, redact_approval
 
 router = APIRouter(prefix="/approvals", tags=["approvals"])
+
+
+def _approval_response_with_redaction(
+    approval, ctx: AuthContext
+) -> ApprovalResponse:
+    """Build the response, redacting PHI for staff callers.
+
+    Customers see the raw approval row. Staff see ``context.original_input_data``
+    stripped from ``context`` and ``data_subject_id`` collapsed to
+    ``"[REDACTED]"``. Gate metadata (gate_name, required_role, citation,
+    reason) is intact in both cases — that's what staff need to triage a
+    ticket.
+    """
+    if ctx.tier == IamTier.CUSTOMER:
+        return ApprovalResponse.model_validate(approval)
+    raw = ApprovalResponse.model_validate(approval).model_dump(mode="json")
+    return ApprovalResponse.model_validate(redact_approval(raw, ctx.tier))
 
 
 @router.post("", response_model=ApprovalResponse, status_code=201)
@@ -41,7 +63,7 @@ async def create_approval(
 @router.get("", response_model=ApprovalListResponse)
 async def list_approvals_route(
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, object] = Depends(require_permission("read")),
+    ctx: AuthContext = Depends(require_permission_with_context("read")),
     status: Optional[str] = Query(
         default=None, pattern="^(pending|approved|rejected|expired|cancelled)$"
     ),
@@ -53,12 +75,39 @@ async def list_approvals_route(
     offset: int = Query(default=0, ge=0),
 ):
     """List approvals with optional filters (status, risk_tier, data_subject_id)."""
-    org_id, _ = auth
+    org_id = ctx.org_id
+
+    # Wave 3A.c. Same PHI side-channel as ``/v1/actions?data_subject_id=`` —
+    # a staff member could probe presence of a specific subject without
+    # ever seeing the value in the response. Block at the filter layer.
+    if ctx.tier == IamTier.STAFF_READ_ONLY and data_subject_id is not None:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "staff_phi_filter_forbidden",
+                "detail": (
+                    "Vera staff sessions cannot filter approvals by "
+                    "data_subject_id — it would leak presence of "
+                    "specific subjects via timing/count side channel."
+                ),
+            },
+        )
+
     rows, total = await list_approvals(
         session, org_id, status, risk_tier, data_subject_id, limit, offset
     )
+    if ctx.tier == IamTier.STAFF_READ_ONLY:
+        await audit_staff_read(
+            session,
+            staff_id=ctx.staff_id or "",
+            endpoint="/v1/approvals",
+            org_id=org_id,
+            resource_type="approval",
+            resource_id=None,
+            redacted=True,
+        )
     return ApprovalListResponse(
-        approvals=[ApprovalResponse.model_validate(a) for a in rows],
+        approvals=[_approval_response_with_redaction(a, ctx) for a in rows],
         total=total,
     )
 
@@ -67,12 +116,22 @@ async def list_approvals_route(
 async def get_approval_route(
     approval_id: str,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, object] = Depends(require_permission("read")),
+    ctx: AuthContext = Depends(require_permission_with_context("read")),
 ):
     """Get an approval's current status. SDK polls this until resolved."""
-    org_id, _ = auth
+    org_id = ctx.org_id
     approval = await get_approval_with_lazy_expiry(session, org_id, approval_id)
-    return ApprovalResponse.model_validate(approval)
+    if ctx.tier == IamTier.STAFF_READ_ONLY:
+        await audit_staff_read(
+            session,
+            staff_id=ctx.staff_id or "",
+            endpoint="/v1/approvals/{approval_id}",
+            org_id=org_id,
+            resource_type="approval",
+            resource_id=approval_id,
+            redacted=True,
+        )
+    return _approval_response_with_redaction(approval, ctx)
 
 
 @router.post("/{approval_id}/decide", response_model=ApprovalResponse)

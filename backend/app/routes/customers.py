@@ -45,13 +45,18 @@ from ..schemas.customer import (
     CustomerUpdate,
 )
 from ..schemas.customer_decision import CustomerDecisionsListResponse
-from ..services.auth import require_permission
+from ..services.auth import (
+    AuthContext,
+    require_permission,
+    require_permission_with_context,
+)
 from ..services.baa import invalidate_org_baa_cache
 from ..services.decisions import (
     DEFAULT_LIMIT as DECISIONS_DEFAULT_LIMIT,
     MAX_LIMIT as DECISIONS_MAX_LIMIT,
     list_customer_decisions,
 )
+from ..services.iam import IamTier, audit_staff_read
 
 router = APIRouter(prefix="/customers", tags=["customers"])
 
@@ -504,7 +509,7 @@ async def list_customer_decisions_endpoint(
     ),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
+    ctx: AuthContext = Depends(require_permission_with_context("read")),
 ):
     """Decisions feed for the Customer detail page's Decisions tab.
 
@@ -538,7 +543,7 @@ async def list_customer_decisions_endpoint(
     denormalisation or a new ``gate_evaluations`` table — both deferred
     to a follow-up PR.
     """
-    org_id, _ = auth
+    org_id = ctx.org_id
     # Reuse the org-scoped lookup helper so the 404 message matches the
     # other ``/v1/customers/{tenant_id}/*`` sub-routes (and so a customer
     # that exists in another org never leaks a 200).
@@ -553,6 +558,22 @@ async def list_customer_decisions_endpoint(
         limit=limit,
         offset=offset,
     )
+    # Wave 3A.c. The Decisions feed surface is purpose-built — it surfaces
+    # gate metadata + webhook delivery state and does NOT expose raw
+    # ActionRecord.input_data / metadata to start with. There's no PHI to
+    # redact here today. We still audit-log staff access because the
+    # tenant_id itself is identifying information (customer wants to know
+    # if a Vera engineer pulled their decisions feed).
+    if ctx.tier == IamTier.STAFF_READ_ONLY:
+        await audit_staff_read(
+            session,
+            staff_id=ctx.staff_id or "",
+            endpoint="/v1/customers/{tenant_id}/decisions",
+            org_id=org_id,
+            resource_type="action_record",
+            resource_id=tenant_id,
+            redacted=True,
+        )
     return CustomerDecisionsListResponse(
         decisions=rows,
         total=total,
