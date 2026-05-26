@@ -30,6 +30,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     func,
     true,
@@ -83,6 +84,14 @@ class StaffAuditLog(Base):
     resource_type: Mapped[str] = mapped_column(String(64), nullable=False)
     # NULL for aggregate-list reads (which expose no single record).
     resource_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # Wave 3B.3 — number of records returned for list reads. NULL for
+    # single-record reads (``resource_id`` set) and for legacy rows
+    # written before the column existed. The pair (resource_id IS NULL,
+    # resource_count = N) is the canonical "list-of-N" shape; the pair
+    # (resource_id = X, resource_count IS NULL) is the canonical
+    # "single-record" shape. Customer dashboards rendering the
+    # who-read-my-data surface key off these two shapes.
+    resource_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     # Whether PHI was redacted in the response. Always TRUE for v1
     # (STAFF_READ_ONLY is the only staff tier we ship). Kept as a column
     # so a future STAFF_FULL break-glass tier can write rows with

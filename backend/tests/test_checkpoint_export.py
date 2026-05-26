@@ -638,7 +638,7 @@ def test_migration_upgrade_creates_s3_export_arn_and_table(
     engine.dispose()
 
     # Downgrade removes both.
-    command.downgrade(cfg, "t1q4r5s6t7u8")
+    command.downgrade(cfg, "u2r5s6t7u8v9")
     engine = sa.create_engine(db_url)
     insp = sa.inspect(engine)
     org_cols = {c["name"] for c in insp.get_columns("organizations")}

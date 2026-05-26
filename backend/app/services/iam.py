@@ -167,9 +167,30 @@ async def audit_staff_read(
     org_id: str,
     resource_type: str,
     resource_id: Optional[str] = None,
+    resource_count: Optional[int] = None,
     redacted: bool = True,
 ) -> None:
     """Append a staff-read row to ``staff_audit_log``.
+
+    Per-request shape (Wave 3B.3 decision)
+    --------------------------------------
+    One row per HTTP request, not one row per record returned. The
+    customer's threat model is "did Vera staff look at my data?" — they
+    care about distinct staff requests, not pagination granularity. A
+    staff GET ``/v1/actions?limit=200`` writes ONE row with
+    ``resource_id=None`` and ``resource_count=N`` rather than 200 rows.
+
+    Two canonical row shapes:
+      * Single-record read   : ``resource_id`` set, ``resource_count``
+                               NULL. The audit row pinpoints exactly
+                               which record was read.
+      * List read            : ``resource_id`` NULL, ``resource_count``
+                               = N. The audit row tells the customer
+                               "Vera staff saw the headers of N records
+                               at time T" but not which specific records.
+
+    Pre-3B.3 rows have ``resource_count`` NULL on list reads too. The
+    customer-facing UI should treat NULL as "unknown count".
 
     Best-effort: any exception is logged and swallowed so a logging hiccup
     cannot 500 the user request. We commit on a NEW session so the
@@ -203,6 +224,7 @@ async def audit_staff_read(
                 org_id=org_id,
                 resource_type=resource_type,
                 resource_id=resource_id,
+                resource_count=resource_count,
                 redacted=redacted,
             )
             audit_session.add(row)
@@ -213,30 +235,47 @@ async def audit_staff_read(
         # ``vera.iam`` logger if rows go missing.
         logger.exception(
             "audit_staff_read failed: staff_id=%s endpoint=%s org_id=%s "
-            "resource_type=%s resource_id=%s",
+            "resource_type=%s resource_id=%s resource_count=%s",
             staff_id,
             endpoint,
             org_id,
             resource_type,
             resource_id,
+            resource_count,
         )
 
 
 def tier_from_claims(claims: dict[str, Any], staff_org_id: Optional[str]) -> IamTier:
     """Resolve the caller's IAM tier from Clerk JWT claims.
 
-    Staff detection requires ``staff_org_id`` to be configured. Two routes:
-      1. The JWT's ``org_id`` claim matches ``staff_org_id``. Trusted
-         because Clerk signed the claim and we verified the issuer.
-      2. The JWT's ``org_id`` claim matches AND ``org_role`` is
-         ``vera_staff``. (Role-only matching is intentionally disabled —
-         a multi-tenant Clerk instance where a customer org names a
-         role ``vera_staff`` could otherwise escalate.)
+    Staff escalation guard (Wave 3B.3 hardened):
+      The JWT's ``org_id`` claim MUST match the configured
+      ``staff_org_id`` for ANY staff tier. The match is trusted because
+      Clerk signed the claim and we verified the issuer + audience +
+      authorized-party allow-list upstream in ``verify_clerk_jwt``.
 
-    If ``staff_org_id`` is unset (development / customer-only deployments),
-    the staff tier is unreachable — the function always returns CUSTOMER.
-    API-key callers never reach this function; they're customers by
-    construction.
+      Role-only matching (``org_role == "vera_staff"``) is intentionally
+      disabled. A multi-tenant Clerk instance where a customer org
+      happens to name a role ``vera_staff`` (or any string a staff-side
+      role check might be written against) could otherwise mint a
+      cross-tenant escalation by simply renaming a local role. The
+      ``org_id`` claim is signed by Clerk's identity provider; the role
+      name is operator-mutable per-org and so MUST NOT be the staff
+      anchor.
+
+    STAFF_FULL is reserved (v1):
+      No codepath in this module returns ``IamTier.STAFF_FULL``. The
+      enum value is kept so a future break-glass tier doesn't require
+      re-rolling the Pydantic / response models, but in v1 only
+      STAFF_READ_ONLY and CUSTOMER are materialised. Routes that defend
+      against STAFF_FULL existing today must treat it as identical to
+      STAFF_READ_ONLY (same redaction, same audit, same read-only
+      surface) — see ``AuthContext.is_staff``.
+
+    If ``staff_org_id`` is unset (development / customer-only
+    deployments), the staff tier is unreachable — the function always
+    returns CUSTOMER. API-key callers never reach this function; they're
+    customers by construction.
     """
     if not staff_org_id:
         return IamTier.CUSTOMER
