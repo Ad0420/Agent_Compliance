@@ -125,3 +125,43 @@ export function isTerminalEvent(event: EncounterEventType): boolean {
     event === "error"
   );
 }
+
+// ── Review Inbox (W2.1 in-band HITL) ─────────────────────────────────────
+
+export type ReviewInboxStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "expired";
+
+export type ReviewListFilter = ReviewInboxStatus | "all";
+
+export interface ReviewInboxItem {
+  approval_id: string;
+  encounter_id: string | null;
+  status: ReviewInboxStatus;
+  risk_tier: RiskTier | null;
+  required_role: string | null;
+  action_name: string | null;
+  agent_name: string | null;
+  data_subject_id: string | null;
+  context_excerpt: Record<string, unknown> | null;
+  decided_by: string | null;
+  decided_at: string | null;
+  decision_note: string | null;
+  requested_at: string | null;
+  expires_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface ReviewListResponse {
+  items: ReviewInboxItem[];
+  total: number;
+}
+
+export interface DecideReviewInput {
+  decision: "approve" | "reject";
+  reviewer_role?: string;
+  note?: string;
+}

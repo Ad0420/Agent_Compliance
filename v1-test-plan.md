@@ -51,6 +51,7 @@ This is the test plan that closes the gaps surfaced by the eng review. Each NEW 
 | Org name uniqueness (W1.6 — two-scribemd-orgs) | migration: UNIQUE constraint on organizations.name; duplicate insert raises IntegrityError | covered |
 | Bootstrap key/org validation (W1.6) | unit: bootstrap warns when env_file key authenticates against different org than expected slug | covered |
 | Gate-evaluate response is non-blocking on webhook dispatch (W1.4) | integration: org with webhook URL pointed at slow/dead receiver; POST /v1/gates/evaluate returns in <500ms; webhook delivery row created with status=in_progress | covered |
+| ScribeMD in-band HITL UX via webhook (W2.1) | integration: ScribeMD `POST /vera/webhooks` verifies HMAC (bad sig → 401, missing secret → 503), persists `(approval_id, event_type)` idempotently, and handles `approval.requested`/`review.requested` → inbox row, `approval.resolved`/`review.completed` → row+encounter flipped terminal, `review.expired` → row marked expired + encounter returned-to-scribe; clinician's `POST /api/reviews/{id}/decide` routes through Vera SDK's `complete_review` helper (NOT raw HTTP) — 403 surfaces `ReviewerCredentialsInsufficient`, 409 on already-resolved; Next.js Review Inbox `/reviews` lists pending items with "Awaiting clinician review" state; full webhook → list → decide → completion-webhook → terminal loop verified end-to-end. | covered (W2.1) |
 
 ## Phase 3 — Off-Vera checkpoint + offline verify
 

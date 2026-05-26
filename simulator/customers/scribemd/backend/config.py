@@ -60,6 +60,16 @@ class Settings:
         os.environ.get("SCRIBEMD_APPROVAL_TIMEOUT_SECONDS", "300")
     )
 
+    # ── In-band HITL webhook (W2.1) ──
+    # Shared secret used to verify the HMAC-SHA256 signature on incoming
+    # `POST /vera/webhooks` callbacks. Required when the endpoint receives
+    # a request; missing → 503 service_unavailable rather than open-trust.
+    vera_webhook_secret: str | None = field(
+        default_factory=lambda: os.environ.get(
+            "SCRIBEMD_VERA_WEBHOOK_SECRET"
+        ) or None
+    )
+
 
 def get_settings() -> Settings:
     """Recompute settings on every call.

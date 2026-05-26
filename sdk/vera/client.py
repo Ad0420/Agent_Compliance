@@ -1785,6 +1785,73 @@ class VeraClient:
         resp = self._request_with_retry("get", f"/v1/approvals/{approval_id}")
         return resp.json()
 
+    def complete_review(
+        self,
+        review_id: str,
+        decision: str,
+        reviewer_role: str,
+        reviewer_id: str,
+        note: str | None = None,
+        signature: str | None = None,
+        decided_at: str | None = None,
+    ) -> dict:
+        """Record a human reviewer's decision on a pending HITL approval.
+
+        Wraps ``POST /v1/reviews/{review_id}/complete`` — the customer-facing
+        completion endpoint for the in-band HITL flow. The reviewer's claimed
+        role is checked against the gate's ``required_role`` server-side; a
+        role mismatch raises :class:`ReviewerCredentialsInsufficient`.
+
+        Use this from your EHR's Review Inbox handler so the call is recorded
+        on Vera's audit chain via the SDK rather than the raw HTTP endpoint.
+
+        Args:
+            review_id: The Vera review/approval id surfaced by the
+                ``review.requested`` / ``approval.requested`` webhook.
+            decision: ``"approve"`` or ``"reject"``.
+            reviewer_role: The role the human reviewer claims (e.g.
+                ``"attending_physician"``). Server-side hierarchy check
+                against the gate's ``required_role``; unknown role strings
+                fail-closed.
+            reviewer_id: A human identifier for the reviewer — typically
+                their work email or employee id. Distinct from
+                ``reviewer_role`` so one reviewer can act under different
+                role hats.
+            note: Optional free-form rationale (≤ 2000 chars). Surfaced on
+                the resolution chain record.
+            signature: Optional cryptographic attestation; accepted as-is
+                in Phase 2 (verification ships Phase 4+). ≤ 512 chars.
+            decided_at: Optional reviewer-supplied ISO-8601 decision
+                timestamp. When omitted the server fills with its own
+                ``now()`` at callback receipt.
+
+        Returns:
+            The updated approval row (status flipped to ``approved`` /
+            ``rejected`` and resolution chain record id attached).
+
+        Raises:
+            ReviewerCredentialsInsufficient: 403 — reviewer's role does not
+                satisfy the gate's ``required_role``.
+            VeraValidationError: 4xx — malformed input.
+            VeraClientError: 404/409/410 — review missing, already
+                resolved, or expired.
+        """
+        payload: dict[str, Any] = {
+            "decision": decision,
+            "reviewer_role": reviewer_role,
+            "reviewer_id": reviewer_id,
+        }
+        if note is not None:
+            payload["note"] = note
+        if signature is not None:
+            payload["signature"] = signature
+        if decided_at is not None:
+            payload["decided_at"] = decided_at
+        resp = self._request_with_retry(
+            "post", f"/v1/reviews/{review_id}/complete", json=payload
+        )
+        return resp.json()
+
     def list_approvals(
         self,
         status: str | None = None,

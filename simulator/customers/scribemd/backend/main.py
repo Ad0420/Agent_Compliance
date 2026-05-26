@@ -21,6 +21,8 @@ from simulator.customers.scribemd.backend.routes import (
     auth as auth_routes,
     encounters,
     events,
+    reviews,
+    webhooks,
 )
 
 
@@ -62,6 +64,8 @@ def create_app() -> FastAPI:
     app.include_router(encounters.router)
     app.include_router(approvals.router)
     app.include_router(events.router)
+    app.include_router(reviews.router)
+    app.include_router(webhooks.router)
 
     return app
 
