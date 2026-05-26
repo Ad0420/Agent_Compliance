@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
+from ..models import APIKey
 from ..schemas.approval import (
     ApprovalCreate,
     ApprovalDecision,
@@ -18,6 +19,10 @@ from ..services.approvals import (
     request_approval,
 )
 from ..services.auth import require_permission
+from ..services.dashboard_views import (
+    is_dashboard_request,
+    serialize_approval_for_dashboard,
+)
 
 router = APIRouter(prefix="/approvals", tags=["approvals"])
 
@@ -41,7 +46,7 @@ async def create_approval(
 @router.get("", response_model=ApprovalListResponse)
 async def list_approvals_route(
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, object] = Depends(require_permission("read")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
     status: Optional[str] = Query(
         default=None, pattern="^(pending|approved|rejected|expired|cancelled)$"
     ),
@@ -52,26 +57,47 @@ async def list_approvals_route(
     limit: int = Query(default=50, le=200),
     offset: int = Query(default=0, ge=0),
 ):
-    """List approvals with optional filters (status, risk_tier, data_subject_id)."""
-    org_id, _ = auth
+    """List approvals with optional filters (status, risk_tier, data_subject_id).
+
+    PHI handling (W1.2 — HIPAA minimum-necessary): when the caller is a
+    Clerk-authenticated dashboard user, ``Approval.context`` is projected
+    down to gate metadata only and ``data_subject_id`` / ``action_summary``
+    are stripped. SDK callers (API key bearer) still receive the full
+    shape — they need it for HITL polling and the customer's own review
+    surface. See ``services/dashboard_views.py`` for the strip rules.
+    """
+    org_id, api_key = auth
     rows, total = await list_approvals(
         session, org_id, status, risk_tier, data_subject_id, limit, offset
     )
-    return ApprovalListResponse(
-        approvals=[ApprovalResponse.model_validate(a) for a in rows],
-        total=total,
-    )
+    if is_dashboard_request(api_key):
+        approvals = [
+            ApprovalResponse.model_validate(serialize_approval_for_dashboard(a))
+            for a in rows
+        ]
+    else:
+        approvals = [ApprovalResponse.model_validate(a) for a in rows]
+    return ApprovalListResponse(approvals=approvals, total=total)
 
 
 @router.get("/{approval_id}", response_model=ApprovalResponse)
 async def get_approval_route(
     approval_id: str,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, object] = Depends(require_permission("read")),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
 ):
-    """Get an approval's current status. SDK polls this until resolved."""
-    org_id, _ = auth
+    """Get an approval's current status. SDK polls this until resolved.
+
+    PHI handling (W1.2 — HIPAA minimum-necessary): same dashboard-vs-SDK
+    split as the list endpoint. Dashboard callers see the stripped
+    shape; SDK callers see the full shape so HITL polling keeps working.
+    """
+    org_id, api_key = auth
     approval = await get_approval_with_lazy_expiry(session, org_id, approval_id)
+    if is_dashboard_request(api_key):
+        return ApprovalResponse.model_validate(
+            serialize_approval_for_dashboard(approval)
+        )
     return ApprovalResponse.model_validate(approval)
 
 
