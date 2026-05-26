@@ -938,9 +938,19 @@ class VeraClient:
         return resp.json()
 
     def record_action_batch(self, records: list[dict]) -> list[dict]:
-        """Record a batch of actions synchronously."""
+        """Record a batch of actions synchronously.
+
+        W1.3 (audit-batch-422) — also runs the wire-boundary normaliser so
+        a caller using SDK gate vocabulary (``result="pending_review"`` /
+        ``"blocked"``) on this synchronous-ack path doesn't 422 the way
+        the background batch did pre-fix. The background flush path goes
+        through ``_strip_internal_fields`` which already calls this
+        helper; the explicit-batch path needs it too.
+        """
+        from .gate import normalize_record_for_wire  # local: avoid cycle
         if self._redactor is not None:
             records = [self._redact_payload_fields(r) for r in records]
+        records = [normalize_record_for_wire(r) for r in records]
         headers = {"Idempotency-Key": uuid.uuid4().hex}
         resp = self._request_with_retry(
             "post", "/v1/actions/batch", json={"records": records}, headers=headers
@@ -1485,7 +1495,19 @@ class VeraClient:
             metadata = dict(out.get("metadata") or {})
             metadata.setdefault("record_idempotency_key", idem)
             out["metadata"] = metadata
-        return out
+        # W1.3 (audit-batch-422) — wire-boundary safety net for ``result``.
+        # ``vera.gate`` already normalises gate-vocabulary results before
+        # enqueue (see ``gate._capture_action``). This second normalisation
+        # catches:
+        #   * rows rehydrated from an on-disk spool that was written by a
+        #     pre-fix SDK version (without this, every spool record from
+        #     before the upgrade would 422 in perpetuity)
+        #   * direct callers of ``enqueue_action`` who pass gate-vocabulary
+        #     values without going through ``vera.gate``
+        # The shared helper lives in ``vera.gate`` so sync + async clients
+        # AND the public ``record_action_batch`` path use one source of truth.
+        from .gate import normalize_record_for_wire  # local: avoid cycle
+        return normalize_record_for_wire(out)
 
     @staticmethod
     def _batch_idempotency_key(batch: list[dict]) -> str:
@@ -1783,6 +1805,73 @@ class VeraClient:
     def get_approval(self, approval_id: str) -> dict:
         """Fetch an approval's current status."""
         resp = self._request_with_retry("get", f"/v1/approvals/{approval_id}")
+        return resp.json()
+
+    def complete_review(
+        self,
+        review_id: str,
+        decision: str,
+        reviewer_role: str,
+        reviewer_id: str,
+        note: str | None = None,
+        signature: str | None = None,
+        decided_at: str | None = None,
+    ) -> dict:
+        """Record a human reviewer's decision on a pending HITL approval.
+
+        Wraps ``POST /v1/reviews/{review_id}/complete`` — the customer-facing
+        completion endpoint for the in-band HITL flow. The reviewer's claimed
+        role is checked against the gate's ``required_role`` server-side; a
+        role mismatch raises :class:`ReviewerCredentialsInsufficient`.
+
+        Use this from your EHR's Review Inbox handler so the call is recorded
+        on Vera's audit chain via the SDK rather than the raw HTTP endpoint.
+
+        Args:
+            review_id: The Vera review/approval id surfaced by the
+                ``review.requested`` / ``approval.requested`` webhook.
+            decision: ``"approve"`` or ``"reject"``.
+            reviewer_role: The role the human reviewer claims (e.g.
+                ``"attending_physician"``). Server-side hierarchy check
+                against the gate's ``required_role``; unknown role strings
+                fail-closed.
+            reviewer_id: A human identifier for the reviewer — typically
+                their work email or employee id. Distinct from
+                ``reviewer_role`` so one reviewer can act under different
+                role hats.
+            note: Optional free-form rationale (≤ 2000 chars). Surfaced on
+                the resolution chain record.
+            signature: Optional cryptographic attestation; accepted as-is
+                in Phase 2 (verification ships Phase 4+). ≤ 512 chars.
+            decided_at: Optional reviewer-supplied ISO-8601 decision
+                timestamp. When omitted the server fills with its own
+                ``now()`` at callback receipt.
+
+        Returns:
+            The updated approval row (status flipped to ``approved`` /
+            ``rejected`` and resolution chain record id attached).
+
+        Raises:
+            ReviewerCredentialsInsufficient: 403 — reviewer's role does not
+                satisfy the gate's ``required_role``.
+            VeraValidationError: 4xx — malformed input.
+            VeraClientError: 404/409/410 — review missing, already
+                resolved, or expired.
+        """
+        payload: dict[str, Any] = {
+            "decision": decision,
+            "reviewer_role": reviewer_role,
+            "reviewer_id": reviewer_id,
+        }
+        if note is not None:
+            payload["note"] = note
+        if signature is not None:
+            payload["signature"] = signature
+        if decided_at is not None:
+            payload["decided_at"] = decided_at
+        resp = self._request_with_retry(
+            "post", f"/v1/reviews/{review_id}/complete", json=payload
+        )
         return resp.json()
 
     def list_approvals(

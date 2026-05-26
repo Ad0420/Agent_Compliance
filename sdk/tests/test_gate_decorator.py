@@ -182,7 +182,13 @@ def test_require_hitl_captures_draft_then_raises(monkeypatch):
     items = list(client._queue.queue)
     assert len(items) == 1
     assert items[0]["action_name"] == "commit_chart_note"
-    assert items[0]["result"] == "pending_review"
+    # W1.3 (audit-batch-422) — wire ``result`` is the backend-accepted
+    # ``pending``; the gate's original semantic is preserved in
+    # ``metadata.gate_result`` so downstream audit can distinguish HITL
+    # capture from a legitimate ``pending`` outcome.
+    assert items[0]["result"] == "pending"
+    assert items[0]["metadata"]["gate_result"] == "pending_review"
+    assert items[0]["metadata"]["ruling_effect"] == "REQUIRE_HITL"
     client.close()
 
 
@@ -244,11 +250,15 @@ def test_block_does_not_invoke_wrapped_and_raises(monkeypatch):
     assert ei.value.citation == "HIPAA 164.504(e)"
     assert ei.value.fix_url == "https://app.usevera.xyz/baa"
 
-    # Capture invariant: a "blocked" record is still emitted so the
-    # audit trail records the attempt.
+    # Capture invariant: a BLOCK record is still emitted so the audit
+    # trail records the attempt. W1.3 (audit-batch-422) — wire ``result``
+    # is ``failure`` (backend reserves ``blocked`` for the policy engine);
+    # the original gate verdict survives in ``metadata.gate_result``.
     items = list(client._queue.queue)
     assert len(items) == 1
-    assert items[0]["result"] == "blocked"
+    assert items[0]["result"] == "failure"
+    assert items[0]["metadata"]["gate_result"] == "blocked"
+    assert items[0]["metadata"]["ruling_effect"] == "BLOCK"
     client.close()
 
 
@@ -586,7 +596,10 @@ def test_async_require_hitl_captures_then_raises(monkeypatch):
         asyncio.run(wrapped())
     assert ei.value.review_id == "rev_async_1"
     items = list(client._queue.queue)
-    assert items[0]["result"] == "pending_review"
+    # W1.3 (audit-batch-422) — gate emits ``pending`` on the wire and
+    # tags ``metadata.gate_result="pending_review"`` for audit fidelity.
+    assert items[0]["result"] == "pending"
+    assert items[0]["metadata"]["gate_result"] == "pending_review"
     client.close()
 
 

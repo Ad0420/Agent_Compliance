@@ -456,7 +456,11 @@ async def _store_violations_and_notify(
 
 
 async def build_and_insert_record(
-    session: AsyncSession, org_id: str, data: ActionRecordCreate
+    session: AsyncSession,
+    org_id: str,
+    data: ActionRecordCreate,
+    *,
+    commit: bool = True,
 ) -> ActionRecord:
     """Build a single chained action record and insert it.
 
@@ -464,6 +468,28 @@ async def build_and_insert_record(
     if a policy with ``action="block"`` fires — but only **after** the
     record has been committed with ``result="blocked"`` so the audit
     trail captures the attempted action and the chain stays intact.
+
+    Wave 2D PR A6.5 — atomic-approval transaction support
+    ------------------------------------------------------
+    When ``commit=False`` the function performs a ``session.flush()`` in
+    place of ``session.commit()`` and skips:
+
+      * Post-commit auto-discovery webhook dispatch
+        (``new_agent_type_detected`` / ``cross_org_tenant_collision``).
+      * Policy-violation storage + alert-email dispatch
+        (``_store_violations_and_notify``).
+      * Raising the ``policy_block`` 409 (the caller owns the durability
+        boundary and must replicate this behaviour if it intends to
+        accept records that may be blocked by policy).
+
+    This mode is reserved for in-transaction callers that need the chain
+    write to commit together with their own writes — currently the
+    ``services.approvals._resolve_and_record`` /
+    ``services.approvals.cancel_approval`` flow that closes the A6
+    "lock released mid-flow" race. Approval-resolution chain records
+    have no ``tenant_id`` and no policy-block hits in practice, so the
+    skipped side effects are inert for that call site — but new callers
+    that pass ``commit=False`` MUST verify the same.
     """
     lock = await get_org_lock(org_id)
     # PR 3 / B3-B5 — auto-discovery may queue webhook events. We collect
@@ -525,8 +551,21 @@ async def build_and_insert_record(
         chain_state.latest_hash = record.record_hash
         chain_state.updated_at = now
 
-        await session.commit()
-        await session.refresh(record)
+        if commit:
+            await session.commit()
+            await session.refresh(record)
+        else:
+            # A6.5 in-transaction path: flush so the row gets a PK +
+            # is visible to the caller's subsequent reads, but DO NOT
+            # commit — the caller owns the transaction boundary.
+            await session.flush()
+
+    if not commit:
+        # In the in-transaction path the caller fires webhooks AFTER its
+        # own commit. Auto-discovery webhooks and policy-violation
+        # storage are skipped here (see docstring) because they live
+        # outside the chain-record write itself.
+        return record
 
     # PR 3 / B3-B5 — auto-discovery events fire AFTER the commit. The
     # webhook service is already fire-and-forget (``dispatch_event``

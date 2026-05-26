@@ -3,10 +3,24 @@
 /**
  * Compliance → Reviews
  *
- * Wave 2D PR C2 — org-wide Review queue page. Surfaces every decision in
- * PENDING_REVIEW state across the org so a reviewer can complete HITL
- * approvals from the dashboard as the alt channel when the customer
- * hasn't wired (or has lost connectivity to) their in-app webhook.
+ * Wave 2D PR C2 (initial ship) + W2.2 (read-only HIPAA hardening).
+ *
+ * Org-wide Review queue page. Surfaces every decision in PENDING_REVIEW
+ * state across the org so the AI vendor's compliance team can monitor
+ * queue depth, expiry pressure, and resolved-by-role telemetry. The
+ * page is READ-ONLY for the vendor — the row's detail panel exposes
+ * gate metadata + status, never an Approve / Modify / Reject button.
+ *
+ * Why read-only (W2.2 scope reduction)
+ * ====================================
+ * Per 45 CFR 164.502(b) minimum-necessary, the AI vendor's staff are
+ * a separate trust boundary from the vendor's customers (the hospital
+ * clinicians who actually authorise clinical actions). The HITL
+ * completion path therefore stays in-band: ScribeMD's EHR integration
+ * posts the clinician's decision to ``POST /v1/reviews/{id}/complete``
+ * server-to-server. The dashboard's old approve/reject form was
+ * removed because it violated min-necessary by giving non-clinical
+ * vendor staff a tool to authorise care.
  *
  * Citations
  * =========
@@ -14,12 +28,9 @@
  *    "Review queue page (under Compliance → Reviews): table of all
  *     decisions in PENDING_REVIEW state across the org. Filter by
  *     customer, by gate, by role. Click row → Pattern B layout."
- *  - v1-implementation-plan.md §Phase 2 "Test gate" line 127
- *    "Use the Review queue UI as the alt channel: complete one pending
- *     review entirely through the dashboard without the customer's
- *     webhook — confirm the chain still extends correctly."
  *  - dashboard-design-system.md §Layout patterns / Pattern B
  *    (sidebar + content + right panel split work surface, 360-420px panel).
+ *  - W2.2 acceptance brief — dashboard read-only + PHI hardening.
  *
  * Coordination with PR C4 (RecommendationCard scaffold)
  * =====================================================
@@ -139,8 +150,8 @@ function Header({ total, loading }: HeaderProps) {
         {loading
           ? "Loading pending reviews…"
           : total === 0
-            ? "No pending reviews. When agents need human approval, they'll appear here."
-            : `${total.toLocaleString()} pending review${total === 1 ? "" : "s"} across the org.`}
+            ? "No pending reviews. When an agent decision awaits a clinician callback, it shows up here."
+            : `${total.toLocaleString()} pending review${total === 1 ? "" : "s"} across the org. Clinician decisions are recorded in the customer’s EHR.`}
       </p>
     </div>
   );

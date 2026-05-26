@@ -19,8 +19,8 @@ from .routes import (
     checkpoints_by_date_router,
     customer_chain_summary_router,
     customers_router,
+    dev_router,
     export_router,
-    register_router,
     policies_router,
     approvals_router,
     gates_router,
@@ -33,6 +33,7 @@ from .routes import (
 )
 from .routes.dashboard_demo import router as dashboard_demo_router
 from .routes.dashboard_api_keys import router as dashboard_api_keys_router
+from .routes.dashboard_sync import router as dashboard_sync_router
 from .routes.dashboard_compliance import (
     router as dashboard_compliance_router,
     compliance_router as dashboard_compliance_namespace_router,
@@ -179,10 +180,13 @@ app.include_router(checkpoints_by_date_router, prefix="/v1")
 # registration order.
 app.include_router(customer_chain_summary_router, prefix="/v1")
 app.include_router(customers_router, prefix="/v1")
+# Dev-only org provisioning (W1.6). The router itself raises 404 in any
+# non-development environment so this never accidentally exposes
+# org-creation on production. See ``routes/dev.py``.
+app.include_router(dev_router, prefix="/v1")
 app.include_router(verification_router, prefix="/v1")
 app.include_router(organizations_router, prefix="/v1")
 app.include_router(export_router, prefix="/v1")
-app.include_router(register_router, prefix="/v1")
 app.include_router(policies_router, prefix="/v1")
 app.include_router(approvals_router, prefix="/v1")
 app.include_router(gates_router, prefix="/v1")
@@ -203,6 +207,7 @@ app.include_router(records_router, prefix="/v1")
 # above continue to use API-key auth (machines).
 app.include_router(dashboard_demo_router)
 app.include_router(dashboard_api_keys_router)
+app.include_router(dashboard_sync_router)
 # /v1/dashboard/{actions,approvals,violations,export,verify,data-subjects}
 # — Clerk-authenticated read mirrors for compliance reviewers, plus the
 # /v1/dashboard/compliance/{summary,recent,exports,review-trail} namespace

@@ -6,8 +6,8 @@ from .checkpoints import router as checkpoints_router
 from .checkpoints_by_date import router as checkpoints_by_date_router
 from .customer_chain_summary import router as customer_chain_summary_router
 from .customers import router as customers_router
+from .dev import router as dev_router
 from .export import router as export_router
-from .register import router as register_router
 from .policies import router as policies_router
 from .approvals import router as approvals_router
 from .gates import router as gates_router
@@ -22,6 +22,12 @@ from .dashboard_chain_integrity import router as dashboard_chain_integrity_route
 # lives exclusively under /v1/dashboard/api-keys (Clerk-gated, see
 # routes/dashboard_api_keys.py). The frontend /api-keys page is the only
 # entry point.
+#
+# routes/register.py was removed in W2.3 (housekeeping trio). The 410-Gone
+# stub served as a politeness layer for in-flight legacy clients after the
+# Clerk org bridge landed (Workstream E3); enough time has passed that the
+# path is dead code. New dev provisioning lives at POST /v1/dev/orgs
+# (W1.6 — routes/dev.py); production provisioning is Clerk-only.
 
 __all__ = [
     "actions_router",
@@ -32,8 +38,8 @@ __all__ = [
     "checkpoints_by_date_router",
     "customer_chain_summary_router",
     "customers_router",
+    "dev_router",
     "export_router",
-    "register_router",
     "policies_router",
     "approvals_router",
     "gates_router",

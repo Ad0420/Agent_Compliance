@@ -56,11 +56,16 @@ export function PendingApprovals({
                   <TableRow key={a.id} className="hover:bg-accent/40">
                     <TableCell className="text-sm font-medium">
                       {a.action_name}
-                      {a.action_summary ? (
-                        <p className="mt-0.5 text-xs text-muted-foreground line-clamp-1">
-                          {a.action_summary}
-                        </p>
-                      ) : null}
+                      {/*
+                        W2.2 — ``action_summary`` is a free-text PHI
+                        carrier ("Commit note for encounter MRN-12345:
+                        1 new diagnosis…"). The W1.2 dashboard
+                        serializer already strips it for Clerk callers
+                        so the field arrives null; we deliberately do
+                        not render it even if a future serializer
+                        change re-introduces the value. Defense in
+                        depth.
+                      */}
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">
                       {a.requested_by_agent}

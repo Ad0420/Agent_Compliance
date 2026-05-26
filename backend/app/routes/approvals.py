@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
+from ..models import APIKey
 from ..schemas.approval import (
     ApprovalCreate,
     ApprovalDecision,
@@ -23,6 +24,10 @@ from ..services.auth import (
     require_permission_with_context,
 )
 from ..services.iam import audit_staff_read, redact_approval
+from ..services.dashboard_views import (
+    is_dashboard_request,
+    serialize_approval_for_dashboard,
+)
 
 router = APIRouter(prefix="/approvals", tags=["approvals"])
 
@@ -78,12 +83,21 @@ async def list_approvals_route(
     limit: int = Query(default=50, le=200),
     offset: int = Query(default=0, ge=0),
 ):
-    """List approvals with optional filters (status, risk_tier, data_subject_id)."""
+    """List approvals with optional filters (status, risk_tier, data_subject_id).
+
+    Three layers of PHI handling stack here:
+
+    * **Vera staff** (Wave 3A.c — IamTier.STAFF_READ_ONLY): redact via
+      ``redact_approval`` + write an audit log row. Filter-by-
+      ``data_subject_id`` rejected as a PHI side-channel.
+    * **Customer dashboard via Clerk** (W1.2 HIPAA minimum-necessary):
+      strip ``Approval.context.original_input_data``, ``data_subject_id``,
+      ``action_summary`` via ``serialize_approval_for_dashboard``.
+    * **Customer SDK via API key**: full shape — needed for HITL polling.
+    """
     org_id = ctx.org_id
 
-    # Wave 3A.c. Same PHI side-channel as ``/v1/actions?data_subject_id=`` —
-    # a staff member could probe presence of a specific subject without
-    # ever seeing the value in the response. Block at the filter layer.
+    # Wave 3A.c — staff PHI filter side-channel guard.
     if ctx.is_staff and data_subject_id is not None:
         raise HTTPException(
             status_code=403,
@@ -111,10 +125,17 @@ async def list_approvals_route(
             resource_count=len(rows),
             redacted=True,
         )
-    return ApprovalListResponse(
-        approvals=[_approval_response_with_redaction(a, ctx) for a in rows],
-        total=total,
-    )
+        approvals = [_approval_response_with_redaction(a, ctx) for a in rows]
+    elif is_dashboard_request(ctx.api_key):
+        # W1.2 — Clerk dashboard caller, strip PHI carriers.
+        approvals = [
+            ApprovalResponse.model_validate(serialize_approval_for_dashboard(a))
+            for a in rows
+        ]
+    else:
+        # Customer SDK via API key — full shape.
+        approvals = [ApprovalResponse.model_validate(a) for a in rows]
+    return ApprovalListResponse(approvals=approvals, total=total)
 
 
 @router.get("/{approval_id}", response_model=ApprovalResponse)
@@ -123,7 +144,12 @@ async def get_approval_route(
     session: AsyncSession = Depends(get_db),
     ctx: AuthContext = Depends(require_permission_with_context("read")),
 ):
-    """Get an approval's current status. SDK polls this until resolved."""
+    """Get an approval's current status. SDK polls this until resolved.
+
+    PHI handling stacks identically to the list endpoint:
+    Vera staff → ``redact_approval``; Clerk dashboard → dashboard strip;
+    customer SDK → full shape.
+    """
     org_id = ctx.org_id
     approval = await get_approval_with_lazy_expiry(session, org_id, approval_id)
     if ctx.is_staff:
@@ -136,7 +162,12 @@ async def get_approval_route(
             resource_id=approval_id,
             redacted=True,
         )
-    return _approval_response_with_redaction(approval, ctx)
+        return _approval_response_with_redaction(approval, ctx)
+    if is_dashboard_request(ctx.api_key):
+        return ApprovalResponse.model_validate(
+            serialize_approval_for_dashboard(approval)
+        )
+    return ApprovalResponse.model_validate(approval)
 
 
 @router.post("/{approval_id}/decide", response_model=ApprovalResponse)
@@ -144,13 +175,29 @@ async def decide_approval_route(
     approval_id: str,
     data: ApprovalDecision,
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, object] = Depends(require_permission("admin")),
+    auth: tuple[str, object] = Depends(require_permission("write")),
 ):
-    """Human reviewer approves or rejects. Requires admin key for MVP.
+    """Human reviewer approves or rejects.
 
     EU AI Act Art. 14: for dual-verification (approvers_required=2),
     two distinct approvers must each vote approve before status becomes 'approved'.
     Any single 'reject' vote immediately rejects the approval.
+
+    Wave 2D follow-up W1.1 — auth relaxation
+    ----------------------------------------
+    Permission relaxed from ``admin`` → ``write``. Closes
+    phase2-acceptance-findings
+    ``require_permission-admin-too-strict-on-decide`` (Medium): real
+    reviewers (attending physicians, nurses, etc.) should never need
+    admin keys to register a decision. The security boundary is now
+    the reviewer-role check inside
+    ``services.approvals.decide_approval`` — when the approval is
+    gated, the request must supply a ``reviewer_role`` that satisfies
+    ``Approval.context.required_role``; insufficient roles are
+    rejected 403 with an audit record + ``reviewed_below_threshold``
+    flag flip. The API-key permission only gates *whether* the caller
+    can hit the endpoint at all; the role check gates *which*
+    decisions they can record on gated approvals.
     """
     org_id, _ = auth
     approval = await decide_approval(session, org_id, approval_id, data)

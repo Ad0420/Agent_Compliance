@@ -593,7 +593,12 @@ async def _complete_review_locked(
     # pending state until the sweeper runs and silently drop the
     # ``review.expired`` event that customers depend on for cleanup.
     if approval.expires_at is not None and _now() > approval.expires_at:
+        # A6.5: _resolve_and_record no longer commits on its own; commit
+        # here so the expired status + chain record are durable before
+        # the 410 surfaces to the caller.
         await _resolve_and_record(session, approval, "expired")
+        await session.commit()
+        await session.refresh(approval)
         raise HTTPException(status_code=410, detail="Review has expired")
 
     context = approval.context or {}
@@ -658,6 +663,15 @@ async def _complete_review_locked(
     # service so the chain vote signature, dual webhook emission, and
     # status-machine all stay in lock-step with the legacy
     # POST /v1/approvals/{id}/decide path.
+    #
+    # W1.1 follow-up: ``decide_approval`` now also performs the
+    # reviewer-role check itself (backported from this very function).
+    # Forward the validated ``reviewer_role`` so the downstream check
+    # is a tautological pass rather than a ``reviewer_role_required``
+    # rejection. The double-check is intentional — A4's check fires
+    # first under the per-review asyncio lock so chain records are
+    # written for below-threshold callbacks before the row-level DB
+    # lock is even acquired.
     decision = ApprovalDecision(
         decision=data.decision,
         # ``approver`` is the canonical identifier the signed vote
@@ -666,6 +680,7 @@ async def _complete_review_locked(
         # signatures.
         approver=f"{data.reviewer_id}:{data.reviewer_role}",
         note=data.note,
+        reviewer_role=data.reviewer_role,
     )
     resolved = await decide_approval(session, org_id, review_id, decision)
 

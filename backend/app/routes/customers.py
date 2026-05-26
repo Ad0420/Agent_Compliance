@@ -51,6 +51,10 @@ from ..services.auth import (
     require_permission_with_context,
 )
 from ..services.baa import invalidate_org_baa_cache
+from ..services.dashboard_views import (
+    is_dashboard_request,
+    serialize_decision_for_dashboard,
+)
 from ..services.decisions import (
     DEFAULT_LIMIT as DECISIONS_DEFAULT_LIMIT,
     MAX_LIMIT as DECISIONS_MAX_LIMIT,
@@ -542,6 +546,22 @@ async def list_customer_decisions_endpoint(
     needed. Surfacing ALLOW rulings requires either an SDK-side
     denormalisation or a new ``gate_evaluations`` table — both deferred
     to a follow-up PR.
+
+    PHI handling (W1.2 — HIPAA minimum-necessary)
+    ---------------------------------------------
+    Most of the Decisions feed is PHI-clean by construction (the join
+    service only surfaces whitelisted gate-metadata from
+    ``Approval.context`` plus operational webhook + timing fields and
+    never carries ``data_subject_id``). One leak vector remains: the
+    Ruling's ``reason_detail`` field, which ``_build_ruling`` populates
+    from ``Approval.action_summary`` — gates routinely write
+    PHI-bearing narratives there ("Commit note for encounter
+    MRN-31504806…"). ``serialize_decision_for_dashboard`` nulls
+    ``reason_detail`` for dashboard callers so the dashboard sees the
+    gate badge + role but not the patient-bearing narrative. SDK
+    callers (API-key bearer) keep the full shape — they're in-band, in
+    scope for the customer's BAA, and need ``reason_detail`` for the
+    customer's own review surface.
     """
     org_id = ctx.org_id
     # Reuse the org-scoped lookup helper so the 404 message matches the
@@ -575,8 +595,15 @@ async def list_customer_decisions_endpoint(
             resource_count=len(rows),
             redacted=True,
         )
+    # W1.2 — Clerk dashboard caller: strip reason_detail (frequent PHI
+    # carrier) via dashboard view serializer. SDK callers (API key) get
+    # the raw rows.
+    if is_dashboard_request(ctx.api_key):
+        decisions = [serialize_decision_for_dashboard(r) for r in rows]
+    else:
+        decisions = rows
     return CustomerDecisionsListResponse(
-        decisions=rows,
+        decisions=decisions,
         total=total,
         limit=limit,
         offset=offset,

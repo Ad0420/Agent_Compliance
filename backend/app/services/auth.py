@@ -393,12 +393,26 @@ async def _authenticate_clerk_session(
         clerk_org_id=clerk_org_id,
     )
     if membership is None:
-        logger.info(
-            "Clerk session rejected: no backend membership (user=%s org=%s)",
-            clerk_user_id,
-            clerk_org_id,
+        # Self-heal a missing OrgMembership row by reconciling from Clerk's
+        # REST API. Covers webhook gaps the Svix retry budget can't fix:
+        # parent-org delete+recreate carrying members forward, multi-day
+        # backend outages, mis-configured webhook URLs, orgs that predate
+        # the webhook subscription.
+        from .clerk_reconcile import reconcile_membership_from_clerk
+
+        membership = await reconcile_membership_from_clerk(
+            session,
+            clerk_user_id=clerk_user_id,
+            clerk_org_id=clerk_org_id,
         )
-        return None
+        if membership is None:
+            logger.info(
+                "Clerk session rejected: no backend membership and reconcile failed "
+                "(user=%s org=%s)",
+                clerk_user_id,
+                clerk_org_id,
+            )
+            return None
     refreshed = await maybe_refresh_membership(
         session,
         membership,

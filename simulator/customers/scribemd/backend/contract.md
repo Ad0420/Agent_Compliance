@@ -255,6 +255,114 @@ emitting any of those.
 
 ---
 
+---
+
+## Review Inbox (W2.1 — in-band HITL via webhook)
+
+When Vera's gate raises `REQUIRE_HITL`, the SDK returns `pending_review`
+synchronously to the workflow AND Vera POSTs an `approval.requested`
+(legacy) / `review.requested` (new) webhook to ScribeMD's
+`/vera/webhooks`. The clinician opens the **Review Inbox** at
+`/reviews` in the EHR, clicks Approve or Reject, and ScribeMD calls
+Vera's `POST /v1/reviews/{review_id}/complete` via the **SDK**'s
+`complete_review` helper. Vera then POSTs `approval.resolved` /
+`review.completed` back to confirm — `/vera/webhooks` flips the local
+row to terminal and cascades to the matching encounter.
+
+### `GET /api/reviews?status=pending`
+
+Auth required. Returns Review Inbox items, newest first.
+
+```jsonc
+{
+  "items": [
+    {
+      "approval_id": "apr_xxxxx",
+      "encounter_id": "enc_xxxx" | null,
+      "status": "pending" | "approved" | "rejected" | "expired",
+      "risk_tier": "high" | …,
+      "required_role": "attending_physician" | null,
+      "action_name": "commit_orders" | null,
+      "agent_name": "scribemd-chart-committer" | null,
+      "data_subject_id": "pt_xxx" | null,
+      "context_excerpt": { "diagnoses": […], "medication_orders": […], … },
+      "decided_by": null | "Dr. Adams",
+      "decided_at": null | "2026-05-26T12:05:00+00:00",
+      "decision_note": null | "lgtm",
+      "requested_at": "2026-05-26T11:30:00+00:00" | null,
+      "expires_at": "2026-05-26T15:30:00+00:00" | null,
+      "created_at": "…",
+      "updated_at": "…"
+    }
+  ],
+  "total": 1
+}
+```
+
+Query: `status` in `{pending, approved, rejected, expired, all}`
+(default `pending`); `limit` `[1,200]`; `offset` `≥0`.
+
+### `GET /api/reviews/{approval_id}`
+
+`200` with one `ReviewInboxItem` or `404 review_not_found`.
+
+### `POST /api/reviews/{approval_id}/decide`
+
+Auth required. Body:
+
+```jsonc
+{
+  "decision": "approve" | "reject",
+  "reviewer_role": "attending_physician",  // optional, default attending_physician
+  "note": "looks correct"                  // optional, ≤ 2000 chars
+}
+```
+
+Status codes mirror the upstream Vera contract:
+
+- `200` — accepted; the row will flip to terminal when `review.completed`
+  arrives back via the webhook. The response body is the optimistically
+  stamped local row (still `status="pending"` until Vera's webhook lands).
+- `403 reviewer_credentials_insufficient` — the clinician's role doesn't
+  satisfy the gate's `required_role`.
+- `404 review_not_found` — unknown approval_id.
+- `409 review_already_<status>` — row already terminal.
+- `502 vera_complete_review_failed` — Vera SDK call failed network-wise.
+
+The decision is forwarded to Vera via the **SDK**'s `complete_review`
+helper (not raw HTTP), so the call lands on the audit chain via an
+SDK-recorded action.
+
+---
+
+## Webhook receiver
+
+### `POST /vera/webhooks` — Vera-only
+
+No session cookie. Authenticated via HMAC-SHA256 in the
+`X-Vera-Signature` header (`sha256=<hex>`); the secret lives in
+`SCRIBEMD_VERA_WEBHOOK_SECRET`. Bad / missing signature → `401`. No
+secret configured → `503` (fail closed, never open-trust).
+
+Handled event types:
+
+- `approval.requested` / `review.requested` → create a pending Review
+  Inbox row.
+- `approval.resolved` / `review.completed` → flip the row to
+  approved/rejected; cascade to the encounter (status → committed /
+  blocked, last_event → chart_committed / chart_blocked).
+- `review.expired` → mark the row expired; the encounter's
+  `last_event` becomes `review_expired` and status flips to blocked
+  (returned-to-scribe).
+
+Idempotent on `(approval_id, event_type)`: a duplicate delivery returns
+`200 {"applied": false, "reason": "duplicate"}` without mutation.
+
+Unknown event types return `200 {"applied": false, "reason": "event_ignored"}`
+so an over-broad subscription doesn't 500 the dispatcher.
+
+---
+
 ## Quick state machine reference
 
 ```

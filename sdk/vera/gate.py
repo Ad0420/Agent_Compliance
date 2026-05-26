@@ -182,6 +182,94 @@ _KNOWN_RULINGS = {
     _RULING_REQUIRE_DEFERRED_REVIEW,
 }
 
+# Wire-level ``result`` enum the backend accepts on ``POST /v1/actions(/batch)``.
+# Must stay in sync with ``backend/app/schemas/action.py::_CLIENT_RESULT_VALUES``.
+# ``blocked`` is intentionally NOT in this set: the backend reserves it for the
+# policy engine, which assigns it inside ``build_and_insert_record`` when a
+# block-action policy fires. Clients self-attesting ``blocked`` would let
+# callers claim "policy fired" without one actually firing — see the comment
+# block above ``_CLIENT_RESULT_VALUES`` in the backend schema for details.
+_WIRE_RESULT_VALUES = {"success", "failure", "partial", "pending"}
+
+# Gate-effect-derived results we emit at call sites — these are the SDK's
+# semantic vocabulary for what happened at the gate. They MUST be normalised
+# to a wire-acceptable value before reaching the backend; the original is
+# preserved in ``metadata.gate_result`` so downstream audit can distinguish
+# "the engine blocked us" from "we tried and the wrapped function errored".
+#
+# Mapping rationale:
+#   "blocked"         → "failure": the call did not succeed; the gate refused.
+#                       Pair with ``metadata.ruling_effect="BLOCK"`` (already
+#                       stamped) for the unambiguous audit signal.
+#   "pending_review"  → "pending": the record exists; a human is on the hook
+#                       to resolve it. ``metadata.ruling_effect`` carries
+#                       REQUIRE_HITL vs REQUIRE_DEFERRED_REVIEW; ``review_id``
+#                       links to the materialised approval/review row.
+_GATE_RESULT_TO_WIRE_RESULT = {
+    "blocked": "failure",
+    "pending_review": "pending",
+}
+
+
+def _normalize_result_for_wire(result: str) -> tuple[str, Optional[str]]:
+    """Map a gate-emitted ``result`` to a backend-acceptable value.
+
+    Returns ``(wire_result, original_or_None)``. ``original_or_None`` is
+    ``None`` when the caller already used a wire-acceptable value (no
+    rewrite happened) and the original string when we rewrote it — so
+    ``_capture_action`` can stash the original in ``metadata.gate_result``.
+
+    Anything outside the known gate-effect vocabulary AND the wire-accepted
+    set falls through unchanged; the backend's validator will surface the
+    422 in that case (which is the right outcome — silently rewriting
+    arbitrary inputs would hide bugs in new call sites).
+    """
+    if result in _WIRE_RESULT_VALUES:
+        return result, None
+    mapped = _GATE_RESULT_TO_WIRE_RESULT.get(result)
+    if mapped is not None:
+        return mapped, result
+    return result, None
+
+
+def normalize_record_for_wire(payload: dict) -> dict:
+    """Wire-boundary normaliser shared by sync + async clients.
+
+    Returns a SHALLOW-copied dict with the ``result`` field rewritten to a
+    backend-acceptable value if it was a gate-vocabulary string, plus
+    ``metadata.gate_result`` set to the original. Inputs already on the
+    wire-acceptable enum are returned with ``result`` untouched and
+    ``metadata`` unchanged.
+
+    Caller-supplied ``metadata.gate_result`` is OVERWRITTEN when this
+    function rewrites ``result`` — the SDK is authoritative about which
+    rewrite it performed, and preserving a caller-supplied (potentially
+    contradictory) ``gate_result`` next to a SDK-rewritten ``result``
+    would let the audit trail lie about the gate verdict.
+
+    Used by:
+      * ``VeraClient._strip_internal_fields`` / ``AsyncVeraClient._strip_internal_fields``
+        — covers the background spool/queue flush path (catches pre-fix
+        spool rows + direct ``enqueue_action`` callers).
+      * ``VeraClient.record_action_batch`` / ``AsyncVeraClient.record_action_batch``
+        — covers callers that bypass the background queue entirely.
+    """
+    raw_result = payload.get("result")
+    if not isinstance(raw_result, str):
+        return payload
+    wire_result, original_result = _normalize_result_for_wire(raw_result)
+    if original_result is None:
+        return payload
+    out = dict(payload)
+    out["result"] = wire_result
+    metadata = dict(out.get("metadata") or {})
+    # Authoritative: when we rewrote ``result`` we own ``gate_result``.
+    # A caller-supplied value is overwritten so the audit trail
+    # cannot claim a gate verdict that doesn't match the SDK rewrite.
+    metadata["gate_result"] = original_result
+    out["metadata"] = metadata
+    return out
+
 _unknown_ruling_warned: set[str] = set()
 
 
@@ -421,10 +509,24 @@ def _capture_action(
     are swallowed and logged at WARN — they MUST NEVER mask the
     customer's exception (mirrors the legacy ``@vera.audit`` contract).
     """
+    # W1.3 (audit-batch-422) — normalise gate-vocabulary ``result`` values
+    # to the backend's accepted enum before they hit the wire. Without this,
+    # every HITL / BLOCK capture 422'd at ``POST /v1/actions/batch`` and the
+    # SDK's worker dropped the record (see ``client._handle_flush_failure``'s
+    # "permanent failure" branch). The audit chain was silently incomplete.
+    #
+    # The original gate-emitted value is preserved in ``metadata.gate_result``
+    # so the dashboard / regulator-PDF surface can still tell "the gate
+    # blocked us" apart from "the wrapped function raised". ``ruling_effect``
+    # already carries the gate's verdict in machine-readable form; this is
+    # belt-and-suspenders so a reader who only looks at ``result`` doesn't
+    # silently conflate the two.
+    wire_result, original_result = _normalize_result_for_wire(result)
+
     record_kwargs: dict[str, Any] = dict(
         action_name=action_name,
         action_type=action_type,
-        result=result,
+        result=wire_result,
         input_data=input_data,
         outcome=outcome,
         duration_ms=duration_ms,
@@ -443,6 +545,8 @@ def _capture_action(
         metadata["review_id"] = review_id
     if ruling_effect is not None:
         metadata["ruling_effect"] = ruling_effect
+    if original_result is not None:
+        metadata["gate_result"] = original_result
     if metadata:
         record_kwargs["metadata"] = metadata
     try:

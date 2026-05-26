@@ -28,6 +28,7 @@ from ..schemas.webhook_delivery import (
     WebhookDeliveryResponse,
 )
 from ..services.auth import require_permission
+from ..services.webhook_url_validation import is_safe_outbound_url
 from ..services.webhooks import (
     _attempt_delivery,
     _track_task,
@@ -65,6 +66,12 @@ async def create_webhook(
     endpoint to replace it.
     """
     org_id, _ = auth
+    safe, reason = is_safe_outbound_url(data.url)
+    if not safe:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "ssrf_blocked", "reason": reason},
+        )
     secret = generate_webhook_secret()
     sub = WebhookSubscription(
         org_id=org_id,
@@ -130,6 +137,12 @@ async def update_webhook(
         raise HTTPException(status_code=404, detail="Webhook not found")
 
     if data.url is not None:
+        safe, reason = is_safe_outbound_url(data.url)
+        if not safe:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "ssrf_blocked", "reason": reason},
+            )
         sub.url = data.url
     if data.event_types is not None:
         sub.event_types = list(data.event_types)

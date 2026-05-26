@@ -445,30 +445,13 @@ export function cancelApproval(id: string): Promise<Approval> {
   return request(`/v1/approvals/${id}/cancel`, { method: "POST" });
 }
 
-// ── Wave 2D PR C2 — Review queue page ───────────────────────────────────
-//
-// Wraps the A4 endpoint ``POST /v1/reviews/{review_id}/complete``. The
-// dashboard uses this as the alt channel for HITL completion when the
-// customer hasn't wired a webhook receiver (per
-// v1-implementation-plan.md §Phase 2 Dashboard, line 120 + 127).
-//
-// Status codes the dashboard surfaces inline (see complete-review-form.tsx):
-//   * 200 — decision recorded, queue refresh
-//   * 403 — reviewer role insufficient (detail is ReviewerInsufficientDetail)
-//   * 404 — review missing (shouldn't happen post-list-load; treat as 409)
-//   * 409 — already resolved OR attestation_conflict (Wave 2D A6)
-//   * 410 — review expired
-// All non-200s arrive as ``ApiError`` with the structured ``detail`` blob
-// preserved for narrowing.
-export function completeReview(
-  review_id: string,
-  input: CompleteReviewInput,
-): Promise<CompleteReviewResponse> {
-  return request(`/v1/reviews/${encodeURIComponent(review_id)}/complete`, {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-}
+// W2.2 — the dashboard wrapper for ``POST /v1/reviews/{id}/complete``
+// was removed when the Review queue page went read-only per HIPAA
+// scope reduction. The endpoint itself stays — ScribeMD's in-band
+// callback path (W2.1) still calls it server-to-server. See
+// ``backend/app/routes/reviews.py`` for the live contract and
+// ``lib/api-types.ts`` for the wire-shape types (kept so SDK / future
+// in-band UIs share the dashboard's TS contract).
 
 // Register
 export interface RegisterInput {

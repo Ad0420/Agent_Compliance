@@ -1,8 +1,8 @@
 /**
- * ReviewQueueRow + CompleteReviewForm — type & contract smoke tests.
+ * Review queue typed-contract smoke tests — Wave 2D PR C2 + W2.2.
  *
- * Wave 2D PR C2. The main ``frontend/`` workspace currently has no
- * Vitest/Jest runner wired up — see the parallel comment in
+ * The main ``frontend/`` workspace currently has no Vitest/Jest runner
+ * wired up — see the parallel comment in
  * ``components/customers/__tests__/decision-row.test.tsx``. Adding a
  * test runner is out of scope for this PR; a dedicated infra PR is
  * tracked separately.
@@ -12,12 +12,21 @@
  * .github/workflows/frontend-typecheck.yml). Each ``test_*`` constant
  * constructs a realistic fixture so:
  *
- *   1. Any future shape change in ``Approval`` / ``CompleteReviewInput``
- *      / ``RiskTier`` / ``ReviewerInsufficientDetail`` fails the
- *      typecheck loudly here, not silently at render time.
+ *   1. Any future shape change in ``Approval`` / ``RiskTier`` /
+ *      ``ReviewerInsufficientDetail`` fails the typecheck loudly here,
+ *      not silently at render time.
  *   2. When vitest is added, these fixtures drop straight into
  *      ``render(<ReviewQueueRow approval={test_approval_critical} />)``
  *      style assertions with zero rework.
+ *
+ * W2.2 update: the dashboard Review queue is read-only — the
+ * Approve/Modify/Reject form was removed because HIPAA min-necessary
+ * forbids the AI vendor's staff from authorising clinical decisions.
+ * HITL completion happens in-band via ScribeMD's EHR callback. The
+ * `CompleteReviewInput` / `ReviewerInsufficientDetail` /
+ * `AttestationConflictResponse` types stay in ``lib/api-types.ts`` so
+ * the SDK + any future in-band UI share the contract, but they no
+ * longer flow through the dashboard render tree.
  */
 
 import * as React from "react";
@@ -25,21 +34,9 @@ import * as React from "react";
 import { ReviewQueueRow } from "../review-queue-row";
 import { ReviewQueueTable } from "../review-queue-table";
 import { ReviewDetailPanel } from "../review-detail-panel";
-import { CompleteReviewForm } from "../complete-review-form";
-import {
-  isAlreadyDecided,
-  isAttestationConflict,
-  isReviewerInsufficient,
-  isReviewExpired,
-  isReviewMissing,
-} from "@/hooks/use-complete-review";
-import { ApiError } from "@/lib/api-client";
 import type {
   Approval,
   ApprovalDecisionRecord,
-  AttestationConflictResponse,
-  CompleteReviewInput,
-  ReviewerInsufficientDetail,
   RiskTier,
 } from "@/lib/api-types";
 
@@ -56,17 +53,18 @@ export const test_approval_critical_dea: Approval = {
   request_record_id: "rec-1",
   resolution_record_id: null,
   requested_by_agent: "abridge-scribe@v3.2.1",
-  data_subject_id: "cleveland_clinic",
+  // W2.2 — backend strips data_subject_id for dashboard callers
+  // (services/dashboard_views.py); fixture mirrors the live wire shape.
+  data_subject_id: null,
   action_name: "prescribe_oxycodone",
-  action_summary: "Prescribe oxycodone 5mg PO TID for post-op pain.",
+  // W2.2 — same as above; action_summary stripped server-side.
+  action_summary: null,
   context: {
     gate_name: "clinical_scribe.controlled_substance",
     required_role: "dea_licensed_physician",
     citation: "21 CFR 1306.04",
     fix_url:
       "https://app.vera.io/reviews/00000000-0000-4000-8000-000000000001",
-    reason_detail:
-      "Controlled substance (Schedule II) — DEA-licensed physician required.",
   },
   risk_tier: "critical",
   approvers_required: 1,
@@ -83,14 +81,16 @@ export const test_approval_high_new_diagnosis: Approval = {
   request_record_id: "rec-2",
   resolution_record_id: null,
   requested_by_agent: "abridge-scribe@v3.2.1",
-  data_subject_id: "memorial_hospital",
+  data_subject_id: null,
   action_name: "add_diagnosis",
-  action_summary: "Add Type 2 diabetes (E11.9) to active problem list.",
+  action_summary: null,
   context: {
     gate_name: "clinical_scribe.new_diagnosis",
     required_role: "attending_physician",
     citation: "45 CFR 164.502(b)",
-    input: { code: "E11.9", description: "Type 2 diabetes mellitus" },
+    // NOTE: no ``input`` / ``reason_detail`` keys — the dashboard
+    // context whitelist drops them server-side, and the UI must not
+    // render them either (defense-in-depth, W2.2).
   },
   risk_tier: "high",
   approvers_required: 1,
@@ -127,9 +127,9 @@ export const test_approval_low_expiring: Approval = {
   request_record_id: "rec-4",
   resolution_record_id: null,
   requested_by_agent: "voice-agent@v2",
-  data_subject_id: "small_clinic",
+  data_subject_id: null,
   action_name: "send_followup_sms",
-  action_summary: "Send post-visit follow-up SMS.",
+  action_summary: null,
   context: {
     gate_name: "voice_agent.outbound_sms",
     required_role: "nurse_practitioner",
@@ -142,6 +142,32 @@ export const test_approval_low_expiring: Approval = {
   // Already past — UI should render "Expired" in brick.
   expires_at: "2026-05-24T14:00:00.000Z",
   resolved_at: null,
+};
+
+// W2.2 — resolved approval fixture. Mirrors the redacted ``decisions[]``
+// shape returned by ``serialize_approval_for_dashboard``: the
+// ``approver`` (reviewer_id PII) and ``note`` (PHI narrative) fields
+// are stripped server-side, and a derived ``reviewer_role`` is
+// surfaced. The detail panel reads ``reviewer_role`` to render the
+// read-only "Approved by attending_physician" status indicator
+// without ever touching the customer-side clinician's identifier.
+export const test_approval_resolved_approved: Approval = {
+  ...test_approval_high_new_diagnosis,
+  status: "approved",
+  resolved_at: "2026-05-24T15:00:00.000Z",
+  decided_at: "2026-05-24T15:00:00.000Z",
+  decisions: [
+    {
+      decision: "approve",
+      // Dashboard wire omits ``approver`` and ``note`` entirely; the
+      // TS contract marks them optional (lib/api-types.ts W2.2) so
+      // the dashboard's subset shape compiles cleanly.
+      decided_at: "2026-05-24T15:00:00.000Z",
+      signature: "kms-signed-blob",
+      key_id: "kms-key-1",
+      reviewer_role: "attending_physician",
+    },
+  ],
 };
 
 // ── Render-shape smoke (validates props compile) ───────────────────────
@@ -193,7 +219,10 @@ const _table: React.ReactNode = (
   />
 );
 
-const _detail: React.ReactNode = (
+// W2.2 — detail panel is read-only. No CompleteReviewForm prop, no
+// ``onSuccess`` / ``onTerminalError`` plumbing. Status indicator is
+// the only "action" the panel renders.
+const _detail_pending: React.ReactNode = (
   <ReviewDetailPanel
     approval={test_approval_critical_dea}
     onClose={() => {}}
@@ -201,96 +230,29 @@ const _detail: React.ReactNode = (
   />
 );
 
-const _form: React.ReactNode = (
-  <CompleteReviewForm approval={test_approval_high_new_diagnosis} />
+const _detail_resolved: React.ReactNode = (
+  <ReviewDetailPanel
+    approval={test_approval_resolved_approved}
+    onClose={() => {}}
+    customerDisplayName="Memorial Hospital"
+  />
+);
+
+const _detail_expired: React.ReactNode = (
+  <ReviewDetailPanel
+    approval={test_approval_low_expiring}
+    onClose={() => {}}
+    customerDisplayName="Small Clinic"
+  />
 );
 
 void _row_critical;
 void _row_no_gate;
 void _row_expired;
 void _table;
-void _detail;
-void _form;
-
-// ── Mutation input fixtures (all three decision shapes) ────────────────
-
-export const test_complete_input_approve: CompleteReviewInput = {
-  decision: "approve",
-  reviewer_role: "attending_physician",
-  reviewer_id: "alice@hospital.example",
-  note: "Diagnosis confirmed via lab results 2026-05-24 — approve.",
-};
-
-export const test_complete_input_reject: CompleteReviewInput = {
-  decision: "reject",
-  reviewer_role: "dea_licensed_physician",
-  reviewer_id: "drbob@hospital.example",
-  note: "No DEA authorization on file for this patient — reject.",
-  signature: "sig:placeholder",
-};
-
-// ── Error envelope fixtures (403/409/410) ─────────────────────────────
-
-export const test_error_insufficient_role: ReviewerInsufficientDetail = {
-  code: "reviewer_credentials_insufficient",
-  review_id: test_approval_critical_dea.id,
-  required_role: "dea_licensed_physician",
-  reviewer_role: "MD",
-  detail:
-    "Reviewer role 'MD' does not satisfy required role 'dea_licensed_physician'.",
-};
-
-export const test_error_attestation_conflict: AttestationConflictResponse = {
-  code: "attestation_conflict",
-  review_id: test_approval_high_new_diagnosis.id,
-  detail:
-    "This review was already attested by another reviewer with a different decision.",
-};
-
-// Narrow each ApiError fixture against its guard so the guard's typing
-// is locked in at typecheck time.
-const _err_403 = new ApiError(403, test_error_insufficient_role.detail, test_error_insufficient_role);
-const _err_404 = new ApiError(404, "Review not found");
-const _err_409 = new ApiError(409, "Review is already approved", { code: "already_resolved" });
-const _err_409_conflict = new ApiError(
-  409,
-  test_error_attestation_conflict.detail,
-  test_error_attestation_conflict,
-);
-const _err_410 = new ApiError(410, "Review has expired");
-const _err_500 = new ApiError(500, "Internal server error");
-
-if (isReviewerInsufficient(_err_403)) {
-  // After narrowing the detail should be typed correctly.
-  const _required: string | null = _err_403.detail.required_role;
-  void _required;
-}
-if (isAlreadyDecided(_err_409)) {
-  const _status: number = _err_409.status;
-  void _status;
-}
-if (isAttestationConflict(_err_409_conflict)) {
-  const _code: string = _err_409_conflict.detail.code;
-  void _code;
-}
-if (isReviewExpired(_err_410)) {
-  const _status: number = _err_410.status;
-  void _status;
-}
-if (isReviewMissing(_err_404)) {
-  const _status: number = _err_404.status;
-  void _status;
-}
-// Negative case — 500 should not narrow as any of the documented errors.
-if (
-  !isReviewerInsufficient(_err_500) &&
-  !isAlreadyDecided(_err_500) &&
-  !isReviewExpired(_err_500) &&
-  !isReviewMissing(_err_500) &&
-  !isAttestationConflict(_err_500)
-) {
-  // Reached — confirms the guards are exhaustive for the documented codes.
-}
+void _detail_pending;
+void _detail_resolved;
+void _detail_expired;
 
 // ── Exhaustiveness assertion ───────────────────────────────────────────
 //
@@ -310,5 +272,3 @@ function _exhaust_risk(t: RiskTier): string {
   }
 }
 void _exhaust_risk;
-void test_complete_input_approve;
-void test_complete_input_reject;
