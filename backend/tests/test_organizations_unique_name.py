@@ -7,9 +7,14 @@ Two test cases:
 1. Inserting two ``Organization`` rows with the same name raises
    ``IntegrityError`` (constraint enforced at the DB level, not just
    the ORM).
-2. The Alembic migration ``s9n1o2p3q4r5`` upgrades + downgrades
+2. The Alembic migration ``t0o2p3q4r5s6`` upgrades + downgrades
    cleanly on a fresh in-memory SQLite database, using the migration's
    own pre-check to abort when duplicates exist.
+
+   (Originally authored as ``s9n1o2p3q4r5``; re-IDed to
+   ``t0o2p3q4r5s6`` after a duplicate-revision collision with the
+   sibling ``baa_scope.granted_at default now()`` migration. See the
+   chain-fix note in the migration header.)
 
 The duplicate-detection path is exercised by directly invoking
 ``_find_duplicate_names`` because the only way to insert two
@@ -33,7 +38,7 @@ _MIGRATION_PATH = (
     Path(__file__).resolve().parents[1]
     / "alembic"
     / "versions"
-    / "s9n1o2p3q4r5_unique_organizations_name.py"
+    / "t0o2p3q4r5s6_unique_organizations_name.py"
 )
 
 

@@ -16,7 +16,7 @@ class DevOrgCreateInput(BaseModel):
 
     - ``name``: free-form org name. Unique across the platform per the
       ``uq_organizations_name`` constraint (W1.6 migration
-      ``s9n1o2p3q4r5``). Re-using a name returns 409.
+      ``t0o2p3q4r5s6``). Re-using a name returns 409.
     - ``with_baa``: when True, also seeds a placeholder Customer +
       active BAA + wildcard BAAScope so the new org passes Phase 2
       gates that aren't specifically testing ``stale_baa``. Phase 2
