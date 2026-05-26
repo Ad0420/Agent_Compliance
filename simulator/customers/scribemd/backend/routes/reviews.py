@@ -12,6 +12,7 @@ we flip the row to terminal there.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Callable, Literal, Optional
@@ -162,7 +163,12 @@ async def decide_review(
     decided_at = datetime.now(timezone.utc).isoformat()
 
     try:
-        client.complete_review(
+        # The SDK's `complete_review` is sync (httpx.Client + retry budget).
+        # Offload to a worker thread so the FastAPI event loop stays
+        # responsive — a multi-second Vera roundtrip would otherwise
+        # block every concurrent request on this process.
+        await asyncio.to_thread(
+            client.complete_review,
             review_id=approval_id,
             decision=body.decision,
             reviewer_role=body.reviewer_role,

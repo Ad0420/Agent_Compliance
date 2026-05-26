@@ -387,6 +387,27 @@ def test_invalid_json_400(app_client):
     assert r.json()["detail"] == "invalid_json"
 
 
+def test_oversized_body_rejected_413(app_client):
+    """A 100KB body should bounce before HMAC verification or DB writes.
+
+    Defends against a malformed/malicious caller forcing us to buffer
+    megabytes of bytes ahead of signature verification.
+    """
+    big_payload = {"event_type": "review.requested", "data": {"review_id": "x", "padding": "A" * 100_000}}
+    body = json.dumps(big_payload, separators=(",", ":"), sort_keys=True).encode()
+    assert len(body) > 64 * 1024
+    r = app_client.post(
+        "/vera/webhooks",
+        content=body,
+        headers={
+            "Content-Type": "application/json",
+            "X-Vera-Signature": _sign(_WEBHOOK_SECRET, body),
+        },
+    )
+    assert r.status_code == 413
+    assert r.json()["detail"] == "payload_too_large"
+
+
 def test_completed_without_pending_row_is_safe(app_client):
     """Out-of-order delivery: completed lands before requested.
 

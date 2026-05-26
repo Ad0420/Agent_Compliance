@@ -24,6 +24,12 @@ export type EncounterEventType =
   | "approval_decided"
   | "chart_committed"
   | "chart_blocked"
+  // W2.1 — set on the encounter row when the upstream `review.expired`
+  // webhook arrives before the clinician acts. Encounter terminates as
+  // `blocked` (no chart write) but with this distinguishing last_event
+  // so the EHR can surface "returned to scribe" instead of a generic
+  // rejection.
+  | "review_expired"
   | "error";
 
 export interface PatientSummary {
@@ -122,6 +128,7 @@ export function isTerminalEvent(event: EncounterEventType): boolean {
   return (
     event === "chart_committed" ||
     event === "chart_blocked" ||
+    event === "review_expired" ||
     event === "error"
   );
 }

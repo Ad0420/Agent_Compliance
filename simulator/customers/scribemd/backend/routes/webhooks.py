@@ -27,6 +27,13 @@ from simulator.customers.scribemd.backend.webhook_handler import (
 
 logger = logging.getLogger(__name__)
 
+# Hard cap on inbound webhook bodies. Vera's payloads are tiny (≤ a few KB
+# for the redacted context excerpt + envelope); 64 KB is comfortably above
+# the largest realistic delivery. Above this we 413 without reading the
+# body so a malformed/malicious caller can't force us to buffer megabytes
+# of bytes before HMAC verification.
+MAX_WEBHOOK_BODY_BYTES = 64 * 1024
+
 
 router = APIRouter(prefix="/vera/webhooks", tags=["vera-webhooks"])
 
@@ -52,7 +59,28 @@ async def receive_webhook(
             detail="webhook_secret_not_configured",
         )
 
+    # Reject oversized payloads BEFORE buffering them. Content-Length is
+    # advisory, so we also bail out post-read if the actual byte length
+    # exceeds the cap (Starlette streams chunks internally; a hostile
+    # caller can lie about the header).
+    declared_length = request.headers.get("content-length")
+    if declared_length is not None:
+        try:
+            if int(declared_length) > MAX_WEBHOOK_BODY_BYTES:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail="payload_too_large",
+                )
+        except ValueError:
+            # Malformed header — let the body read decide.
+            pass
+
     raw = await request.body()
+    if len(raw) > MAX_WEBHOOK_BODY_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="payload_too_large",
+        )
     signature = request.headers.get("X-Vera-Signature", "")
     try:
         verify_signature(secret, raw, signature)
