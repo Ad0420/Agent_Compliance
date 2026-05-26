@@ -696,20 +696,28 @@ async def test_clerk_unreachable_uses_cached_role_with_warn(
     # Attach to the live module's actual logger object — this is the
     # ground truth regardless of import-path name.
     _live_logger = logging.getLogger(clerk_auth.__name__)
+    # The clerk_auth logger ends up `disabled=True` under full-suite
+    # test ordering — pytest's caplog state restoration interacts with
+    # something earlier in the suite. Forcibly re-enable for this test.
+    _live_logger.disabled = False
     _live_logger.setLevel(logging.WARNING)
     _live_logger.addHandler(_handler)
     _attached.append(_live_logger)
     # Also attach to known name variants AND the root logger so any
-    # propagation path is covered.
+    # propagation path is covered. Re-enable each.
     for _name in (
         "app.middleware.clerk_auth",
         "backend.app.middleware.clerk_auth",
         "",  # root
     ):
         _logger = logging.getLogger(_name)
+        _logger.disabled = False
         _logger.setLevel(logging.WARNING)
         _logger.addHandler(_handler)
         _attached.append(_logger)
+    # Also clear the module-level disable threshold in case
+    # logging.disable() was called by a prior test.
+    logging.disable(logging.NOTSET)
 
     try:
         resp = await async_client.get(
