@@ -40,8 +40,11 @@ import type {
   WebhookDeliveriesResponse,
   WebhookDeliveryReplayResponse,
   WebhookListResponse,
-  CompleteReviewInput,
-  CompleteReviewResponse,
+  // W2.2 — CompleteReviewInput / CompleteReviewResponse kept in
+  // api-types.ts for SDK + future in-band UI parity but not imported
+  // here: the dashboard wrapper for POST /v1/reviews/{id}/complete was
+  // removed when the Review queue went read-only per HIPAA scope
+  // reduction. See lib/api-types.ts for the wire-shape contract.
   S3MirrorConfig,
   S3MirrorValidateInput,
   S3MirrorValidateResponse,
