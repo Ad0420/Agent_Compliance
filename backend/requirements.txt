@@ -39,3 +39,9 @@ pyjwt[crypto]>=2.10.1
 # webhook-verification API we use is stable across 1.21–1.62, so cap below
 # the breaking change rather than bumping pydantic (transitive-dep risk).
 svix>=1.21.0,<1.63
+# Anthropic Claude SDK (Phase 4 Wave 2 PR B2). Drives the synchronous
+# Haiku call backing ``POST /v1/compliance/insights`` — the dashboard's
+# 3-5 recommendation cards.  Pinned with a floor (the AsyncAnthropic +
+# messages.create surface we use is stable from 0.40 onward) and no
+# upper bound so security fixes flow through without manual bumps.
+anthropic>=0.40
