@@ -41,6 +41,10 @@ import click
 
 from . import _cli_format as _fmt
 from .client import VeraClient
+# register_verify_commands from .verify.cli is intentionally NOT imported
+# or called — see the merge note below cli definition. The merged
+# ``verify_cmd`` from ``_cli_verify.py`` (added at the bottom of this
+# file) owns the surface.
 from .errors import (
     VeraAuthError,
     VeraError,
@@ -72,6 +76,15 @@ except Exception:  # pragma: no cover — defensive
 @click.version_option(_SDK_VERSION, package_name="vera-sdk")
 def cli() -> None:
     """Vera SDK command-line interface."""
+
+
+# Phase 3 Wave 3C.1 + 3C.2 — the ``verify`` subcommand is registered at
+# the bottom of this file via ``cli.add_command(verify_cmd)`` from
+# ``_cli_verify.py``. That command merges 3C.1's ``--offline`` flag with
+# 3C.2's ``--merkle-proof`` flag (and routes the no-flags chain check
+# through ``vera.verify.cli._run_online_verify``). The original
+# ``register_verify_commands(cli)`` call from 3C.1 would silently
+# overwrite that merged command — leave it off.
 
 
 @cli.group()
@@ -2147,6 +2160,19 @@ def review_status_cmd(
             pass
 
     sys.exit(REVIEW_STATUS_EXIT_OK)
+
+
+# ---------------------------------------------------------------------------
+# Wave 3C.2 — ``vera verify --merkle-proof`` + ``vera evidence-export``.
+# Implementation lives in ``_cli_verify.py`` to keep this file focused on
+# the older subcommands and to minimise the surface area Wave 3C.1's
+# verify-subpackage refactor needs to touch on rebase.
+# ---------------------------------------------------------------------------
+
+from ._cli_verify import evidence_export_cmd, verify_cmd  # noqa: E402
+
+cli.add_command(verify_cmd)
+cli.add_command(evidence_export_cmd)
 
 
 def main() -> None:

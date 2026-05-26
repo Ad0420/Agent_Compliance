@@ -82,6 +82,16 @@ from .errors import (
     # "block and wait" PendingReview pattern.
     RequiresDeferredReview,
 )
+# Phase 3 Wave 3C.1 — offline evidence-bundle verifier. Importing here
+# (rather than only via the CLI) lets advanced users embed the verifier
+# in their own tooling: ``from vera import run_verify, VerifyResult``.
+from .verify import (
+    RecordVerification,
+    VerifyResult,
+    run_verify,
+    verify_merkle_path,
+    verify_signature,
+)
 
 logger = logging.getLogger("vera.init")
 
@@ -483,6 +493,12 @@ __all__ = [
     "ReviewerCredentialsInsufficient",
     # Wave 2C PR B2
     "RequiresDeferredReview",
+    # Phase 3 Wave 3C.1 — offline evidence-bundle verifier.
+    "run_verify",
+    "VerifyResult",
+    "RecordVerification",
+    "verify_merkle_path",
+    "verify_signature",
     # Back-compat aliases (deprecated)
     "ActionLedgerClient",
     "AsyncActionLedgerClient",
