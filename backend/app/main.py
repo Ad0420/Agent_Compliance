@@ -17,6 +17,7 @@ from .routes import (
     organizations_router,
     checkpoints_router,
     customers_router,
+    dev_router,
     export_router,
     register_router,
     policies_router,
@@ -140,6 +141,10 @@ app.include_router(actions_router, prefix="/v1")
 app.include_router(agents_router, prefix="/v1")
 app.include_router(checkpoints_router, prefix="/v1")
 app.include_router(customers_router, prefix="/v1")
+# Dev-only org provisioning (W1.6). The router itself raises 404 in any
+# non-development environment so this never accidentally exposes
+# org-creation on production. See ``routes/dev.py``.
+app.include_router(dev_router, prefix="/v1")
 app.include_router(verification_router, prefix="/v1")
 app.include_router(organizations_router, prefix="/v1")
 app.include_router(export_router, prefix="/v1")
