@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
 from ..models import Organization, ChainState, APIKey
+from ..models.organization import CHECKPOINT_CADENCES
 from ..schemas.organization import AlertEmailUpdate, OrganizationCreate, OrganizationResponse
 from ..schemas.wizard import (
     WizardAnswers,
@@ -22,6 +23,25 @@ from ..services.external_store import (
 )
 
 router = APIRouter(prefix="/organizations", tags=["organizations"])
+
+
+class CheckpointCadenceResponse(BaseModel):
+    """Response for the cadence read endpoint (and the PATCH success
+    response, so the frontend can render the new value without a
+    follow-up GET).
+    """
+
+    cadence: str
+
+
+class CheckpointCadenceUpdate(BaseModel):
+    """PATCH body. The ``cadence`` literal is validated in the handler
+    against ``CHECKPOINT_CADENCES`` so we can emit a structured 422
+    with the full ``valid_cadences`` list — pydantic's default literal
+    error doesn't surface that as cleanly to a UI.
+    """
+
+    cadence: str
 
 
 class BAAStatusResponse(BaseModel):
@@ -90,6 +110,70 @@ async def get_current_organization_baa_status(
     org_id, _ = auth
     active = await is_org_baa_active(session, org_id, bypass_cache=True)
     return BAAStatusResponse(active=active)
+
+
+@router.get(
+    "/me/checkpoint-cadence", response_model=CheckpointCadenceResponse
+)
+async def get_checkpoint_cadence(
+    session: AsyncSession = Depends(get_db),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
+):
+    """Return the active org's checkpoint cadence.
+
+    Phase 3 Wave 3A.b (Eng review finding 1D). Surfaced under
+    ``read`` so any org member — including the developer + compliance
+    reviewer Clerk roles — can fetch the current setting. Only
+    ``admin`` may PATCH (the sibling endpoint below).
+    """
+    org_id, _ = auth
+    org = await session.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    return CheckpointCadenceResponse(cadence=org.checkpoint_cadence)
+
+
+@router.patch(
+    "/me/checkpoint-cadence", response_model=CheckpointCadenceResponse
+)
+async def update_checkpoint_cadence(
+    data: CheckpointCadenceUpdate,
+    session: AsyncSession = Depends(get_db),
+    auth: tuple[str, APIKey | None] = Depends(require_permission("admin")),
+):
+    """Update the active org's checkpoint cadence.
+
+    Admin-only — the cadence directly affects the audit-trail's
+    regulator-ready posture, so this sits alongside ``alert-email`` in
+    the ``admin`` permission scope. Validation:
+
+    * The cadence value must be one of ``CHECKPOINT_CADENCES``. We
+      return a structured 422 with ``valid_cadences`` so a frontend
+      can render a dropdown without hard-coding the list.
+    * The model-layer CHECK constraint backs us up if a future caller
+      bypasses this validator (e.g. via a raw SQL update or a future
+      bulk-config endpoint).
+    """
+    org_id, _ = auth
+    if data.cadence not in CHECKPOINT_CADENCES:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_cadence",
+                "detail": (
+                    f"checkpoint_cadence must be one of "
+                    f"{list(CHECKPOINT_CADENCES)}; got {data.cadence!r}"
+                ),
+                "valid_cadences": list(CHECKPOINT_CADENCES),
+            },
+        )
+    org = await session.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    org.checkpoint_cadence = data.cadence
+    await session.commit()
+    await session.refresh(org)
+    return CheckpointCadenceResponse(cadence=org.checkpoint_cadence)
 
 
 @router.patch("/me/alert-email", response_model=OrganizationResponse)
