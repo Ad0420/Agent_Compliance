@@ -47,6 +47,10 @@ from ..schemas.customer import (
 from ..schemas.customer_decision import CustomerDecisionsListResponse
 from ..services.auth import require_permission
 from ..services.baa import invalidate_org_baa_cache
+from ..services.dashboard_views import (
+    is_dashboard_request,
+    serialize_decision_for_dashboard,
+)
 from ..services.decisions import (
     DEFAULT_LIMIT as DECISIONS_DEFAULT_LIMIT,
     MAX_LIMIT as DECISIONS_MAX_LIMIT,
@@ -537,8 +541,24 @@ async def list_customer_decisions_endpoint(
     needed. Surfacing ALLOW rulings requires either an SDK-side
     denormalisation or a new ``gate_evaluations`` table — both deferred
     to a follow-up PR.
+
+    PHI handling (W1.2 — HIPAA minimum-necessary)
+    ---------------------------------------------
+    The Decisions feed is **already PHI-clean by construction**: the
+    join service only surfaces gate-metadata fields from
+    ``Approval.context`` (via ``_build_ruling``) plus operational
+    webhook + timing fields. No ``data_subject_id``, no free-text PHI.
+    Both dashboard (Clerk) and SDK (API key) callers see the same
+    ``CustomerDecisionResponse`` shape — the schema itself encodes the
+    minimum-necessary contract.
+
+    We still route through ``serialize_decision_for_dashboard`` for
+    dashboard callers so the PHI-redaction policy stays visible at the
+    route layer. If the join service ever starts surfacing more
+    ``Approval.context`` keys, the strip would happen here without a
+    route refactor.
     """
-    org_id, _ = auth
+    org_id, api_key = auth
     # Reuse the org-scoped lookup helper so the 404 message matches the
     # other ``/v1/customers/{tenant_id}/*`` sub-routes (and so a customer
     # that exists in another org never leaks a 200).
@@ -553,8 +573,12 @@ async def list_customer_decisions_endpoint(
         limit=limit,
         offset=offset,
     )
+    if is_dashboard_request(api_key):
+        decisions = [serialize_decision_for_dashboard(r) for r in rows]
+    else:
+        decisions = rows
     return CustomerDecisionsListResponse(
-        decisions=rows,
+        decisions=decisions,
         total=total,
         limit=limit,
         offset=offset,
