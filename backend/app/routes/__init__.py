@@ -13,6 +13,7 @@ from .reviews import router as reviews_router
 from .staff import router as staff_router
 from .webhooks import router as webhooks_router
 from .kms import router as kms_router
+from .records import router as records_router
 
 # routes/api_keys.py was removed in the E4 cleanup. API-key management now
 # lives exclusively under /v1/dashboard/api-keys (Clerk-gated, see
@@ -35,4 +36,5 @@ __all__ = [
     "staff_router",
     "webhooks_router",
     "kms_router",
+    "records_router",
 ]
