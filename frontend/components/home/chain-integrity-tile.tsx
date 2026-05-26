@@ -167,13 +167,11 @@ export function ChainIntegrityTile({
           </p>
         </div>
         <dl className="text-right">
-          <dt className="sr-only">Checkpoint cadence</dt>
+          <dt className="text-[11px] uppercase tracking-[0.1em] text-[color:var(--ink-3)]">
+            Cadence
+          </dt>
           <dd className="text-[11px] font-semibold uppercase tracking-[0.1em] text-[color:var(--ink-3)]">
             {cadenceLabel[data.cadence]}
-          </dd>
-          <dt className="sr-only">Cadence label</dt>
-          <dd className="text-[11px] text-[color:var(--ink-3)]">
-            cadence
           </dd>
         </dl>
       </header>

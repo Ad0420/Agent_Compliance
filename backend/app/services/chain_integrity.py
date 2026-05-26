@@ -74,6 +74,17 @@ _FRESHNESS_GRACE: dict[str, Optional[timedelta]] = {
 # detection so the two columns of the tile are consistent.
 _RECENT_WINDOW_DAYS = 30
 
+# Per-request cap on the verify-scan. ``verify_checkpoint`` is a
+# crypto + DB + external-store-read per call. An hourly-cadence org
+# accumulates up to ~720 checkpoints in 30 days; verifying all of
+# them on every Home tile load would be wasteful (and the tile is
+# already cached for 60s on the client). We scan the most recent
+# ``_MAX_VERIFY_PER_REQUEST`` instead — older verification gaps
+# surface via the manual ``POST /v1/verify/checkpoints/verify`` flow
+# (which is the regulator-grade audit path; the Home tile is the
+# at-a-glance signal).
+_MAX_VERIFY_PER_REQUEST = 30
+
 
 @dataclass(frozen=True)
 class LatestCheckpointSummary:
@@ -347,8 +358,16 @@ async def compute_chain_integrity(
     if not recent:
         recent = [latest]
 
+    # Cap the verify-scan so we don't crypto-verify hundreds of
+    # checkpoints per Home page load on an hourly-cadence org. We pick
+    # the N most-recent checkpoints — those are the ones a regulator
+    # would look at first, and the manual verify-all endpoint covers
+    # the rest. ``recent`` is ASC by sequence, so we slice from the
+    # tail.
+    verify_scan = recent[-_MAX_VERIFY_PER_REQUEST:]
+
     failed_id: Optional[str] = None
-    for cp in recent:
+    for cp in verify_scan:
         ok = await verify_checkpoint(session, cp)
         if not ok:
             failed_id = cp.id

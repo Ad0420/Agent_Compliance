@@ -13,8 +13,6 @@ IAM:
 
 from __future__ import annotations
 
-import logging
-
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,9 +24,7 @@ from ..schemas.chain_integrity import (
 )
 from ..services.auth import AuthContext, require_permission_with_context
 from ..services.chain_integrity import compute_chain_integrity
-from ..services.iam import IamTier, audit_staff_read
-
-logger = logging.getLogger("vera.dashboard.chain_integrity")
+from ..services.iam import audit_staff_read
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -48,7 +44,10 @@ async def get_chain_integrity(
     org_id = ctx.org_id
     result = await compute_chain_integrity(session, org_id)
 
-    if ctx.tier == IamTier.STAFF_READ_ONLY:
+    # Per Wave 3B.3 policy (v1-test-plan row "STAFF_FULL behavioral
+    # parity"), branch on ``ctx.is_staff`` so a future STAFF_FULL
+    # tier writes the same audit row without a per-route fix.
+    if ctx.is_staff:
         await audit_staff_read(
             session,
             staff_id=ctx.staff_id or "",
