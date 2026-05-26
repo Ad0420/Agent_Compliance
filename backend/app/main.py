@@ -27,6 +27,7 @@ from .routes import (
 )
 from .routes.dashboard_demo import router as dashboard_demo_router
 from .routes.dashboard_api_keys import router as dashboard_api_keys_router
+from .routes.dashboard_sync import router as dashboard_sync_router
 from .routes.dashboard_compliance import (
     router as dashboard_compliance_router,
     compliance_router as dashboard_compliance_namespace_router,
@@ -153,6 +154,7 @@ app.include_router(webhooks_router, prefix="/v1")
 # above continue to use API-key auth (machines).
 app.include_router(dashboard_demo_router)
 app.include_router(dashboard_api_keys_router)
+app.include_router(dashboard_sync_router)
 # /v1/dashboard/{actions,approvals,violations,export,verify,data-subjects}
 # — Clerk-authenticated read mirrors for compliance reviewers, plus the
 # /v1/dashboard/compliance/{summary,recent,exports,review-trail} namespace
