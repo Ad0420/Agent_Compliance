@@ -1,7 +1,7 @@
 """add Organization.checkpoint_cadence (Phase 3 Wave 3A.b)
 
 Revision ID: s0p3q4r5s6t7
-Revises: r8m0n1o2p3q4
+Revises: r9o2p3q4r5s6
 Create Date: 2026-05-25
 
 Phase 3 Wave 3A.b (Eng review finding 1D) ships per-org checkpoint
@@ -46,7 +46,7 @@ from alembic import op
 
 
 revision = "s0p3q4r5s6t7"
-down_revision = "r8m0n1o2p3q4"
+down_revision = "r9o2p3q4r5s6"
 branch_labels = None
 depends_on = None
 
