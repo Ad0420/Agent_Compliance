@@ -398,6 +398,21 @@ def test_malformed_json_raises_bundle_error(tmp_path):
     assert "malformed" in str(exc.value).lower() or "json" in str(exc.value).lower()
 
 
+def test_non_integer_record_count_in_manifest_raises_bundle_error(tmp_path):
+    """Malformed manifest with a non-integer count → BundleError (not
+    bare ValueError). Keeps the CLI's exit-code-2 contract intact for
+    any structurally broken manifest."""
+    bundle = _build_bundle(tmp_path)
+    manifest = json.loads((bundle["root_dir"] / "manifest.json").read_text())
+    manifest["record_count"] = "not-a-number"
+    (bundle["root_dir"] / "manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    with pytest.raises(BundleError) as exc:
+        run_offline_verify(bundle["root_dir"])
+    assert "non-integer" in str(exc.value).lower()
+
+
 def test_missing_records_dir_raises_bundle_error(tmp_path):
     bundle = _build_bundle(tmp_path)
     # Wipe the records dir.
@@ -437,6 +452,33 @@ def test_offline_verify_accepts_tarball(tmp_path):
         tf.add(bundle["root_dir"], arcname="bundle")
     result = run_offline_verify(tar_path)
     assert result.ok
+
+
+def test_offline_verify_cleans_up_tarball_tempdir(tmp_path):
+    """Verifying a tarball must not leak a temp dir under /tmp.
+
+    Repeated CLI invocations over evidence-sized bundles would otherwise
+    pile up GB of extracted bundles before /tmp gets cleaned by the OS.
+    """
+    import tempfile as _tempfile
+
+    bundle = _build_bundle(tmp_path)
+    tar_path = tmp_path / "bundle.tar.gz"
+    with tarfile.open(tar_path, "w:gz") as tf:
+        tf.add(bundle["root_dir"], arcname="bundle")
+
+    tmp_root = Path(_tempfile.gettempdir())
+    before = {p.name for p in tmp_root.iterdir() if p.name.startswith("vera-verify-")}
+
+    result = run_offline_verify(tar_path)
+    assert result.ok
+
+    after = {p.name for p in tmp_root.iterdir() if p.name.startswith("vera-verify-")}
+    # No new vera-verify-* tempdirs should remain after a successful
+    # verify run.
+    assert after == before, (
+        f"tarball verification leaked tempdir(s): {after - before}"
+    )
 
 
 def test_offline_verify_rejects_path_traversal_in_tarball(tmp_path):

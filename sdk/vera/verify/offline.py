@@ -209,11 +209,23 @@ def _load_manifest(bundle_root: Path) -> BundleManifest:
             f"manifest.json missing required keys: {sorted(missing)}"
         )
     extras = {k: v for k, v in raw.items() if k not in required}
+    # Coerce numeric fields defensively — a malformed manifest with
+    # a string in ``record_count`` would otherwise raise ``ValueError``
+    # straight through ``run_offline_verify``, bypassing the CLI's
+    # ``BundleError`` → exit 2 mapping. Catching here keeps the
+    # exit-code contract intact for any caller.
+    try:
+        checkpoint_count = int(raw["checkpoint_count"])
+        record_count = int(raw["record_count"])
+    except (TypeError, ValueError) as exc:
+        raise BundleError(
+            f"manifest.json has non-integer checkpoint_count / record_count: {exc}"
+        ) from exc
     return BundleManifest(
         vera_version=str(raw["vera_version"]),
         exported_at=str(raw["exported_at"]),
-        checkpoint_count=int(raw["checkpoint_count"]),
-        record_count=int(raw["record_count"]),
+        checkpoint_count=checkpoint_count,
+        record_count=record_count,
         extras=extras,
     )
 
@@ -507,19 +519,46 @@ def run_offline_verify(bundle_path: str | Path) -> VerifyResult:
     layout broken). All content-level failures are recorded on the
     returned :class:`VerifyResult` with ``ok=False``.
     """
+    import shutil
+
     path = Path(bundle_path)
     if not path.exists():
         raise BundleError(f"bundle path does not exist: {path}")
 
+    # When the input is a tarball we extract to a temp dir. Track it so
+    # we can clean up unconditionally — otherwise repeated CLI calls
+    # over the same machine pile up evidence-sized temp dirs under
+    # /tmp. Cleanup happens in a ``finally`` below.
+    extracted_tmp: Path | None = None
     if path.is_file():
         if not _is_tarball(path):
             raise BundleError(
                 f"bundle path is a file but not a tarball: {path.name}"
             )
-        root = _extract_tarball(path)
+        extracted_root = _extract_tarball(path)
+        # ``_extract_tarball`` may return either the temp dir itself or
+        # a single subdirectory inside it. Find the temp dir to clean.
+        for parent in (extracted_root, extracted_root.parent):
+            if parent.name.startswith("vera-verify-"):
+                extracted_tmp = parent
+                break
+        root = extracted_root
     else:
         root = path
 
+    try:
+        return _run_offline_verify_at(root)
+    finally:
+        if extracted_tmp is not None and extracted_tmp.is_dir():
+            shutil.rmtree(extracted_tmp, ignore_errors=True)
+
+
+def _run_offline_verify_at(root: Path) -> VerifyResult:
+    """Pure verification driven by an already-resolved bundle root.
+
+    Split out from :func:`run_offline_verify` so the tarball extraction
+    + tempdir cleanup wrapper can ``try/finally`` around it.
+    """
     manifest = _load_manifest(root)
     checkpoints = _load_checkpoints(root)
     records = _load_records(root)
