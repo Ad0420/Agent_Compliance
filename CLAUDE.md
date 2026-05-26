@@ -104,3 +104,43 @@ unexpected hits — only true positives or correctly-allowlisted entries),
 and (2) at least 3 real violations have been caught in PR review since the
 rule landed. Both directions (strict→default and the reverse) are
 documented in the changelog.
+
+## IAM tier checks
+
+Wave 3B.3 (PR #236) established the IAM tier model: `IamTier.STAFF_FULL`
+is reserved for a v2 break-glass tier and MUST behave identically to
+`STAFF_READ_ONLY` in v1 (same redaction, same audit, same read-only
+surface). So route handlers MUST branch on the boolean helpers, never on
+a direct enum comparison:
+
+- **Use**: `ctx.is_staff` / `ctx.is_customer` (properties on
+  `AuthContext` in `backend/app/services/auth.py`).
+<!-- iam-tier-direct-comparison-ok: rule definition — banned pattern quoted intentionally -->
+- **Do NOT use**: `ctx.tier == IamTier.STAFF_READ_ONLY` or
+<!-- iam-tier-direct-comparison-ok: rule definition — banned pattern quoted intentionally -->
+  `ctx.tier == IamTier.CUSTOMER`. Either form silently mis-routes a
+  future STAFF_FULL caller.
+
+The CI gate is `iam-tier-check`
+(`.github/workflows/iam-tier-check.yml`). It runs
+`scripts/check_iam_tier_usage.sh` against `backend/app/routes/` on
+every PR. The same antipattern was caught by `/review` twice before the
+gate landed:
+
+- PR #236 (Wave 3B.3): `backend/app/routes/staff.py:99` — CRITICAL.
+- PR #240 (Wave 3D.1): `backend/app/routes/dashboard_chain_integrity.py:48` —
+  INFORMATIONAL.
+
+The PR that ships the gate also cleaned up five more pre-existing
+instances in `approvals.py`, `records.py`, and `checkpoints_by_date.py`
+that pre-dated the policy.
+
+To suppress a deliberate exact-tier introspection (rare), add an inline
+comment on the same line OR the immediately preceding line:
+
+```
+# iam-tier-direct-comparison-ok: <reason ≥8 chars>
+```
+
+The reason is mandatory (≥8 chars) and is surfaced when the script
+runs with `--report-json` for auditability.

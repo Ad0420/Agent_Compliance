@@ -22,7 +22,7 @@ from ..services.auth import (
     require_permission,
     require_permission_with_context,
 )
-from ..services.iam import IamTier, audit_staff_read, redact_approval
+from ..services.iam import audit_staff_read, redact_approval
 
 router = APIRouter(prefix="/approvals", tags=["approvals"])
 
@@ -37,8 +37,12 @@ def _approval_response_with_redaction(
     ``"[REDACTED]"``. Gate metadata (gate_name, required_role, citation,
     reason) is intact in both cases — that's what staff need to triage a
     ticket.
+
+    Per Wave 3B.3 policy, we branch on ``ctx.is_customer`` so a future
+    STAFF_FULL tier is redacted identically to STAFF_READ_ONLY without
+    a per-route fix.
     """
-    if ctx.tier == IamTier.CUSTOMER:
+    if ctx.is_customer:
         return ApprovalResponse.model_validate(approval)
     raw = ApprovalResponse.model_validate(approval).model_dump(mode="json")
     return ApprovalResponse.model_validate(redact_approval(raw, ctx.tier))

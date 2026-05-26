@@ -49,7 +49,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..models import ActionRecord, Checkpoint, Organization
 from ..services.auth import AuthContext, require_permission_with_context
-from ..services.iam import IamTier, audit_staff_read
+from ..services.iam import audit_staff_read
 
 logger = logging.getLogger("vera.checkpoints_by_date")
 
@@ -281,7 +281,10 @@ async def get_checkpoint_by_date(
                 is_today_pending = True
 
         if is_today_pending:
-            if ctx.tier == IamTier.STAFF_READ_ONLY:
+            # Per Wave 3B.3 policy, branch on ``ctx.is_staff`` so a
+            # future STAFF_FULL tier writes the audit row without a
+            # per-route fix.
+            if ctx.is_staff:
                 await audit_staff_read(
                     session,
                     staff_id=ctx.staff_id or "",
@@ -304,7 +307,7 @@ async def get_checkpoint_by_date(
                 headers={"Retry-After": "60"},
             )
 
-        if ctx.tier == IamTier.STAFF_READ_ONLY:
+        if ctx.is_staff:
             await audit_staff_read(
                 session,
                 staff_id=ctx.staff_id or "",
@@ -335,7 +338,10 @@ async def get_checkpoint_by_date(
     # day Y". ``redacted=False`` because the response body has no PHI
     # to redact — flagged so a future STAFF_FULL tier introducing PHI
     # in this endpoint can't pretend the response was redacted.
-    if ctx.tier == IamTier.STAFF_READ_ONLY:
+    #
+    # Per Wave 3B.3 policy, branch on ``ctx.is_staff`` so a future
+    # STAFF_FULL tier inherits the audit-write semantics here.
+    if ctx.is_staff:
         await audit_staff_read(
             session,
             staff_id=ctx.staff_id or "",
