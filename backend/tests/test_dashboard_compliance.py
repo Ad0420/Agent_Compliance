@@ -365,3 +365,107 @@ async def test_exports_list_does_not_self_audit(
         )
     ).scalars().all()
     assert rows == []
+
+
+# ── W2.2 — PHI redaction on the dashboard-namespaced approvals routes ──
+
+
+@pytest.mark.asyncio
+async def test_dashboard_compliance_approvals_list_strips_phi(
+    async_client, keypair, seeded, db_session
+):
+    """``/v1/dashboard/approvals`` must strip PHI for the
+    Clerk-gated compliance reviewer surface. Same redaction contract as
+    ``/v1/approvals`` (Clerk variant) — see W1.2 + W2.2."""
+    # Seed a PHI-laden approval directly so the test exercises the
+    # serializer end-to-end.
+    approval = Approval(
+        org_id=seeded["org_id"],
+        requested_by_agent="scribe-agent",
+        action_name="commit_note",
+        action_summary="Commit note for encounter MRN-31504806.",
+        data_subject_id="patient_secret_id_42",
+        context={
+            "gate_name": "new_diagnosis_gate",
+            "required_role": "attending_physician",
+            "patient_mrn": "MRN-31504806",
+            "diagnoses": ["acute pancreatitis"],
+        },
+        risk_tier="high",
+        status="approved",
+        decisions=[
+            {
+                "decision": "approve",
+                "approver": "alice@hospital.example:attending_physician",
+                "note": "MRN-31504806 approved — clinical context noted.",
+                "decided_at": "2026-05-24T13:00:00",
+                "signature": "sig-1",
+                "key_id": "kid-1",
+            }
+        ],
+        resolved_at=datetime.utcnow(),
+    )
+    db_session.add(approval)
+    await db_session.commit()
+
+    token = _token("compliance_reviewer", keypair, seeded)
+    resp = await async_client.get(
+        "/v1/dashboard/approvals",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # Find the newly-seeded approval (other rows from the fixture exist).
+    seeded_row = next(
+        a for a in body["approvals"] if a["action_name"] == "commit_note"
+    )
+    assert seeded_row["data_subject_id"] is None, "data_subject_id leaked"
+    assert seeded_row["action_summary"] is None, "action_summary leaked"
+    for unsafe in ("patient_mrn", "diagnoses"):
+        assert unsafe not in seeded_row["context"], (
+            f"PHI key {unsafe!r} leaked in context"
+        )
+    [vote] = seeded_row["decisions"]
+    assert "approver" not in vote, "decisions[].approver leaked (reviewer_id PII)"
+    assert "note" not in vote, "decisions[].note leaked (PHI narrative)"
+    assert vote.get("reviewer_role") == "attending_physician"
+    # Negative scan — no PHI fragments anywhere in the response.
+    assert "MRN-31504806" not in resp.text
+    assert "pancreatitis" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_dashboard_compliance_approval_by_id_strips_phi(
+    async_client, keypair, seeded, db_session
+):
+    """Single-fetch variant of the redaction test."""
+    approval = Approval(
+        org_id=seeded["org_id"],
+        requested_by_agent="scribe-agent",
+        action_name="commit_note",
+        action_summary="PHI narrative MRN-99999.",
+        data_subject_id="patient_secret_id_99",
+        context={
+            "gate_name": "new_diagnosis_gate",
+            "required_role": "attending_physician",
+            "transcript": "Patient presents with...",
+        },
+        risk_tier="high",
+        status="pending",
+    )
+    db_session.add(approval)
+    await db_session.commit()
+    await db_session.refresh(approval)
+
+    token = _token("compliance_reviewer", keypair, seeded)
+    resp = await async_client.get(
+        f"/v1/dashboard/approvals/{approval.id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["data_subject_id"] is None
+    assert body["action_summary"] is None
+    assert "transcript" not in body["context"]
+    assert body["context"]["gate_name"] == "new_diagnosis_gate"
+    assert "MRN-99999" not in resp.text

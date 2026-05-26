@@ -240,11 +240,28 @@ export type ApprovalStatus =
 
 export interface ApprovalDecisionRecord {
   decision: "approve" | "reject" | "cancel";
-  approver: string;
+  /**
+   * Full reviewer identity ``"{reviewer_id}:{reviewer_role}"`` on SDK
+   * callers; stripped to ``undefined`` on the dashboard wire (the
+   * reviewer_id half is customer-side staff PII the AI vendor doesn't
+   * need under HIPAA min-necessary — see W2.2).
+   */
+  approver?: string;
+  /**
+   * Free-text reviewer comment. SDK callers see it; the dashboard wire
+   * strips it (frequent PHI narrative carrier — W2.2).
+   */
   note?: string | null;
   decided_at: string;
   signature?: string;
   key_id?: string;
+  /**
+   * W2.2 — dashboard-derived role half of ``approver``. The backend
+   * splits ``"{reviewer_id}:{reviewer_role}"`` and emits only the role
+   * here so the read-only status indicator can render "Approved by
+   * attending_physician" without the clinician's identifier.
+   */
+  reviewer_role?: string;
 }
 
 export interface Approval {
@@ -253,8 +270,14 @@ export interface Approval {
   request_record_id: string | null;
   resolution_record_id: string | null;
   requested_by_agent: string;
+  // W1.2 — backend strips ``data_subject_id`` on the dashboard-facing
+  // wire for Clerk callers (services/dashboard_views.py); SDK callers
+  // (API key auth) still see the populated value. The TS shape stays
+  // ``string | null`` so both consumers compile against one contract.
   data_subject_id: string | null;
   action_name: string;
+  // W1.2 — same as above; ``action_summary`` is stripped for dashboard
+  // callers (frequent PHI carrier) and preserved for the SDK.
   action_summary: string | null;
   context: Record<string, unknown>;
   risk_tier: RiskTier;
@@ -264,6 +287,23 @@ export interface Approval {
   requested_at: string;
   expires_at: string | null;
   resolved_at: string | null;
+  // ── Wave 2B PR A5: HITL workflow timing ───────────────────────────
+  // System-managed; populated by the gate / review pipeline. NOT on
+  // ApprovalCreate (clients don't set decision-timing metadata). All
+  // four are ``null`` for un-gated approvals or rows that haven't yet
+  // reached the corresponding lifecycle stage.
+  client_review_started_at?: string | null;
+  decided_at?: string | null;
+  webhook_sent_at?: string | null;
+  callback_received_at?: string | null;
+  /**
+   * W2.2 — surfaced on the read-only dashboard so compliance staff can
+   * see when an approval was attested without the role meeting the
+   * gate's threshold. Always present (defaults to ``false`` server-
+   * side); typed optional only to stay backwards-compatible with
+   * pre-W2.2 fixtures that don't populate it.
+   */
+  reviewed_below_threshold?: boolean;
 }
 
 export interface ApprovalListResponse {
