@@ -130,15 +130,26 @@ async def sweep_due_checkpoints(session: AsyncSession) -> int:
 
     # Single LEFT JOIN gets us the per-org latest checkpoint timestamp
     # in one round trip — much cheaper than N+1 selects.
+    #
+    # ORDER BY the latest checkpoint timestamp ascending (NULLs first)
+    # so orgs that have never checkpointed — or whose checkpoint is
+    # oldest — bubble to the top. With ``batch_size`` smaller than the
+    # org count, this bounds starvation: even under sustained load the
+    # most-overdue orgs are serviced each tick instead of an
+    # implementation-defined subset.
+    last_cp_label = func.max(Checkpoint.created_at).label(
+        "last_checkpoint_at"
+    )
     stmt = (
         select(
             Organization.id,
             Organization.checkpoint_cadence,
-            func.max(Checkpoint.created_at).label("last_checkpoint_at"),
+            last_cp_label,
         )
         .outerjoin(Checkpoint, Checkpoint.org_id == Organization.id)
         .where(Organization.deleted_at.is_(None))
         .group_by(Organization.id, Organization.checkpoint_cadence)
+        .order_by(last_cp_label.asc().nullsfirst())
         .limit(max(1, int(settings.checkpoint_sweeper_batch_size)))
     )
     result = await session.execute(stmt)

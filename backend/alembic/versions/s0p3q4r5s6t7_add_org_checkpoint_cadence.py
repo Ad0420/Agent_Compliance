@@ -124,16 +124,25 @@ def upgrade() -> None:
     # promoted to ``'hourly'`` so the "less than 1 hour of unverified
     # actions" claim holds for the regulator-relevant cohort. Idempotent
     # — running again finds the same rows already at 'hourly' and the
-    # SET is a no-op. ``CURRENT_TIMESTAMP`` is portable across SQLite +
-    # Postgres (each dialect's ``now()`` flavour differs).
+    # SET is a no-op.
+    #
+    # ``revoked_at IS NULL`` is the only "active" predicate we use:
+    # ``api_keys.revoked_at`` is a naive ``DateTime`` column and the
+    # runtime ``APIKey.is_active`` property treats any non-NULL
+    # ``revoked_at`` as inactive (there is no future-scheduled-revocation
+    # feature today). Comparing a naive timestamp to Postgres'
+    # ``CURRENT_TIMESTAMP`` (which is ``timestamptz`` on Postgres) would
+    # raise ``operator does not exist: timestamp without time zone >
+    # timestamp with time zone`` at migration time. Sticking to the
+    # ``IS NULL`` semantics matches both portability and the runtime
+    # contract.
     op.execute(
         """
         UPDATE organizations
         SET checkpoint_cadence = 'hourly'
         WHERE id IN (
             SELECT DISTINCT org_id FROM api_keys
-            WHERE kind = 'live'
-              AND (revoked_at IS NULL OR revoked_at > CURRENT_TIMESTAMP)
+            WHERE kind = 'live' AND revoked_at IS NULL
         )
         """
     )
