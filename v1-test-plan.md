@@ -51,6 +51,7 @@ This is the test plan that closes the gaps surfaced by the eng review. Each NEW 
 | Org name uniqueness (W1.6 — two-scribemd-orgs) | migration: UNIQUE constraint on organizations.name; duplicate insert raises IntegrityError | covered |
 | Bootstrap key/org validation (W1.6) | unit: bootstrap warns when env_file key authenticates against different org than expected slug | covered |
 | Gate-evaluate response is non-blocking on webhook dispatch (W1.4) | integration: org with webhook URL pointed at slow/dead receiver; POST /v1/gates/evaluate returns in <500ms; webhook delivery row created with status=in_progress | covered |
+| SDK audit batch roundtrip (W1.3 — audit-batch-422) | integration: SDK-emitted batch payload posts to /v1/actions/batch and returns 200; records persist to chain; no dropped-records warning | covered |
 
 ## Phase 3 — Off-Vera checkpoint + offline verify
 
