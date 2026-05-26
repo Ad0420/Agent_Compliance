@@ -74,6 +74,7 @@ This is the test plan that closes the gaps surfaced by the eng review. Each NEW 
 | **KMS rotation between checkpoints — proof still verifies** | integration: rotate KMS key between checkpoint N and N+1; proof for a record in N verifies via `vera verify --merkle-proof` using the key history table (per Eng F10). | NEW — cross-references KMS rotation test |
 | **Hash chain still independently valid** | regression: existing chain verification continues to pass for the same records; Merkle exposure is additive, not replacing the chain. | NEW |
 | **OTS anchor on Merkle root** | integration: with OTS opt-in enabled, checkpoint's Merkle root is the OTS-anchored value (not the chain head); `vera verify --merkle-proof --include-ots` validates the OTS proof against the same root. | NEW |
+| **IAM staff/customer tier** | unit + integration: STAFF_READ_ONLY scope strips PHI (input_data, metadata, Approval.context.original_input_data, data_subject_id) from responses; audit log written for every staff read with staff_id + endpoint + record_id; chain integrity + gate metadata + aggregate counts still visible. | covered (Wave 3A.c — `backend/tests/test_iam_staff_tier.py` + new `staff_audit_log` table + `services/iam.py::redact_action_record`/`redact_approval`/`audit_staff_read`; routes `/v1/actions`, `/v1/approvals`, `/v1/customers/{tenant_id}/decisions`, `/v1/staff/audit-log`) |
 
 ## Phase 4 — Audit PDF + Compliance Posture + AI Insights
 
