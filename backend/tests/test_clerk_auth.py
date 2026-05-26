@@ -674,19 +674,26 @@ async def test_clerk_unreachable_uses_cached_role_with_warn(
         algorithm="RS256",
         headers={"kid": _TEST_KID},
     )
-    with caplog.at_level(logging.WARNING, logger="app.middleware.clerk_auth"):
+    # Capture at WARNING on the root logger (not scoped to a logger name —
+    # pytest's import-path can produce `app.middleware.clerk_auth` or
+    # `backend.app.middleware.clerk_auth` depending on conftest discovery,
+    # which silently breaks scoped capture). Also force propagate=True on
+    # the source logger in case a prior test disabled it.
+    clerk_logger = logging.getLogger("app.middleware.clerk_auth")
+    clerk_logger.propagate = True
+    backend_clerk_logger = logging.getLogger("backend.app.middleware.clerk_auth")
+    backend_clerk_logger.propagate = True
+    with caplog.at_level(logging.WARNING):
         resp = await async_client.get(
             "/v1/dashboard/api-keys",
             headers={"Authorization": f"Bearer {token}"},
         )
     assert resp.status_code == 200, resp.text
-    # Use rec.getMessage() instead of rec.message — the .message attribute
-    # is lazily populated by pytest's caplog handler and can be empty when
-    # the test runs after others that touch the same logger's filters. The
-    # symptom: assertion passed in isolation, failed in full-suite runs.
+    # Use rec.getMessage() — .message is lazy-populated by the formatter
+    # and can be empty even when the record was captured.
     assert any(
         "freshness check failed" in rec.getMessage() for rec in caplog.records
-    ), f"caplog.text was: {caplog.text!r}"
+    ), f"caplog.text was: {caplog.text!r}; records={[(r.name, r.levelname, r.getMessage()) for r in caplog.records]}"
 
 
 @pytest.mark.asyncio
