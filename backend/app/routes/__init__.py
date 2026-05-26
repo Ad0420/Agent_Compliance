@@ -1,5 +1,6 @@
 from .actions import router as actions_router
 from .agents import router as agents_router
+from .audits import router as audits_router
 from .verification import router as verification_router
 from .organizations import router as organizations_router
 from .checkpoints import router as checkpoints_router
@@ -33,6 +34,7 @@ from .compliance import router as compliance_router
 __all__ = [
     "actions_router",
     "agents_router",
+    "audits_router",
     "verification_router",
     "organizations_router",
     "checkpoints_router",

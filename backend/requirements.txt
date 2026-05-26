@@ -14,6 +14,18 @@ pytest-asyncio==0.24.0
 httpx==0.27.2
 boto3>=1.28.0
 fpdf2>=2.7.0
+# Phase 4 Wave 1 A1 — ReportLab is the engine for the HIPAA AI Audit Trail
+# PDF generator (``services/pdf/``). Picked over fpdf2 (used by the legacy
+# ``services/export.py`` CSV+PDF surface) because A2/A3 need Platypus flowables
+# (tables that wrap, multi-page layout with running headers, Merkle proof
+# appendices). The two engines coexist; the legacy export keeps fpdf2.
+reportlab>=4.0,<5
+# pypdf is only used by the audit-PDF tests (parses the rendered bytes back
+# into text so assertions can match sentinel strings). It's a dev-time dep
+# in spirit but lives in requirements.txt because the project has no
+# requirements-dev split — tests run against the same pinned environment
+# in CI.
+pypdf>=4.0
 # Clerk JWT verification (dashboard routes only — SDK still uses API keys).
 # `[crypto]` pulls in `cryptography` for RS256 / RSA JWK loading.
 # >=2.10.1 fixes CVE-2024-53861 (issuer validation bypass with list iss claim).
