@@ -35,6 +35,7 @@ from .routes.dashboard_compliance import (
     router as dashboard_compliance_router,
     compliance_router as dashboard_compliance_namespace_router,
 )
+from .routes.dashboard_s3_mirror import router as dashboard_s3_mirror_router
 from .routes.clerk_webhooks import router as clerk_webhooks_router
 from .middleware import (
     ComplianceAuditMiddleware,
@@ -198,6 +199,9 @@ app.include_router(dashboard_api_keys_router)
 # for the Phase 4b compliance landing page.
 app.include_router(dashboard_compliance_router)
 app.include_router(dashboard_compliance_namespace_router)
+# Phase 3 Wave 3D.3 — Settings → Off-Vera S3 mirror configuration surface.
+# /v1/dashboard/s3-export-config + /v1/dashboard/s3-export-arn{,/validate,/probe}.
+app.include_router(dashboard_s3_mirror_router)
 # Clerk webhooks — signature-verified via Svix, no bearer auth. Mounted at
 # /v1 so the public path is /v1/clerk/webhooks (matches the env.example doc).
 app.include_router(clerk_webhooks_router, prefix="/v1")

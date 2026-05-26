@@ -748,3 +748,55 @@ export interface AttestationConflictResponse {
   review_id: string;
   detail: string;
 }
+
+// ── Phase 3 Wave 3D.3 — Off-Vera S3 mirror configuration ─────────────────
+//
+// Mirrors backend/app/routes/dashboard_s3_mirror.py response models.
+// Used by the Settings → Off-Vera evidence mirror sub-page.
+
+export type S3ExportStatus = "pending" | "success" | "failure" | "skipped";
+
+export interface S3MirrorRecentExport {
+  id: string;
+  checkpoint_id: string;
+  status: S3ExportStatus;
+  exported_at: string | null;
+  duration_ms: number | null;
+  record_count: number | null;
+  reason: string | null;
+}
+
+export interface S3MirrorConfig {
+  arn: string | null;
+  probe_enabled: boolean;
+  iam_role_supported: boolean;
+  success_total: number;
+  failure_total: number;
+  skipped_total: number;
+  pending_total: number;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  last_failure_reason: string | null;
+  recent_exports: S3MirrorRecentExport[];
+}
+
+export interface S3MirrorValidateInput {
+  arn: string;
+  role_arn?: string | null;
+}
+
+export interface S3MirrorValidateResponse {
+  ok: boolean;
+  can_put: boolean;
+  can_get: boolean;
+  stub: boolean;
+}
+
+// Flat-error envelope for /v1/dashboard/s3-export-arn/{validate,probe} +
+// PUT failures. Matches the existing PR #201 pattern: code + message
+// at top level, optional hint, never a nested {"detail": {...}}.
+export interface S3MirrorErrorDetail {
+  code: string;
+  message: string;
+  hint?: string;
+}
