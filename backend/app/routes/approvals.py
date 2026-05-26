@@ -80,7 +80,7 @@ async def list_approvals_route(
     # Wave 3A.c. Same PHI side-channel as ``/v1/actions?data_subject_id=`` —
     # a staff member could probe presence of a specific subject without
     # ever seeing the value in the response. Block at the filter layer.
-    if ctx.tier == IamTier.STAFF_READ_ONLY and data_subject_id is not None:
+    if ctx.is_staff and data_subject_id is not None:
         raise HTTPException(
             status_code=403,
             detail={
@@ -96,7 +96,7 @@ async def list_approvals_route(
     rows, total = await list_approvals(
         session, org_id, status, risk_tier, data_subject_id, limit, offset
     )
-    if ctx.tier == IamTier.STAFF_READ_ONLY:
+    if ctx.is_staff:
         await audit_staff_read(
             session,
             staff_id=ctx.staff_id or "",
@@ -104,6 +104,7 @@ async def list_approvals_route(
             org_id=org_id,
             resource_type="approval",
             resource_id=None,
+            resource_count=len(rows),
             redacted=True,
         )
     return ApprovalListResponse(
@@ -121,7 +122,7 @@ async def get_approval_route(
     """Get an approval's current status. SDK polls this until resolved."""
     org_id = ctx.org_id
     approval = await get_approval_with_lazy_expiry(session, org_id, approval_id)
-    if ctx.tier == IamTier.STAFF_READ_ONLY:
+    if ctx.is_staff:
         await audit_staff_read(
             session,
             staff_id=ctx.staff_id or "",

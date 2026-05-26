@@ -56,7 +56,7 @@ from ..services.decisions import (
     MAX_LIMIT as DECISIONS_MAX_LIMIT,
     list_customer_decisions,
 )
-from ..services.iam import IamTier, audit_staff_read
+from ..services.iam import audit_staff_read
 
 router = APIRouter(prefix="/customers", tags=["customers"])
 
@@ -564,7 +564,7 @@ async def list_customer_decisions_endpoint(
     # redact here today. We still audit-log staff access because the
     # tenant_id itself is identifying information (customer wants to know
     # if a Vera engineer pulled their decisions feed).
-    if ctx.tier == IamTier.STAFF_READ_ONLY:
+    if ctx.is_staff:
         await audit_staff_read(
             session,
             staff_id=ctx.staff_id or "",
@@ -572,6 +572,7 @@ async def list_customer_decisions_endpoint(
             org_id=org_id,
             resource_type="action_record",
             resource_id=tenant_id,
+            resource_count=len(rows),
             redacted=True,
         )
     return CustomerDecisionsListResponse(

@@ -21,7 +21,7 @@ from ..schemas.action import (
 from ..services.auth import AuthContext, require_permission, require_permission_with_context
 from ..services.chain import build_and_insert_record, build_and_insert_batch
 from ..services.hashing import canonicalize
-from ..services.iam import IamTier, audit_staff_read, redact_action_record
+from ..services.iam import audit_staff_read, redact_action_record
 from ..services.phi_detector import PHIDetection, detect_phi_shape
 from ..services.webhooks import dispatch_event
 
@@ -528,16 +528,27 @@ async def list_actions(
 ):
     org_id = ctx.org_id
 
-    # Wave 3A.c. Staff sessions cannot filter by ``data_subject_id`` —
-    # even though the response redacts the field, the FILTER itself is a
-    # PHI side-channel (``?data_subject_id=patient_55`` with total>0
-    # confirms the patient exists in the org without ever surfacing the
-    # value). Same threat model rejects ``search`` (matches against
-    # ``action_name`` ilike — a staff member could probe for any string
-    # the customer's agents handle). The rest of the filters are
-    # operational metadata (agent name, action type, result, date range)
-    # and stay open so staff can scope a ticket investigation.
-    if ctx.tier == IamTier.STAFF_READ_ONLY:
+    # Wave 3A.c + 3B.3. Staff sessions cannot use any filter that leaks
+    # PHI / identifying information via timing/count side channels:
+    #
+    #   * ``data_subject_id`` — even though the response redacts the
+    #     field, the FILTER itself confirms presence
+    #     (``?data_subject_id=patient_55`` with total>0 confirms the
+    #     patient exists in the org without ever surfacing the value).
+    #   * ``search`` — matches against ``action_name`` ILIKE. A staff
+    #     member could probe for any string the customer's agents
+    #     handle.
+    #   * ``tenant_id`` (Wave 3B.3) — the customer-of-the-customer
+    #     identifier (e.g. "cleveland_clinic"). Probing
+    #     ``?tenant_id=cleveland_clinic`` reveals whether that business
+    #     is one of the customer's clients — that's commercial-
+    #     intelligence-grade identifying information even though it's
+    #     not strictly PHI.
+    #
+    # The remaining filters (agent name, action type, result, date
+    # range, authorized_by) are operational metadata and stay open so
+    # staff can scope a ticket investigation.
+    if ctx.is_staff:
         if data_subject_id is not None:
             raise HTTPException(
                 status_code=403,
@@ -558,6 +569,18 @@ async def list_actions(
                     "detail": (
                         "Vera staff sessions cannot use the free-form "
                         "search filter against action_name."
+                    ),
+                },
+            )
+        if tenant_id is not None:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "staff_phi_filter_forbidden",
+                    "detail": (
+                        "Vera staff sessions cannot filter by tenant_id "
+                        "— it would leak which customers-of-the-customer "
+                        "exist via timing/count side channel."
                     ),
                 },
             )
@@ -609,7 +632,7 @@ async def list_actions(
     # touched my data". We log a single aggregate-list row here (resource_id
     # is None for list reads), not one row per record — that would flood
     # the log on a 200-row page.
-    if ctx.tier == IamTier.STAFF_READ_ONLY:
+    if ctx.is_staff:
         record_dicts = [
             redact_action_record(_record_to_response(r).model_dump(mode="json"), ctx.tier)
             for r in records
@@ -621,6 +644,7 @@ async def list_actions(
             org_id=org_id,
             resource_type="action_record",
             resource_id=None,
+            resource_count=len(records),
             redacted=True,
         )
         return ActionRecordListResponse(
@@ -658,7 +682,7 @@ async def get_action(
     # Wave 3A.c. Staff get redacted payload + an audit row; customers
     # get the full payload with no audit (their own data — not a
     # staff-on-customer access).
-    if ctx.tier == IamTier.STAFF_READ_ONLY:
+    if ctx.is_staff:
         redacted = redact_action_record(response.model_dump(mode="json"), ctx.tier)
         await audit_staff_read(
             session,

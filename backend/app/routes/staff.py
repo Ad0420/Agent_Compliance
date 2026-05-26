@@ -36,7 +36,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..models import StaffAuditLog
 from ..services.auth import AuthContext, require_staff_or_customer_admin
-from ..services.iam import IamTier
 
 
 router = APIRouter(prefix="/staff", tags=["staff"])
@@ -96,7 +95,12 @@ async def list_staff_audit_log(
     # org_id for customer admin) is non-negotiable — we never read client
     # params for the scoping anchor.
     filters = []
-    if ctx.tier == IamTier.STAFF_READ_ONLY:
+    # Wave 3B.3 — branch on ``is_staff`` so STAFF_FULL (reserved for v2
+    # break-glass) routes through the same staff-self-audit-log scope as
+    # STAFF_READ_ONLY rather than accidentally falling into the
+    # customer-admin else branch (which would scope to ``ctx.org_id``,
+    # the WRONG anchor for a staff member).
+    if ctx.is_staff:
         if not ctx.staff_id:
             raise HTTPException(
                 status_code=401, detail="Invalid or expired session"
