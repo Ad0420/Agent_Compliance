@@ -524,3 +524,220 @@ async def test_evidence_export_staff_audit_row_written(
     assert row.staff_id == "staff-user-1"
     assert row.resource_count == 2
     assert row.redacted is False
+
+
+# ── Path-traversal guard: defense-in-depth backend mirror of the SDK ────
+#
+# Today every ``ActionRecord.id`` and ``Checkpoint.id`` is a uuid4
+# minted by the model layer, so the guard never fires in normal
+# operation. These tests monkeypatch the IDs to traversal-shaped
+# values and confirm the exporter raises ``ValueError`` with a clear
+# message instead of silently writing tar entries at attacker-chosen
+# paths. They lock the contract so a future refactor that, say,
+# accepts a caller-supplied record id can't quietly re-introduce the
+# gap.
+
+
+@pytest.mark.asyncio
+async def test_evidence_export_rejects_traversal_record_id(
+    db_session, org_and_key, monkeypatch
+):
+    """Patching the loader so a record with id ``"../etc/passwd"`` is
+    returned makes ``build_evidence_bundle_tar_gz`` raise
+    ``ValueError`` with the offending value surfaced in the message.
+
+    We can't UPDATE ``action_records.id`` in-place because the
+    table-level immutability trigger blocks it (see
+    ``services.immutability``). Instead, we patch the loader helper
+    that the exporter calls — the exporter sees an in-memory object
+    with the bad id and the regex guard fires.
+    """
+    from app.services import evidence_export as ev_export
+    from app.services.evidence_export import build_evidence_bundle_tar_gz
+
+    org, _, _ = org_and_key
+    customer = await _seed_customer(
+        db_session, org_id=org.id, tenant_id="cleveland_clinic"
+    )
+    await _record_and_seal(
+        db_session, org.id, per_customer=[("cleveland_clinic", 1)]
+    )
+
+    real_loader = ev_export._customer_records_in_range
+
+    async def patched_loader(session, **kwargs):
+        rows = await real_loader(session, **kwargs)
+        # Detach each row from the session so the in-memory ``id`` swap
+        # doesn't trigger an autoflush UPDATE (which the immutability
+        # trigger correctly rejects).
+        for r in rows:
+            session.expunge(r)
+            r.id = "../etc/passwd"
+        return rows
+
+    monkeypatch.setattr(
+        ev_export, "_customer_records_in_range", patched_loader
+    )
+
+    start = datetime(2000, 1, 1, tzinfo=timezone.utc).replace(tzinfo=None)
+    end = datetime(2999, 1, 1, tzinfo=timezone.utc).replace(tzinfo=None)
+    with pytest.raises(ValueError) as excinfo:
+        await build_evidence_bundle_tar_gz(
+            db_session,
+            customer=customer,
+            org=org,
+            start=start,
+            end=end,
+        )
+    msg = str(excinfo.value)
+    assert "UUID" in msg
+    # Offending value surfaced (via repr-escaping) for diagnosis.
+    assert "../etc/passwd" in msg
+
+
+@pytest.mark.asyncio
+async def test_evidence_export_rejects_traversal_checkpoint_id(
+    db_session, org_and_key, monkeypatch
+):
+    """Same guard fires when the Checkpoint.id is patched in-memory to a
+    traversal-shaped value via the checkpoint loader."""
+    from app.services import evidence_export as ev_export
+    from app.services.evidence_export import build_evidence_bundle_tar_gz
+
+    org, _, _ = org_and_key
+    customer = await _seed_customer(
+        db_session, org_id=org.id, tenant_id="cleveland_clinic"
+    )
+    await _record_and_seal(
+        db_session, org.id, per_customer=[("cleveland_clinic", 1)]
+    )
+
+    real_cps_loader = ev_export._checkpoints_covering_records
+
+    async def patched_cps_loader(session, **kwargs):
+        rows = await real_cps_loader(session, **kwargs)
+        # Detach so the in-memory id swap doesn't autoflush an UPDATE
+        # (the checkpoints table doesn't have the same immutability
+        # trigger as action_records, but expunge keeps the intent
+        # explicit: this is a CPU-side mock, not a DB write).
+        for cp in rows:
+            session.expunge(cp)
+            cp.id = "../../boom"
+        return rows
+
+    monkeypatch.setattr(
+        ev_export, "_checkpoints_covering_records", patched_cps_loader
+    )
+
+    start = datetime(2000, 1, 1, tzinfo=timezone.utc).replace(tzinfo=None)
+    end = datetime(2999, 1, 1, tzinfo=timezone.utc).replace(tzinfo=None)
+    with pytest.raises(ValueError) as excinfo:
+        await build_evidence_bundle_tar_gz(
+            db_session,
+            customer=customer,
+            org=org,
+            start=start,
+            end=end,
+        )
+    msg = str(excinfo.value)
+    assert "UUID" in msg
+    assert "../../boom" in msg
+
+
+@pytest.mark.asyncio
+async def test_evidence_export_paths_only_inside_bundle_root(
+    db_session, org_and_key
+):
+    """Walk every tar entry in a successful bundle and assert each path
+    component is well-formed (no ``..``, no leading ``/``).
+
+    Backstop for the regex guards above: even if a future refactor
+    introduces a way to slip a bad id past the guard, the tar entry
+    names should never escape the implicit bundle root.
+    """
+    from app.services.evidence_export import build_evidence_bundle_tar_gz
+
+    org, _, _ = org_and_key
+    customer = await _seed_customer(
+        db_session, org_id=org.id, tenant_id="cleveland_clinic"
+    )
+    await _record_and_seal(
+        db_session,
+        org.id,
+        per_customer=[("cleveland_clinic", 3), ("acme_health", 2)],
+    )
+
+    start = datetime(2000, 1, 1, tzinfo=timezone.utc).replace(tzinfo=None)
+    end = datetime(2999, 1, 1, tzinfo=timezone.utc).replace(tzinfo=None)
+    archive_bytes, _ = await build_evidence_bundle_tar_gz(
+        db_session,
+        customer=customer,
+        org=org,
+        start=start,
+        end=end,
+    )
+    # Walk the archive and assert every member name is safe.
+    with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as tf:
+        for info in tf.getmembers():
+            name = info.name
+            # No absolute paths.
+            assert not name.startswith("/"), name
+            # No parent-dir hops.
+            assert ".." not in name.split("/"), name
+            # No null bytes.
+            assert "\x00" not in name, name
+            # Top-level dir must be one of the known buckets.
+            top = name.split("/", 1)[0]
+            assert top in {"manifest.json", "records", "checkpoints"}, name
+
+
+def test_evidence_export_regex_unit_record_id() -> None:
+    """Unit test for the record-id regex guard — exercises the helper
+    directly so a future refactor that drops the call site doesn't
+    silently regress."""
+    from app.services.evidence_export import _require_safe_record_id
+
+    import uuid as _uuid
+    _require_safe_record_id(str(_uuid.uuid4()))
+    _require_safe_record_id("ffffffff-ffff-4fff-bfff-ffffffffffff")
+    for bad in [
+        "../etc/passwd",
+        "/absolute",
+        "",
+        None,
+        42,
+        "x" * 50,
+        "short",
+        "abcd",
+    ]:
+        with pytest.raises(ValueError) as excinfo:
+            _require_safe_record_id(bad)
+        assert "UUID" in str(excinfo.value)
+
+
+def test_evidence_export_regex_unit_checkpoint_id() -> None:
+    from app.services.evidence_export import _require_safe_checkpoint_id
+
+    import uuid as _uuid
+    _require_safe_checkpoint_id(str(_uuid.uuid4()))
+    for bad in ["../boom", "", None, "not-a-uuid"]:
+        with pytest.raises(ValueError) as excinfo:
+            _require_safe_checkpoint_id(bad)
+        assert "UUID" in str(excinfo.value)
+
+
+def test_evidence_export_regex_unit_date() -> None:
+    from app.services.evidence_export import _require_safe_date
+
+    _require_safe_date("2026-05-20")
+    for bad in [
+        "../../bad",
+        "2026/05/20",
+        "26-05-20",
+        "",
+        None,
+        "2026-05-20T00:00:00",
+    ]:
+        with pytest.raises(ValueError) as excinfo:
+            _require_safe_date(bad)
+        assert "YYYY-MM-DD" in str(excinfo.value)
