@@ -1,7 +1,7 @@
 """add staff_audit_log (Wave 3A.c — IAM hardening)
 
 Revision ID: t1q4r5s6t7u8
-Revises: r9o2p3q4r5s6
+Revises: s0p3q4r5s6t7
 Create Date: 2026-05-25
 
 Wave 3A.c implements the Phase 3 line-145 commitment ("Vera staff cannot
@@ -44,7 +44,7 @@ from alembic import op
 
 
 revision = "t1q4r5s6t7u8"
-down_revision = "r9o2p3q4r5s6"
+down_revision = "s0p3q4r5s6t7"
 branch_labels = None
 depends_on = None
 
