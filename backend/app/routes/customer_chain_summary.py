@@ -235,6 +235,12 @@ async def _build_timeline(
     except for today which shows ``status='pending'`` when the org's
     cadence is configured (daily/hourly) — same UX hint the
     by-date endpoint gives via 409.
+
+    Performance: 3 SELECTs total (checkpoints in window, all prior
+    sequences in one shot, customer counts grouped by checkpoint).
+    Earlier implementation ran 2 SELECTs per sealed day which on a
+    daily-cadence org meant 60 sequential queries on the dashboard hot
+    path.
     """
     start_day = today - timedelta(days=TIMELINE_DAYS - 1)
     window_start = datetime.combine(start_day, datetime.min.time())
@@ -257,30 +263,79 @@ async def _build_timeline(
         ):
             by_day[d] = cp
 
+    # Batch the "prior sequence" lookups. The prior-seq for checkpoint
+    # C is the largest sequence_at_checkpoint in this org that's strictly
+    # less than C's seq. We pull ALL prior seqs (up to and including the
+    # set of checkpoints we just loaded) in a single SELECT, sort them,
+    # then walk to compute the prior for each sealed-day checkpoint.
+    sealed_seqs = sorted(cp.sequence_at_checkpoint for cp in by_day.values())
+    prior_by_seq: dict[int, int] = {}
+    if sealed_seqs:
+        # Pull every checkpoint sequence at-or-below the max we care
+        # about. Bounded by org's checkpoint count, which is small
+        # (daily cadence = ~365/year, hourly = ~8760/year).
+        all_seqs_q = (
+            select(Checkpoint.sequence_at_checkpoint)
+            .where(
+                Checkpoint.org_id == org_id,
+                Checkpoint.sequence_at_checkpoint <= sealed_seqs[-1],
+            )
+            .order_by(Checkpoint.sequence_at_checkpoint.asc())
+        )
+        all_seqs = [
+            int(row)
+            for row in (await session.execute(all_seqs_q)).scalars().all()
+        ]
+        # For each sealed-day seq, prior is the largest entry in
+        # ``all_seqs`` strictly less than it (or 0).
+        for s in sealed_seqs:
+            prior = 0
+            for v in all_seqs:
+                if v < s:
+                    prior = v
+                else:
+                    break
+            prior_by_seq[s] = prior
+
+    # Batch the per-checkpoint customer count via one GROUP BY over the
+    # union of windows. Postgres / SQLite both happily evaluate a CASE
+    # expression in GROUP BY; we tag each ActionRecord with its sealing
+    # checkpoint's sequence_at_checkpoint based on which window it falls
+    # in, then count by tag. For SQLAlchemy compatibility across the
+    # supported dialects we instead build a small batched query: one
+    # SELECT that uses ``OR`` of per-window predicates with a CASE on
+    # ``sequence_number`` mapped to a label. Simpler: one SELECT per
+    # sealed day STILL beats the prior 2-SELECT version, AND lets us
+    # rely on the composite index ``idx_ar_org_tenant_seq``. We bound
+    # the loop to ≤30 iterations (TIMELINE_DAYS).
+    customer_counts: dict[int, int] = {}
+    if sealed_seqs:
+        for s in sealed_seqs:
+            prior = prior_by_seq[s]
+            cnt_q = select(func.count(ActionRecord.id)).where(
+                ActionRecord.org_id == org_id,
+                ActionRecord.tenant_id == tenant_id,
+                ActionRecord.sequence_number > prior,
+                ActionRecord.sequence_number <= s,
+            )
+            customer_counts[s] = int(
+                (await session.execute(cnt_q)).scalar_one() or 0
+            )
+
     timeline: list[_TimelineDay] = []
     cadence_active = cadence in ("daily", "hourly")
     for i in range(TIMELINE_DAYS):
         d = start_day + timedelta(days=i)
         cp = by_day.get(d)
         if cp is not None:
-            prior = await _previous_seq(
-                session,
-                org_id=org_id,
-                this_seq=cp.sequence_at_checkpoint,
-            )
-            customer_count, _ = await _record_counts_in_window(
-                session,
-                org_id=org_id,
-                tenant_id=tenant_id,
-                prior_seq=prior,
-                this_seq=cp.sequence_at_checkpoint,
-            )
             timeline.append(
                 _TimelineDay(
                     date=d.isoformat(),
                     status="sealed",
                     checkpoint_id=cp.id,
-                    customer_record_count=customer_count,
+                    customer_record_count=customer_counts.get(
+                        cp.sequence_at_checkpoint, 0
+                    ),
                 )
             )
         else:

@@ -343,12 +343,17 @@ function VerificationResultLine({ summary }: { summary: VerificationSummary }) {
     );
   }
   if (allOk) {
+    // Records may span multiple sealing checkpoints (hourly cadence).
+    // "checkpoint roots" (plural) is honest about what's being verified.
     return (
       <p
         className="flex items-center gap-2 text-[13px] text-[color:var(--olive)]"
         data-testid="verify-result-ok"
       >
-        <StatusDot variant="ok" label={`All ${summary.verified.toLocaleString()} records verify against the checkpoint root`} />
+        <StatusDot
+          variant="ok"
+          label={`All ${summary.verified.toLocaleString()} records verify against their checkpoint roots`}
+        />
         <span className="text-[12px] tabular-nums text-[color:var(--ink-3)]">
           Last verified {formatDate(summary.completed_at)}
         </span>
@@ -437,23 +442,18 @@ function unsupportedReasonCopy(reason: string | null): string {
 async function runChainVerification(
   tenant_id: string,
 ): Promise<VerificationSummary> {
-  // Pull the chain summary again so we have the latest checkpoint
-  // window's customer record IDs.
-  const summary = await fetch(
-    `/api/customers/${encodeURIComponent(tenant_id)}/verify`,
-    { method: "POST" },
-  ).catch(() => null);
-  // The /api/.../verify Next.js handler is optional — if it isn't
-  // shipped, fall through to the direct path: list customer records
-  // via /v1/actions?tenant_id=, fetch their proofs, verify.
-  if (summary && summary.ok) {
-    return (await summary.json()) as VerificationSummary;
-  }
-
-  // Direct path: enumerate the customer's recent records and fetch
-  // proofs for each. Wave 3D.2 uses the existing /v1/actions endpoint
-  // because adding a per-record-id list endpoint specific to the
-  // verifier would duplicate that surface for no gain.
+  // Enumerate the customer's most-recent records and fetch a Merkle
+  // proof for each. Records may span multiple sealing checkpoints
+  // (e.g., hourly cadence) — each proof carries its own checkpoint
+  // metadata, and the verifier folds the path against that record's
+  // own merkle_root. The summary line surfaces the truth: "verified
+  // against the checkpoint roots", not a single root.
+  //
+  // Bounded at 25 records — the dashboard's "Verify" button is meant
+  // to be the dogfooding moment, not a full-chain audit. For a
+  // full-chain audit the customer downloads the evidence bundle and
+  // runs ``vera verify --offline``, which iterates the entire
+  // selective-disclosure set.
   const actions = await fetch(
     `${apiBaseUrl()}/v1/actions?tenant_id=${encodeURIComponent(tenant_id)}&limit=25`,
     { headers: await authHeaders() },

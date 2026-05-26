@@ -149,35 +149,48 @@ async def _checkpoints_covering_records(
     ``sequence_at_checkpoint >= record.sequence_number``. We collect the
     unique set of those checkpoints and return them sorted by
     ``sequence_at_checkpoint``.
+
+    Implementation: one SELECT for every checkpoint whose
+    ``sequence_at_checkpoint`` is at-or-above the minimum record
+    sequence in the bundle, ordered ASC. Then walk records (sorted ASC)
+    and the checkpoint cursor together — each record's sealing
+    checkpoint is the first one whose seq >= the record's seq. O(N+M)
+    Python work, one round-trip to the DB. The earlier per-record SELECT
+    was O(N) queries which dominated wall-clock for large bundles.
     """
     if not records:
         return []
-    seqs = sorted({r.sequence_number for r in records})
-    # One query per distinct sequence is fine — selective-disclosure
-    # bundles are typically small (per-customer windows). Pull the
-    # sealing checkpoint id for each sequence then de-dupe.
-    sealing_ids: set[str] = set()
-    for seq in seqs:
-        q = (
-            select(Checkpoint)
-            .where(
-                Checkpoint.org_id == org_id,
-                Checkpoint.sequence_at_checkpoint >= seq,
-            )
-            .order_by(Checkpoint.sequence_at_checkpoint.asc())
-            .limit(1)
-        )
-        cp = (await session.execute(q)).scalars().first()
-        if cp is not None:
-            sealing_ids.add(cp.id)
-    if not sealing_ids:
-        return []
-    q2 = (
+    min_seq = min(r.sequence_number for r in records)
+    q = (
         select(Checkpoint)
-        .where(Checkpoint.id.in_(sealing_ids))
+        .where(
+            Checkpoint.org_id == org_id,
+            Checkpoint.sequence_at_checkpoint >= min_seq,
+        )
         .order_by(Checkpoint.sequence_at_checkpoint.asc())
     )
-    return list((await session.execute(q2)).scalars().all())
+    all_cps = list((await session.execute(q)).scalars().all())
+    if not all_cps:
+        return []
+
+    # Walk records (sorted ASC) and the checkpoint cursor together.
+    # Each record's sealing checkpoint is the first ``cp`` whose
+    # ``cp.sequence_at_checkpoint >= r.sequence_number``.
+    sorted_records = sorted(records, key=lambda r: r.sequence_number)
+    cp_iter = iter(all_cps)
+    current_cp: Optional[Checkpoint] = next(cp_iter, None)
+    sealing_ids: set[str] = set()
+    for r in sorted_records:
+        while (
+            current_cp is not None
+            and current_cp.sequence_at_checkpoint < r.sequence_number
+        ):
+            current_cp = next(cp_iter, None)
+        if current_cp is None:
+            break  # record is past the last sealed checkpoint — tail
+        sealing_ids.add(current_cp.id)
+
+    return [cp for cp in all_cps if cp.id in sealing_ids]
 
 
 async def _previous_seq(
@@ -311,8 +324,13 @@ async def build_evidence_bundle_tar_gz(
 
     # Per-checkpoint window leaf material (shared across the per-record
     # files that fall in that window — avoids rebuilding the same tree
-    # for each record).
-    tree_cache: dict[str, tuple[list[str], list[str]]] = {}
+    # for each record). Cache the constructed Merkle tree too: with the
+    # leaf list pinned, the tree is fully determined, and the per-record
+    # loop below would otherwise rebuild it N times for N customer
+    # records in the same checkpoint window (O(N²) for large bundles).
+    from ..services.merkle import MerkleTree
+
+    tree_cache: dict[str, tuple[list[str], list[str], MerkleTree]] = {}
     cp_meta: dict[str, dict[str, Any]] = {}
     warnings: set[str] = set()
     for cp in checkpoints:
@@ -325,7 +343,12 @@ async def build_evidence_bundle_tar_gz(
             prior_seq=prior,
             this_seq=cp.sequence_at_checkpoint,
         )
-        tree_cache[cp.id] = (leaf_hashes, leaf_ids)
+        # Build the tree ONCE per checkpoint. ``MerkleTree.get_proof(i)``
+        # is O(log N) on the cached internal levels; the alternative
+        # (building the tree per record) would be O(N log N) per record
+        # and dominate wall-clock for large bundles.
+        cached_tree = build_tree_from_records(leaf_hashes)
+        tree_cache[cp.id] = (leaf_hashes, leaf_ids, cached_tree)
         total_count = await _record_total_count_in_window(
             session,
             org_id=customer.org_id,
@@ -377,7 +400,7 @@ async def build_evidence_bundle_tar_gz(
             # records. The CLI can re-request once a checkpoint seals.
             warnings.add("tail_records_excluded")
             continue
-        leaf_hashes, leaf_ids = tree_cache[cp.id]
+        leaf_hashes, leaf_ids, tree = tree_cache[cp.id]
         try:
             idx = leaf_ids.index(r.id)
         except ValueError:
@@ -387,7 +410,6 @@ async def build_evidence_bundle_tar_gz(
                 cp.id,
             )
             continue
-        tree = build_tree_from_records(leaf_hashes)
         proof = tree.get_proof(idx)
 
         canonical = _canonicalize_action_record(r)
