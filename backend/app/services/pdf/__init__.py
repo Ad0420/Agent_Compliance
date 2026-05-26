@@ -32,6 +32,11 @@ A2 follow-up will extend ``render_scope`` with the AI Coverage Matrix and
 per-decision Merkle proof attachments. A3 follow-up adds white-label cover
 branding pulled from ``Organization.logo_url`` (new column).
 """
+from .context import TooManyRecordsForPdf
 from .generator import generate_audit_pdf, PdfRenderTimeout
 
-__all__ = ["generate_audit_pdf", "PdfRenderTimeout"]
+__all__ = [
+    "generate_audit_pdf",
+    "PdfRenderTimeout",
+    "TooManyRecordsForPdf",
+]

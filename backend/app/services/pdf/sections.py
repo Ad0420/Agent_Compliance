@@ -228,22 +228,42 @@ def render_cover(story: list, ctx: PdfContext) -> None:
     story.append(PageBreak())
 
 
-# ── Section 2: Scope (basic; A2 extends) ─────────────────────
+# ── Section 2: Scope (AI Coverage Matrix + Merkle proof reference) ───
+
+
+def _check(value: bool) -> str:
+    """Render the ✓ / ✗ glyphs used by the Coverage Matrix table.
+
+    Helvetica ships these as basic Latin-1 / WGL4 glyphs so ReportLab
+    embeds them without falling back to a missing-glyph box. Tests
+    extract them via pypdf and assert on the surrounding text — not on
+    the glyph itself — so the visual rendering is decoupled from the
+    test assertion.
+    """
+    return "✓" if value else "✗"
 
 
 def render_scope(story: list, ctx: PdfContext) -> None:
-    """Basic scope statement.
+    """Scope page with the AI Coverage Matrix + Merkle proof reference.
 
-    A2 follow-up extends this with:
-      * AI Coverage Matrix table (one row per CustomerAgent)
-      * Per-decision Merkle proof attachments
+    Renders, in order:
 
-    A1 ships the static placeholder + a single CustomerAgent count so
-    the section is honest on its own.
+      1. The orientation sentence (Customer + date range).
+      2. The AI Coverage Matrix table — one row per CustomerAgent,
+         columns: Agent type, Detected, Vera coverage, Capture,
+         HITL gates, PDF included, Posture included.
+      3. The blunt scope line in red so a reader can't miss what is
+         *not* covered by this packet.
+      4. The Merkle proof reference sentence pointing at the
+         ``vera verify --merkle-proof`` CLI for offline validation.
+
+    All data is read off ``ctx`` — ``build_context`` did the SQL.
     """
     s = _styles()
     story.append(Paragraph("Scope", s["section"]))
     customer_name = ctx.customer.display_name or ctx.customer.tenant_id
+
+    # (a) Orientation sentence.
     story.append(
         Paragraph(
             f"AI-driven decisions captured for {customer_name} between "
@@ -258,20 +278,137 @@ def render_scope(story: list, ctx: PdfContext) -> None:
             s["body"],
         )
     )
-    if ctx.customer_agents:
+
+    # (b) AI Coverage Matrix table.
+    story.append(Paragraph("AI coverage matrix", s["h3"]))
+    if not ctx.coverage_matrix:
         story.append(
             Paragraph(
-                f"Distinct AI agent types observed: "
-                f"{_comma_int(len(ctx.customer_agents))}.",
-                s["body"],
+                "No AI agents detected for this Customer yet.",
+                s["placeholder"],
             )
         )
-    story.append(
-        Paragraph(
-            "The AI Coverage Matrix and per-decision Merkle proof "
-            "attachments are scheduled for a follow-up release.",
-            s["meta"],
+    else:
+        header = [
+            "Agent type",
+            "Detected",
+            "Vera coverage",
+            "Capture",
+            "HITL gates",
+            "PDF included",
+            "Posture included",
+        ]
+        rows: list[list[object]] = [header]
+        # Use Paragraphs in the HITL-gates column so long lists wrap
+        # inside the cell rather than overflow horizontally.
+        for row in ctx.coverage_matrix:
+            gates_text = ", ".join(row["hitl_gates"]) if row["hitl_gates"] else ""
+            rows.append(
+                [
+                    row["agent_type"],
+                    _check(row["detected"]),
+                    _check(row["covered"]),
+                    _check(row["captured_count"] > 0),
+                    Paragraph(gates_text, s["body"]) if gates_text else "",
+                    _check(row["pdf_included"]),
+                    _check(row["posture_included"]),
+                ]
+            )
+        table = Table(
+            rows,
+            colWidths=[
+                1.1 * inch,  # agent type
+                0.6 * inch,  # detected
+                0.8 * inch,  # vera coverage
+                0.6 * inch,  # capture
+                1.6 * inch,  # HITL gates (wraps)
+                0.7 * inch,  # PDF included
+                0.8 * inch,  # posture included
+            ],
         )
+        table.setStyle(_table_style_default())
+        story.append(table)
+
+    # (c) Blunt scope line — directly under the table, red ink so a
+    # regulator scanning the page sees the uncovered list at a glance.
+    blunt_line = _build_blunt_scope_line(ctx)
+    story.append(Spacer(1, 6))
+    blunt_style = ParagraphStyle(
+        name="VeraBluntScope",
+        parent=s["body"],
+        fontName="Helvetica-Bold",
+        textColor=colors.HexColor("#a40000"),
+        spaceAfter=10,
+    )
+    story.append(Paragraph(blunt_line, blunt_style))
+
+    # (d) Merkle proof reference sentence.
+    story.append(Paragraph("Merkle inclusion proofs", s["h3"]))
+    story.append(Paragraph(_build_merkle_reference_sentence(ctx), s["body"]))
+
+
+def _build_blunt_scope_line(ctx: PdfContext) -> str:
+    """Return the red-ink "what this PDF does not cover" sentence.
+
+    Three cases (matches the PR brief):
+      * No CustomerAgents → "No covered AI workflows in this date range."
+      * All detected agents are covered → inclusive sentence.
+      * Partial coverage → uncovered list called out explicitly.
+    """
+    if not ctx.coverage_matrix:
+        return "No covered AI workflows in this date range."
+
+    covered = [r["agent_type"] for r in ctx.coverage_matrix if r["covered"]]
+    uncovered = [
+        r["agent_type"] for r in ctx.coverage_matrix if not r["covered"]
+    ]
+    if covered and not uncovered:
+        return (
+            "This evidence covers all detected AI workflows: "
+            f"{', '.join(covered)}."
+        )
+    if not covered and uncovered:
+        return (
+            "No covered AI workflows in this date range. Detected "
+            f"agents: {', '.join(uncovered)}."
+        )
+    # Partial coverage.
+    return (
+        f"This evidence covers {', '.join(covered)} only. "
+        f"{', '.join(uncovered)} are excluded from this audit packet."
+    )
+
+
+def _build_merkle_reference_sentence(ctx: PdfContext) -> str:
+    """Return the Scope-page Merkle proof CLI reference sentence.
+
+    The sentence cites the checkpoint root hash + signed_at so a
+    regulator can map any attached ``proof-*.json`` back to the
+    sealing checkpoint without rummaging through the Technical
+    Appendix. Per the PR brief: if there is NO checkpoint sealing
+    any record in this packet yet, surface "Checkpoint pending".
+    We branch on ``merkle_attachments`` (not on the existence of a
+    historical checkpoint elsewhere in time) so the citation always
+    matches the proofs actually shipped with the PDF.
+    """
+    cp = ctx.checkpoint_for_range or ctx.latest_checkpoint
+    if (
+        cp is None
+        or not cp.merkle_root
+        or not ctx.merkle_attachments
+    ):
+        return (
+            "Checkpoint pending — proofs will become available after "
+            "the next checkpoint cadence."
+        )
+    root_short = (cp.merkle_root or "")[:12]
+    signed_at = _full_dt(cp.created_at)
+    return (
+        "Each captured decision in this evidence packet has an attached "
+        "Merkle inclusion proof verifiable against checkpoint root "
+        f"{root_short} (anchored at {signed_at}). Run "
+        "vera verify --merkle-proof &lt;proof.json&gt; to validate any "
+        "single record offline."
     )
 
 
@@ -632,6 +769,36 @@ def render_technical_appendix(story: list, ctx: PdfContext) -> None:
     table = Table(rows, colWidths=[2.0 * inch, 4.0 * inch])
     table.setStyle(_table_style_default())
     story.append(table)
+
+    # A2: surface pending-proof records. These ActionRecords live in the
+    # current uncheckpointed tail window, so we can't ship a Merkle proof
+    # for them in this packet. Tell the reader honestly rather than
+    # silently dropping the attachment.
+    if ctx.pending_proof_record_ids:
+        story.append(Spacer(1, 0.15 * inch))
+        count = len(ctx.pending_proof_record_ids)
+        plural = "record" if count == 1 else "records"
+        story.append(
+            Paragraph(
+                f"{_comma_int(count)} {plural} in this packet "
+                "are not yet checkpointed; re-generate this PDF after the "
+                "next checkpoint cadence to include their proofs.",
+                s["meta"],
+            )
+        )
+
+    # A2: count of Merkle proof attachments embedded in this PDF. Helps a
+    # regulator confirm "this PDF contains N proof.json files" before
+    # opening Acrobat's attachments pane.
+    if ctx.merkle_attachments:
+        story.append(
+            Paragraph(
+                f"This PDF carries {_comma_int(len(ctx.merkle_attachments))} "
+                "Merkle inclusion proof attachment(s); extract them with "
+                "Acrobat / Preview's attachments pane.",
+                s["meta"],
+            )
+        )
 
     story.append(Spacer(1, 0.2 * inch))
     story.append(

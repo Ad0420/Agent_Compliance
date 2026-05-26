@@ -128,11 +128,17 @@ async def _seed_actions_and_approvals(
     tenant_id: str,
     action_count: int,
     approval_count: int,
+    action_class: str | None = None,
+    agent_name: str = "scribe-agent",
 ):
     """Build N ActionRecords + M Approvals (with linked request_record_id).
 
     Each approval picks the i-th action record as its request_record so
     the PdfContext's join (Approval → ActionRecord → Customer) matches.
+
+    ``action_class`` is the auto-discovery signal that drives
+    ``CustomerAgent.agent_type`` — pass ``"scribe"`` to seed a Customer
+    whose AI Coverage Matrix row shows captured + covered=True.
     """
     from app.models import Approval  # avoid early circular
 
@@ -144,7 +150,8 @@ async def _seed_actions_and_approvals(
             ActionRecordCreate(
                 action_name=f"chart_entry_{i}",
                 action_type="function_call",
-                agent_name="scribe-agent",
+                agent_name=agent_name,
+                action_class=action_class,
                 result="success",
                 tenant_id=tenant_id,
             ),
@@ -438,3 +445,484 @@ def test_generate_pdf_route_is_registered():
 
     path = app.url_path_for("generate_audit_pdf", customer_id="abc-123")
     assert path == "/v1/audits/abc-123"
+
+
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║ Phase 4 Wave 2 A2 — Scope coverage matrix + Merkle proof attachments  ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+
+async def _seed_customer_agent(
+    db_session,
+    *,
+    customer_id: str,
+    agent_type: str,
+    source: str = "declared",
+):
+    """Insert a single ``CustomerAgent`` row directly.
+
+    Used by the "detected but not captured" half of the Coverage Matrix
+    test, where we want a CustomerAgent row in the DB without seeding
+    any ActionRecord for that agent_type.
+    """
+    from app.models import CustomerAgent
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    ca = CustomerAgent(
+        customer_id=customer_id,
+        agent_type=agent_type,
+        first_seen_at=now,
+        last_seen_at=now,
+        source=source,
+        confidence="high",
+        status="active",
+    )
+    db_session.add(ca)
+    await db_session.commit()
+    await db_session.refresh(ca)
+    return ca
+
+
+def _extract_attachments(pdf_bytes: bytes) -> dict[str, bytes]:
+    """Return embedded-file attachments keyed by filename.
+
+    pypdf's ``PdfReader.attachments`` returns a ``LazyDict`` whose
+    values are bytes objects. We materialise to a regular dict so
+    tests can index into it with the expected ``proof-<hash>.json``
+    keys.
+    """
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    out: dict[str, bytes] = {}
+    for name, value in reader.attachments.items():
+        # pypdf returns a list of bytes for the (rare) case of multiple
+        # files sharing a name. Take the first — our writer never
+        # re-uses a filename.
+        if isinstance(value, list):
+            out[name] = value[0]
+        else:
+            out[name] = value
+    return out
+
+
+# ── A2.1: Scope page renders the AI Coverage Matrix ──────────
+
+
+@pytest.mark.asyncio
+async def test_scope_page_renders_coverage_matrix(
+    async_client, org_and_key, db_session
+):
+    """Scribe captured + prior_auth detected-but-silent → both visible."""
+    org, raw_key, _ = org_and_key
+    customer = await _seed_customer(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+        display_name="Cleveland Clinic",
+    )
+    await _seed_active_baa(db_session, org_id=org.id, customer_id=customer.id)
+    # scribe: auto-discovered via action_class="scribe" → CustomerAgent
+    # row + captured ActionRecord.
+    await _seed_actions_and_approvals(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+        action_count=3,
+        approval_count=1,
+        action_class="scribe",
+    )
+    # prior_auth: a CustomerAgent row with zero ActionRecords for this
+    # agent_type in the window. Detected ✓, Vera coverage ✗.
+    await _seed_customer_agent(
+        db_session, customer_id=customer.id, agent_type="prior_auth"
+    )
+
+    today = date.today()
+    resp = await async_client.post(
+        f"/v1/audits/{customer.id}",
+        json={
+            "date_from": (today - timedelta(days=30)).isoformat(),
+            "date_to": today.isoformat(),
+            "sections": ["scope"],
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200, resp.text
+    text = _extract_text(resp.content)
+    # The matrix header and both agent_type rows must render.
+    assert "AI coverage" in text or "coverage matrix" in text.lower()
+    assert "scribe" in text
+    assert "prior_auth" in text
+
+
+# ── A2.2: Blunt scope line on partial coverage ───────────────
+
+
+@pytest.mark.asyncio
+async def test_scope_page_blunt_scope_line_when_partial_coverage(
+    async_client, org_and_key, db_session
+):
+    """Partial coverage → "covers scribe only" / "are excluded"."""
+    org, raw_key, _ = org_and_key
+    customer = await _seed_customer(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+    )
+    await _seed_active_baa(db_session, org_id=org.id, customer_id=customer.id)
+    await _seed_actions_and_approvals(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+        action_count=2,
+        approval_count=0,
+        action_class="scribe",
+    )
+    await _seed_customer_agent(
+        db_session, customer_id=customer.id, agent_type="prior_auth"
+    )
+
+    today = date.today()
+    resp = await async_client.post(
+        f"/v1/audits/{customer.id}",
+        json={
+            "date_from": (today - timedelta(days=30)).isoformat(),
+            "date_to": today.isoformat(),
+            "sections": ["scope"],
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200, resp.text
+    text = _extract_text(resp.content)
+    # The exact wording is brittle; check the two load-bearing pieces.
+    assert "scribe" in text
+    assert "prior_auth" in text
+    # "covers ... only" pattern + "excluded" — both required by the
+    # blunt-scope sentence for partial coverage.
+    assert "only" in text.lower()
+    assert "excluded" in text.lower()
+
+
+# ── A2.3: All covered → inclusive copy ───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_scope_page_all_covered_uses_inclusive_copy(
+    async_client, org_and_key, db_session
+):
+    """Every detected agent is covered → "covers all detected" copy."""
+    org, raw_key, _ = org_and_key
+    customer = await _seed_customer(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+    )
+    await _seed_active_baa(db_session, org_id=org.id, customer_id=customer.id)
+    # Only one agent_type, with captured actions → all covered.
+    await _seed_actions_and_approvals(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+        action_count=2,
+        approval_count=0,
+        action_class="scribe",
+    )
+
+    today = date.today()
+    resp = await async_client.post(
+        f"/v1/audits/{customer.id}",
+        json={
+            "date_from": (today - timedelta(days=30)).isoformat(),
+            "date_to": today.isoformat(),
+            "sections": ["scope"],
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200, resp.text
+    text = _extract_text(resp.content)
+    assert "covers all detected" in text.lower() or "all detected AI" in text
+
+
+# ── A2.4: Customer with zero agents ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_scope_page_zero_agents(
+    async_client, org_and_key, db_session
+):
+    """No CustomerAgent rows → "No AI agents detected" placeholder."""
+    org, raw_key, _ = org_and_key
+    customer = await _seed_customer(
+        db_session,
+        org_id=org.id,
+        tenant_id="empty_clinic",
+    )
+    await _seed_active_baa(db_session, org_id=org.id, customer_id=customer.id)
+
+    today = date.today()
+    resp = await async_client.post(
+        f"/v1/audits/{customer.id}",
+        json={
+            "date_from": (today - timedelta(days=30)).isoformat(),
+            "date_to": today.isoformat(),
+            "sections": ["scope"],
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200, resp.text
+    text = _extract_text(resp.content)
+    assert "No AI agents detected" in text
+
+
+# ── A2.5: Merkle reference sentence in Scope page ────────────
+
+
+@pytest.mark.asyncio
+async def test_scope_page_merkle_reference_sentence(
+    async_client, org_and_key, db_session
+):
+    """When a checkpoint exists → Scope cites `vera verify --merkle-proof`."""
+    org, raw_key, _ = org_and_key
+    customer = await _seed_customer(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+    )
+    await _seed_active_baa(db_session, org_id=org.id, customer_id=customer.id)
+    await _seed_actions_and_approvals(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+        action_count=3,
+        approval_count=0,
+        action_class="scribe",
+    )
+    # Seal the chain so the Scope page has a checkpoint root to cite.
+    from app.models import Checkpoint
+    from sqlalchemy import select as _select
+
+    await create_checkpoint(db_session, org.id)
+    cp = (
+        await db_session.execute(
+            _select(Checkpoint).where(Checkpoint.org_id == org.id)
+        )
+    ).scalars().first()
+    assert cp is not None and cp.merkle_root
+
+    today = date.today()
+    resp = await async_client.post(
+        f"/v1/audits/{customer.id}",
+        json={
+            "date_from": (today - timedelta(days=30)).isoformat(),
+            "date_to": today.isoformat(),
+            "sections": ["scope"],
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200, resp.text
+    text = _extract_text(resp.content)
+    # Sentence anchors: the CLI invocation + the 12-char root prefix.
+    assert "vera verify --merkle-proof" in text
+    root_short = cp.merkle_root[:12]
+    assert root_short in text
+
+
+# ── A2.6: PDF carries Merkle proof attachments ───────────────
+
+
+@pytest.mark.asyncio
+async def test_pdf_has_merkle_attachments(
+    async_client, org_and_key, db_session
+):
+    """Sealed checkpoint → exactly N proof-<hash>.json attachments."""
+    org, raw_key, _ = org_and_key
+    customer = await _seed_customer(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+    )
+    await _seed_active_baa(db_session, org_id=org.id, customer_id=customer.id)
+    records = await _seed_actions_and_approvals(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+        action_count=3,
+        approval_count=0,
+        action_class="scribe",
+    )
+    await create_checkpoint(db_session, org.id)
+
+    today = date.today()
+    resp = await async_client.post(
+        f"/v1/audits/{customer.id}",
+        json={
+            "date_from": (today - timedelta(days=30)).isoformat(),
+            "date_to": today.isoformat(),
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200, resp.text
+    attachments = _extract_attachments(resp.content)
+    assert len(attachments) == 3
+    # Every filename follows the convention.
+    for name in attachments:
+        assert name.startswith("proof-")
+        assert name.endswith(".json")
+    # Spot-check: the attachment body parses as JSON with the
+    # expected proof fields, and matches what ``build_proof`` returns
+    # for the underlying record.
+    import json as _json
+
+    from app.services.merkle_proof import build_proof
+
+    sample = next(iter(attachments.values()))
+    parsed = _json.loads(sample.decode("utf-8"))
+    assert "merkle_root" in parsed
+    assert "merkle_path" in parsed
+    assert "action_record_id" in parsed
+    # The PDF-side payload should match build_proof's payload exactly.
+    record = records[0]
+    expected_short = record.id.replace("-", "")[:12]
+    expected_filename = f"proof-{expected_short}.json"
+    assert expected_filename in attachments
+    fresh_payload = await build_proof(db_session, record=record)
+    direct = _json.dumps(fresh_payload.to_dict(), sort_keys=True).encode("utf-8")
+    assert attachments[expected_filename] == direct
+
+
+# ── A2.7: Pending-proof records skipped with appendix note ──
+
+
+@pytest.mark.asyncio
+async def test_pdf_skips_pending_proofs_gracefully(
+    async_client, org_and_key, db_session
+):
+    """3 sealed + 2 unsealed → 3 attachments + appendix mentions 2 pending."""
+    org, raw_key, _ = org_and_key
+    customer = await _seed_customer(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+    )
+    await _seed_active_baa(db_session, org_id=org.id, customer_id=customer.id)
+    # Seal the chain after the first 3 records.
+    await _seed_actions_and_approvals(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+        action_count=3,
+        approval_count=0,
+        action_class="scribe",
+    )
+    await create_checkpoint(db_session, org.id)
+    # Two more records land AFTER the seal — they're in the tail.
+    await _seed_actions_and_approvals(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+        action_count=2,
+        approval_count=0,
+        action_class="scribe",
+    )
+
+    today = date.today()
+    resp = await async_client.post(
+        f"/v1/audits/{customer.id}",
+        json={
+            "date_from": (today - timedelta(days=30)).isoformat(),
+            "date_to": today.isoformat(),
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200, resp.text
+    attachments = _extract_attachments(resp.content)
+    assert len(attachments) == 3
+    text = _extract_text(resp.content)
+    # "2 records ... not yet checkpointed" message in the technical
+    # appendix. We assert the count + the load-bearing fragment, not
+    # an exact wording.
+    assert "2" in text
+    assert "not yet checkpointed" in text
+
+
+# ── A2.8: Too many records → 413 ─────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_pdf_too_many_records_returns_413(
+    async_client, org_and_key, db_session, monkeypatch
+):
+    """Cap lowered to 5, 10 records seeded → 413 too_many_records_for_pdf."""
+    from app.services.pdf import context as _pdf_context
+
+    monkeypatch.setattr(_pdf_context, "_RECORDS_HARD_CAP", 5)
+
+    org, raw_key, _ = org_and_key
+    customer = await _seed_customer(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+    )
+    await _seed_active_baa(db_session, org_id=org.id, customer_id=customer.id)
+    await _seed_actions_and_approvals(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+        action_count=10,
+        approval_count=0,
+        action_class="scribe",
+    )
+
+    today = date.today()
+    resp = await async_client.post(
+        f"/v1/audits/{customer.id}",
+        json={
+            "date_from": (today - timedelta(days=30)).isoformat(),
+            "date_to": today.isoformat(),
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 413, resp.text
+    body = resp.json()
+    assert body["code"] == "too_many_records_for_pdf"
+    assert body.get("record_count") == 10
+    assert body.get("cap") == 5
+
+
+# ── A2.9: Checkpoint pending → Scope falls back gracefully ──
+
+
+@pytest.mark.asyncio
+async def test_scope_page_checkpoint_pending_text_when_no_checkpoint_in_range(
+    async_client, org_and_key, db_session
+):
+    """Records but no checkpoint → "Checkpoint pending" copy in Scope."""
+    org, raw_key, _ = org_and_key
+    customer = await _seed_customer(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+    )
+    await _seed_active_baa(db_session, org_id=org.id, customer_id=customer.id)
+    await _seed_actions_and_approvals(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+        action_count=3,
+        approval_count=0,
+        action_class="scribe",
+    )
+    # Deliberately do NOT call create_checkpoint().
+
+    today = date.today()
+    resp = await async_client.post(
+        f"/v1/audits/{customer.id}",
+        json={
+            "date_from": (today - timedelta(days=30)).isoformat(),
+            "date_to": today.isoformat(),
+            "sections": ["scope"],
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200, resp.text
+    text = _extract_text(resp.content)
+    assert "Checkpoint pending" in text
