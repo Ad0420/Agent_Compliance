@@ -71,6 +71,23 @@ _INSTANCE_ID: str = str(uuid.uuid4())
 # /review-caught critical bug; do NOT regress.
 _inflight_tasks: set[asyncio.Task] = set()
 
+# Per-org sweeper-side lock. Distinct from ``locks.get_org_lock`` (the
+# chain lock that ``create_checkpoint`` itself holds): if we used the
+# *same* lock, our hold-across-create_checkpoint would deadlock the
+# inner ``async with lock`` inside ``create_checkpoint``. This second
+# lock serialises *sweep-tick decisions* (one tick at a time per org
+# decides "due → call create_checkpoint"), so two concurrent ticks
+# don't both reach the create call.
+_sweeper_org_locks: dict[str, asyncio.Lock] = {}
+_sweeper_locks_lock = asyncio.Lock()
+
+
+async def _get_sweeper_org_lock(org_id: str) -> asyncio.Lock:
+    async with _sweeper_locks_lock:
+        if org_id not in _sweeper_org_locks:
+            _sweeper_org_locks[org_id] = asyncio.Lock()
+        return _sweeper_org_locks[org_id]
+
 
 def _track_task(task: asyncio.Task) -> asyncio.Task:
     """Hold a strong reference until the task finishes.
@@ -139,17 +156,45 @@ async def sweep_due_checkpoints(session: AsyncSession) -> int:
             if elapsed < threshold:
                 continue
 
-        try:
-            await create_checkpoint(session, org_id)
-            created += 1
-        except Exception:
-            # One bad org must not poison the rest of the tick — the
-            # KMS / chain_state / external-store failure paths inside
-            # ``create_checkpoint`` are all per-org. Surface the error
-            # to ops via the log; the next tick retries.
-            logger.exception(
-                "checkpoint creation failed for org %s; continuing", org_id
+        # ── Per-org sweeper lock + double-check + delegate ──────────
+        # Two concurrent ticks may BOTH have observed "due" via the
+        # LEFT JOIN above (the JOIN is outside any lock). Hold the
+        # sweeper-side lock for the *whole* freshness-check +
+        # create_checkpoint call: that way, the second tick blocks
+        # at the lock; once the first commits a new checkpoint and
+        # releases, the second's re-read of the latest timestamp
+        # sees the fresh row and skips.
+        #
+        # We use a sweeper-specific lock (NOT ``locks.get_org_lock``)
+        # because ``create_checkpoint`` already acquires that chain
+        # lock internally — holding it here too would deadlock the
+        # inner ``async with lock`` inside ``create_checkpoint``.
+        sweeper_lock = await _get_sweeper_org_lock(org_id)
+        async with sweeper_lock:
+            fresh_stmt = (
+                select(func.max(Checkpoint.created_at))
+                .where(Checkpoint.org_id == org_id)
             )
+            latest_under_lock = (
+                await session.execute(fresh_stmt)
+            ).scalar_one_or_none()
+            if latest_under_lock is not None:
+                elapsed_under_lock = _now() - latest_under_lock
+                if elapsed_under_lock < threshold:
+                    continue
+
+            try:
+                await create_checkpoint(session, org_id)
+                created += 1
+            except Exception:
+                # One bad org must not poison the rest of the tick —
+                # the KMS / chain_state / external-store failure paths
+                # inside ``create_checkpoint`` are all per-org. Surface
+                # the error to ops via the log; the next tick retries.
+                logger.exception(
+                    "checkpoint creation failed for org %s; continuing",
+                    org_id,
+                )
 
     if created:
         logger.info("checkpoint sweeper created %s checkpoints", created)
