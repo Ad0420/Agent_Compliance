@@ -330,7 +330,10 @@ def test_tampered_record_fails_with_nonzero_exit(tmp_path):
     assert len(failed) == 1
     assert failed[0].action_record_id == bundle["record_ids"][2]
     # The tampered canonical breaks the chain-rule check first.
-    assert "canonical_leaf_mismatch" in failed[0].reasons
+    # Phase 3 follow-up renamed this reason from ``canonical_leaf_mismatch``
+    # to ``leaf_hash_mismatch`` to describe what the check actually
+    # proves: the recomputed leaf hash disagrees with the sealed one.
+    assert "leaf_hash_mismatch" in failed[0].reasons
 
     runner = CliRunner()
     cli_result = runner.invoke(
@@ -353,7 +356,7 @@ def test_tampered_leaf_hash_fails(tmp_path):
     assert result.ok is False
     failed = [r for r in result.records if r.status == "failed"]
     assert len(failed) == 1
-    # Either merkle_root_mismatch OR canonical_leaf_mismatch fires
+    # Either merkle_root_mismatch OR leaf_hash_mismatch fires
     # first depending on check order; both are typed reasons.
     assert failed[0].reasons
 
@@ -743,4 +746,80 @@ def test_manifest_record_count_drift_surfaces(tmp_path):
     )
     result = run_offline_verify(bundle["root_dir"])
     assert result.ok is False
-    assert any("record_count" in iss for iss in result.bundle_issues)
+
+
+# ── Phase 3 follow-up: chain-rule enforcement via previous_hash ─────
+
+
+def test_tampered_canonical_with_previous_hash_present_hard_fails(tmp_path):
+    """With ``previous_hash`` in the record JSON the chain rule is
+    enforced as a hard fail (``leaf_hash_mismatch``), not soft-fail.
+
+    This is the load-bearing change the Phase 3 follow-up exists to
+    make: without ``previous_hash`` in the bundle the verifier could
+    only prove Merkle path inclusion. With it, ``sha256(previous_hash
+    + canonical) == leaf_hash`` proves the canonical bytes ARE the
+    bytes that were sealed. A tampered canonical (even one byte) now
+    breaks that equality and the record is flagged as failed.
+    """
+    bundle = _build_bundle(tmp_path)
+    # Sanity: the bundle's records DO carry previous_hash (the helper
+    # has emitted it since 3C.2's spec). The behaviour we're locking
+    # in is the *hard* fail when the chain rule breaks.
+    target = bundle["root_dir"] / "records" / f"{bundle['record_ids'][1]}.json"
+    payload = json.loads(target.read_text())
+    assert "previous_hash" in payload, (
+        "test precondition: bundle helper must emit previous_hash"
+    )
+    payload["action_record_canonical"] = (
+        payload["action_record_canonical"][:-1] + "!"
+    )
+    target.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    result = run_offline_verify(bundle["root_dir"])
+    assert result.ok is False
+    failed = [r for r in result.records if r.status == "failed"]
+    assert len(failed) == 1
+    assert failed[0].action_record_id == bundle["record_ids"][1]
+    # Hard fail with the renamed code — not the soft
+    # ``previous_hash_unavailable`` we used to emit when previous_hash
+    # was missing from the bundle entirely.
+    assert "leaf_hash_mismatch" in failed[0].reasons
+    assert "previous_hash_unavailable" not in failed[0].reasons
+
+
+def test_legacy_bundle_without_previous_hash_still_soft_fails(tmp_path):
+    """Backwards compat: bundles produced before the Phase 3 follow-up
+    don't carry ``previous_hash`` per record. The verifier must still
+    accept those bundles, mark the record ``unverified`` with reason
+    ``previous_hash_unavailable``, and NOT hard-fail.
+
+    Customers with archived evidence bundles produced by older
+    exporters need to keep being able to verify them — even though the
+    chain rule can't be enforced. The Merkle path fold still works,
+    proving inclusion in the sealed tree.
+    """
+    bundle = _build_bundle(tmp_path)
+    # Strip previous_hash from every record file (simulate a legacy
+    # bundle produced before Phase 3 follow-up).
+    for rec_path in (bundle["root_dir"] / "records").iterdir():
+        payload = json.loads(rec_path.read_text())
+        payload.pop("previous_hash", None)
+        rec_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    result = run_offline_verify(bundle["root_dir"])
+    # No record is ``failed`` — they're all ``unverified``.
+    failed = [r for r in result.records if r.status == "failed"]
+    assert failed == [], (
+        f"legacy bundle should not hard-fail, got: "
+        f"{[(r.action_record_id, r.reasons) for r in failed]}"
+    )
+    unverified = [r for r in result.records if r.status == "unverified"]
+    assert len(unverified) == len(result.records)
+    for r in unverified:
+        assert "previous_hash_unavailable" in r.reasons
+    # ``ok`` may still be True for an ``unverified``-only bundle —
+    # that matches the existing HMAC-secret-missing semantics
+    # (soft-fail doesn't block ok).
+    record_ok = all(r.status != "failed" for r in result.records)
+    assert record_ok

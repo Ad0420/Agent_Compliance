@@ -113,6 +113,12 @@ def _build_proof_payload(
         "checkpoint_org_id": org_id,
         "checkpoint_sequence": sequence,
         "checkpoint_hash_at_checkpoint": hash_at_cp,
+        # Phase 3 follow-up: ``previous_hash`` is part of the proof
+        # payload so an offline verifier can enforce
+        # ``sha256(previous_hash + canonical) == leaf_hash``. The mock
+        # proof here uses an empty-string previous_hash (first record
+        # in a chain); real proofs return the predecessor's leaf hash.
+        "previous_hash": "",
         "kms_key_id": "key-fingerprint",
         "kms_signature": sig,
         "kms_algorithm": ALGO_HMAC_SHA256,
@@ -525,6 +531,17 @@ def test_evidence_export_directory_layout(
     assert (out / f"checkpoints/{date_b}.json").exists()
     assert (out / f"records/{rid_1}.json").exists()
     assert (out / f"records/{rid_2}.json").exists()
+
+    # Phase 3 follow-up: every records/<id>.json must carry
+    # ``previous_hash`` so the offline verifier can enforce the chain
+    # rule ``sha256(previous_hash + canonical) == leaf_hash`` rather
+    # than soft-failing with ``previous_hash_unavailable``.
+    for record_file in (out / "records").iterdir():
+        rec = json.loads(record_file.read_text())
+        assert "previous_hash" in rec, (
+            f"{record_file.name} is missing previous_hash — "
+            "offline verifier cannot enforce the chain rule"
+        )
 
 
 def test_evidence_export_selective_disclosure_excludes_other_customer(

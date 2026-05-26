@@ -327,6 +327,11 @@ def _verify_one_record(
         details.append("Proof payload missing canonical/leaf_hash field.")
         hard_fail = True
     elif prev_hash is None:
+        # Legacy bundle (pre-Phase-3-followup) that doesn't carry
+        # ``previous_hash`` per record. Merkle inclusion still verifies
+        # but the chain rule ``sha256(previous_hash + canonical) ==
+        # leaf_hash`` cannot be enforced. Mark unverified rather than
+        # failed so legacy bundles still surface a clear result.
         reasons.append("previous_hash_unavailable")
         details.append(
             "previous_hash not in proof payload — canonical→leaf chain "
@@ -334,11 +339,19 @@ def _verify_one_record(
         )
         soft_fail = True
     else:
+        # Phase 3 follow-up: bundles now carry ``previous_hash`` per
+        # record, so we can enforce the chain rule:
+        #   sha256(previous_hash + canonical) == leaf_hash
+        # A mismatch is a hard fail — the canonical bytes do NOT
+        # represent the bytes that were sealed. Reason ``leaf_hash_mismatch``
+        # (previously ``canonical_leaf_mismatch``) reflects what the
+        # check actually proves: the recomputed leaf hash disagrees
+        # with the leaf hash the bundle claims was sealed.
         recomputed = canonical_record_to_leaf_hash(
             canonical=canonical, previous_hash=prev_hash
         )
         if recomputed != leaf_hash:
-            reasons.append("canonical_leaf_mismatch")
+            reasons.append("leaf_hash_mismatch")
             details.append(
                 "sha256(previous_hash + canonical) did not match leaf_hash — "
                 "the canonical bytes do not represent the sealed record."

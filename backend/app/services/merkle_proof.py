@@ -99,6 +99,18 @@ class MerkleProofPayload:
     checkpoint_org_id: str
     checkpoint_sequence: int
     checkpoint_hash_at_checkpoint: str
+    # ── Phase 3 follow-up: chain-rule material ────────────────────────
+    # ``previous_hash`` is the predecessor leaf in the per-org chain
+    # — required so the offline verifier can recompute
+    # ``sha256(previous_hash + canonical_bytes) == leaf_hash``. Without
+    # this, an offline verifier can only prove Merkle path inclusion
+    # (i.e. "some leaf was sealed at this position") and NOT that the
+    # canonical bytes shown are the bytes that hashed to the sealed
+    # leaf. For the first record in a chain this is the literal string
+    # ``"GENESIS"`` (the default value of ``ChainState.latest_hash``),
+    # NOT an empty string — the backend seeds every org's chain with
+    # that sentinel so the SHA-256 input is never empty.
+    previous_hash: str
     # ── KMS fields ────────────────────────────────────────────────────
     kms_key_id: str
     kms_signature: str
@@ -117,6 +129,7 @@ class MerkleProofPayload:
             "checkpoint_org_id": self.checkpoint_org_id,
             "checkpoint_sequence": self.checkpoint_sequence,
             "checkpoint_hash_at_checkpoint": self.checkpoint_hash_at_checkpoint,
+            "previous_hash": self.previous_hash,
             "kms_key_id": self.kms_key_id,
             "kms_signature": self.kms_signature,
             "kms_algorithm": self.kms_algorithm,
@@ -302,6 +315,14 @@ async def build_proof(
         checkpoint_org_id=sealing.org_id,
         checkpoint_sequence=sealing.sequence_at_checkpoint,
         checkpoint_hash_at_checkpoint=sealing.hash_at_checkpoint,
+        # ``previous_hash`` is stored on every ActionRecord
+        # (``models/action_record.py``: ``Text, nullable=False``).
+        # The first record in any org's chain receives the sentinel
+        # ``"GENESIS"`` from ``ChainState.latest_hash`` — never an
+        # empty string. Pre-Phase-3-followup consumers ignore unknown
+        # JSON keys, so adding this field is additive and
+        # backwards-compatible.
+        previous_hash=record.previous_hash,
         kms_key_id=sealing.key_id or "",
         kms_signature=sealing.signature,
         kms_algorithm=kms_algorithm,
