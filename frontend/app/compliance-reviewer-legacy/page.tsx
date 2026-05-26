@@ -1,22 +1,27 @@
 /**
- * /compliance — Clerk-authenticated compliance reviewer landing page (F2).
+ * /compliance-reviewer-legacy — Clerk-authenticated compliance reviewer
+ * landing page (F2). Moved off the canonical ``/compliance`` URL in
+ * Phase 4 Wave 2 PR C1 when the new asymmetric Compliance Posture
+ * page took over ``/compliance`` inside the ``(dashboard)`` route
+ * group. The route is preserved here so previously-bookmarked saved
+ * views continue to resolve while the new posture-first IA settles.
  *
- * The wedge promise: when a developer hands this URL to compliance, the
- * compliance team can use the dashboard without help. Default view is the
- * last 30 days of high-risk decisions, HITL approvals, and policy
- * violations. Filters encode into `searchParams` so the URL itself is the
- * saved view.
+ * The wedge promise: when a developer hands a compliance reviewer a
+ * URL, the compliance team can use the dashboard without help. Default
+ * view is the last 30 days of high-risk decisions, HITL approvals, and
+ * policy violations. Filters encode into ``searchParams`` so the URL
+ * itself is the saved view.
  *
- * Lives OUTSIDE the `(dashboard)` route group on purpose: the legacy
- * dashboard layout uses localStorage `ProtectedRoute`, which doesn't gate
- * on Clerk. This page is Clerk-only — middleware enforces the auth, the
- * page reads `auth()` server-side, and the backend `compliance_review_audit`
- * middleware records every reviewer hit.
+ * Lives OUTSIDE the ``(dashboard)`` route group on purpose: the legacy
+ * dashboard layout uses localStorage ``ProtectedRoute``, which doesn't
+ * gate on Clerk. This page is Clerk-only — middleware enforces the
+ * auth, the page reads ``auth()`` server-side, and the backend
+ * ``compliance_review_audit`` middleware records every reviewer hit.
  *
  * Data fetching: each backend call is wrapped in try/catch so a single
- * failing route (e.g. `/review-trail` for a developer, who lacks
- * `admin`/`compliance_reviewer`) degrades to an inline error banner
- * rather than crashing the whole page.
+ * failing route (e.g. ``/review-trail`` for a developer, who lacks
+ * ``admin`` / ``compliance_reviewer``) degrades to an inline error
+ * banner rather than crashing the whole page.
  */
 import Link from "next/link";
 import {
