@@ -69,6 +69,79 @@ def test_dns_resolution_failure_blocked() -> None:
         assert reason == "dns_resolution_failed"
 
 
+# ── W1.5 — determinism floor ───────────────────────────────────────────
+#
+# The Scenario 4 finding observed 11 calls against ``127.0.0.1:9999``,
+# ONLY ONE of which returned ``ssrf_blocked``. The guard must be a pure
+# function of its inputs — same URL in, same verdict out, every time.
+# Parametrise 20 repetitions against several known-unsafe URLs so a
+# regression that introduces a probabilistic short-circuit (caching,
+# random sampling, swallowed exceptions) fails loudly.
+
+
+_DETERMINISM_URLS = [
+    ("http://127.0.0.1:9999/x", "loopback"),
+    ("http://10.0.0.1/hook", "private_network"),
+    ("http://169.254.169.254/latest/meta-data/", "link_local"),
+    ("http://[::1]/hook", "loopback"),
+    ("http://100.100.100.200/hook", "cloud_metadata"),
+]
+
+
+@pytest.mark.parametrize("url,expected_reason", _DETERMINISM_URLS)
+def test_unsafe_url_blocked_deterministically(
+    url: str, expected_reason: str
+) -> None:
+    """Same unsafe URL evaluated 20x must return the same (False, reason)
+    every single iteration. Catches the Scenario 4 non-determinism bug
+    where a guard returned ``safe=True`` on some attempts due to an
+    exception-swallowing branch.
+    """
+    verdicts: set[tuple[bool, str | None]] = set()
+    for _ in range(20):
+        verdicts.add(is_safe_outbound_url(url))
+    assert verdicts == {(False, expected_reason)}, (
+        f"non-deterministic verdict for {url!r}: {verdicts}"
+    )
+
+
+def test_unsafe_url_never_returns_safe_under_repeated_calls() -> None:
+    """Cross-URL determinism: across all unsafe sample URLs, NO call
+    may return ``safe=True``. This is the property the Scenario 4 bug
+    violated (1 in 11 calls returned safe). 100 trials per URL.
+    """
+    safe_count = 0
+    for url, _ in _DETERMINISM_URLS:
+        for _ in range(100):
+            safe, _reason = is_safe_outbound_url(url)
+            if safe:
+                safe_count += 1
+    assert safe_count == 0, (
+        f"guard returned safe=True {safe_count}/500 times on URLs that "
+        "must always be blocked"
+    )
+
+
+def test_safe_url_deterministically_allowed() -> None:
+    """The mirror property: a known-safe URL evaluated 20x must always
+    return (True, None). Catches a fail-open → fail-closed flip on the
+    happy path (e.g. if someone tightened the guard so aggressively that
+    legitimate URLs start getting flagged probabilistically).
+    """
+    from unittest.mock import patch as _patch
+
+    with _patch(
+        "app.services.webhook_url_validation.socket.getaddrinfo"
+    ) as ga:
+        ga.return_value = [(2, 1, 6, "", ("93.184.216.34", 0))]
+        verdicts: set[tuple[bool, str | None]] = set()
+        for _ in range(20):
+            verdicts.add(is_safe_outbound_url("https://api.example.com/hook"))
+    assert verdicts == {(True, None)}, (
+        f"non-deterministic verdict for safe URL: {verdicts}"
+    )
+
+
 # ── Integration: delivery-time guard short-circuits HTTP + aborts ─────
 
 
