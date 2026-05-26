@@ -30,6 +30,7 @@ import {
 } from "@/lib/api-server";
 
 import { ApiKeyTable } from "./_components/api-key-table";
+import { ProvisioningCard } from "./_components/provisioning-card";
 
 export const dynamic = "force-dynamic";
 
@@ -84,23 +85,7 @@ export default async function ApiKeysPage() {
       </header>
 
       {provisioning ? (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">
-              Your organization is being provisioned
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm text-muted-foreground">
-            <p>
-              We&apos;re still receiving your Clerk organization details. This
-              usually takes a second or two. Refresh the page in a moment.
-            </p>
-            <p>
-              If this persists, please check the Clerk webhook configuration in
-              the dashboard, or contact support.
-            </p>
-          </CardContent>
-        </Card>
+        <ProvisioningCard />
       ) : errorMessage ? (
         <Card>
           <CardHeader>
