@@ -26,6 +26,7 @@ from .routes import (
     staff_router,
     webhooks_router,
     kms_router,
+    records_router,
 )
 from .routes.dashboard_demo import router as dashboard_demo_router
 from .routes.dashboard_api_keys import router as dashboard_api_keys_router
@@ -165,6 +166,12 @@ app.include_router(webhooks_router, prefix="/v1")
 # Phase 3 Wave 3A.a — KMS key history (eng review finding 1A).
 # Read-only history dump consumed by Wave 3C `vera verify --offline`.
 app.include_router(kms_router, prefix="/v1")
+# Phase 3 Wave 3B.2 — Merkle proof exposure for any sealed action record.
+# Returns the canonical bytes, leaf hash, Merkle path, sealing checkpoint
+# id, and the checkpoint's KMS signature so an offline verifier can
+# reconstruct the root and validate the signature without trusting the
+# Vera API. See ``routes/records.py`` for the per-tier IAM rules.
+app.include_router(records_router, prefix="/v1")
 # Dashboard routes — authenticated via Clerk JWT (humans). The router defines
 # its own /v1/dashboard prefix, so no extra prefix here. Existing /v1/* routes
 # above continue to use API-key auth (machines).
