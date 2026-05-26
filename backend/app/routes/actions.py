@@ -528,6 +528,40 @@ async def list_actions(
 ):
     org_id = ctx.org_id
 
+    # Wave 3A.c. Staff sessions cannot filter by ``data_subject_id`` —
+    # even though the response redacts the field, the FILTER itself is a
+    # PHI side-channel (``?data_subject_id=patient_55`` with total>0
+    # confirms the patient exists in the org without ever surfacing the
+    # value). Same threat model rejects ``search`` (matches against
+    # ``action_name`` ilike — a staff member could probe for any string
+    # the customer's agents handle). The rest of the filters are
+    # operational metadata (agent name, action type, result, date range)
+    # and stay open so staff can scope a ticket investigation.
+    if ctx.tier == IamTier.STAFF_READ_ONLY:
+        if data_subject_id is not None:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "staff_phi_filter_forbidden",
+                    "detail": (
+                        "Vera staff sessions cannot filter by "
+                        "data_subject_id — it would leak presence of "
+                        "specific subjects via timing/count side channel."
+                    ),
+                },
+            )
+        if search is not None:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "staff_phi_filter_forbidden",
+                    "detail": (
+                        "Vera staff sessions cannot use the free-form "
+                        "search filter against action_name."
+                    ),
+                },
+            )
+
     query = select(ActionRecord).where(ActionRecord.org_id == org_id)
     count_query = select(func.count(ActionRecord.id)).where(ActionRecord.org_id == org_id)
 

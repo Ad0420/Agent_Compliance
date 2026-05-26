@@ -225,21 +225,22 @@ async def audit_staff_read(
 def tier_from_claims(claims: dict[str, Any], staff_org_id: Optional[str]) -> IamTier:
     """Resolve the caller's IAM tier from Clerk JWT claims.
 
-    Staff detection — two routes:
-      1. The active Clerk org is the Vera-internal staff org. If
-         ``settings.clerk_staff_org_id`` is configured and the JWT's
-         ``org_id`` claim matches, the caller is staff.
-      2. The JWT carries an explicit ``org_role == "vera_staff"`` claim
-         (alternative for deployments that don't dedicate a single Clerk
-         org to Vera staff).
+    Staff detection requires ``staff_org_id`` to be configured. Two routes:
+      1. The JWT's ``org_id`` claim matches ``staff_org_id``. Trusted
+         because Clerk signed the claim and we verified the issuer.
+      2. The JWT's ``org_id`` claim matches AND ``org_role`` is
+         ``vera_staff``. (Role-only matching is intentionally disabled —
+         a multi-tenant Clerk instance where a customer org names a
+         role ``vera_staff`` could otherwise escalate.)
 
-    Otherwise the caller is a customer (CUSTOMER tier). API-key callers
-    never reach this function — they're customers by construction.
+    If ``staff_org_id`` is unset (development / customer-only deployments),
+    the staff tier is unreachable — the function always returns CUSTOMER.
+    API-key callers never reach this function; they're customers by
+    construction.
     """
-    org_role = claims.get("org_role")
-    if org_role == "vera_staff":
-        return IamTier.STAFF_READ_ONLY
+    if not staff_org_id:
+        return IamTier.CUSTOMER
     clerk_org_id = claims.get("org_id")
-    if staff_org_id and clerk_org_id == staff_org_id:
+    if clerk_org_id == staff_org_id:
         return IamTier.STAFF_READ_ONLY
     return IamTier.CUSTOMER

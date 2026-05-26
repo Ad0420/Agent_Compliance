@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
@@ -76,6 +76,23 @@ async def list_approvals_route(
 ):
     """List approvals with optional filters (status, risk_tier, data_subject_id)."""
     org_id = ctx.org_id
+
+    # Wave 3A.c. Same PHI side-channel as ``/v1/actions?data_subject_id=`` —
+    # a staff member could probe presence of a specific subject without
+    # ever seeing the value in the response. Block at the filter layer.
+    if ctx.tier == IamTier.STAFF_READ_ONLY and data_subject_id is not None:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "staff_phi_filter_forbidden",
+                "detail": (
+                    "Vera staff sessions cannot filter approvals by "
+                    "data_subject_id — it would leak presence of "
+                    "specific subjects via timing/count side channel."
+                ),
+            },
+        )
+
     rows, total = await list_approvals(
         session, org_id, status, risk_tier, data_subject_id, limit, offset
     )

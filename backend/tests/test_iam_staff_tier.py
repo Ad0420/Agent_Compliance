@@ -220,9 +220,21 @@ def test_tier_from_claims_via_staff_org_id():
     assert tier_from_claims(claims, _STAFF_CLERK_ORG_ID) == IamTier.STAFF_READ_ONLY
 
 
-def test_tier_from_claims_via_role_claim():
+def test_tier_from_claims_role_claim_without_org_id_match_is_customer():
+    """Hardened tier resolution: role-claim alone is NOT sufficient for
+    staff escalation. The JWT's ``org_id`` MUST match the configured
+    ``clerk_staff_org_id``. Defends against a multi-tenant Clerk
+    instance where a customer org names a role ``vera_staff``.
+    """
     claims = {"sub": "user_x", "org_id": "other_org", "org_role": "vera_staff"}
-    assert tier_from_claims(claims, None) == IamTier.STAFF_READ_ONLY
+    assert tier_from_claims(claims, _STAFF_CLERK_ORG_ID) == IamTier.CUSTOMER
+
+
+def test_tier_from_claims_no_staff_org_configured_always_customer():
+    """If ``clerk_staff_org_id`` is unset, staff tier is unreachable —
+    no JWT shape can elevate."""
+    claims = {"sub": "user_x", "org_id": _STAFF_CLERK_ORG_ID, "org_role": "vera_staff"}
+    assert tier_from_claims(claims, None) == IamTier.CUSTOMER
 
 
 def test_tier_from_claims_defaults_to_customer():
@@ -744,6 +756,70 @@ async def test_audit_log_persists_when_request_session_rolled_back(
         )
     ).scalars().all()
     assert len(rows) == 1
+
+
+@pytest.mark.asyncio
+async def test_staff_data_subject_filter_403(async_client, org_and_key, keypair):
+    """PHI side-channel defense: staff can't filter ``/v1/actions?data_subject_id=X``
+    even though the response would redact the value — the FILTER itself
+    confirms whether X exists in the org.
+    """
+    org, _, _ = org_and_key
+    token = _staff_token(keypair)
+    resp = await async_client.get(
+        "/v1/actions?data_subject_id=patient_55",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Org-Id": org.id,
+        },
+    )
+    assert resp.status_code == 403
+    assert resp.json().get("code") == "staff_phi_filter_forbidden"
+
+
+@pytest.mark.asyncio
+async def test_staff_search_filter_403(async_client, org_and_key, keypair):
+    """Same PHI side-channel for the free-form ``search`` filter."""
+    org, _, _ = org_and_key
+    token = _staff_token(keypair)
+    resp = await async_client.get(
+        "/v1/actions?search=transcribe",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Org-Id": org.id,
+        },
+    )
+    assert resp.status_code == 403
+    assert resp.json().get("code") == "staff_phi_filter_forbidden"
+
+
+@pytest.mark.asyncio
+async def test_staff_approval_data_subject_filter_403(async_client, org_and_key, keypair):
+    """Same defense on the approvals list endpoint."""
+    org, _, _ = org_and_key
+    token = _staff_token(keypair)
+    resp = await async_client.get(
+        "/v1/approvals?data_subject_id=patient_55",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "X-Org-Id": org.id,
+        },
+    )
+    assert resp.status_code == 403
+    assert resp.json().get("code") == "staff_phi_filter_forbidden"
+
+
+@pytest.mark.asyncio
+async def test_customer_data_subject_filter_works(async_client, org_and_key):
+    """Customer reads of their own data CAN filter by data_subject_id — the
+    side-channel defense applies to staff only.
+    """
+    _, raw_key, _ = org_and_key
+    resp = await async_client.get(
+        "/v1/actions?data_subject_id=patient_55",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
