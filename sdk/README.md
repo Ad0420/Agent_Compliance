@@ -982,6 +982,18 @@ channel (BAA-covered email, signed envelope, in-person handoff). For
 asymmetric bundles, the public keys travel inside the bundle and the
 auditor needs nothing else.
 
+**Tail-window skips.** Records written close to the moment you run
+`evidence-export` may be enumerated by the action list but not yet
+sealed into a checkpoint (HTTP 409 `checkpoint_pending`); records
+deleted server-side after enumeration return 404 `record_not_found`.
+Both are skipped — the export does not fail — but the omission is
+surfaced two ways so it stays auditable: a structured `WARN` block
+lists each skipped record ID and reason to stderr, and the same list
+is written to `manifest.json` under the `skipped_records` field (an
+array of `{id, reason}` objects; empty on a clean run). To recover a
+tail-window skip, re-run `--since` one checkpoint-cadence period
+earlier once the tail has sealed.
+
 ### `vera verify --offline <bundle_path>`
 
 Verify a bundle with no network access. The auditor runs this; you
@@ -1058,6 +1070,7 @@ bundle.tar.gz
 | `checkpoints` | array | One summary entry per sealed checkpoint (`id`, `date`, `record_count`, `merkle_root`). |
 | `kms_algorithm` | string | Dominant signing algorithm. `hmac-sha256` (LocalKMS), `kms-hmac-sha256` (AWS KMS HMAC), `rsa-pss-sha256`, or `ecdsa-p256-sha256`. |
 | `hmac_secret_required` | bool | `true` if any checkpoint in the bundle is HMAC-signed. |
+| `skipped_records` | array | Records enumerated but not included in the bundle, with reason. Each entry is `{id, reason}`; `reason` is `checkpoint_pending` (HTTP 409 — tail-window race) or `record_not_found` (HTTP 404 — deleted server-side after enumeration). Empty array on a clean run; same list also printed to stderr at export time. |
 
 **`checkpoints/<id>.json`** — one per sealed checkpoint. Field names
 match the `GET /v1/checkpoints/{date}` response body (Wave 3B.1), with

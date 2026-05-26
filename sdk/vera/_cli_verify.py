@@ -614,6 +614,14 @@ def evidence_export_cmd(
     checkpoint_count = 0
     record_count = 0
     record_ids_seen: set[str] = set()
+    # Track records that we enumerated but could not fetch a proof for.
+    # 404 → record_not_found (deleted server-side after action list
+    # fetched, or an org/auth-scope filter changed mid-export). 409 →
+    # checkpoint_pending (tail-window race: record exists but its
+    # checkpoint hasn't sealed yet). Surface these to stderr + manifest
+    # so the omission is auditable — silent skips break regulator-ready
+    # evidence claims.
+    skipped_records: list[dict[str, str]] = []
 
     # ── Per-day loop ─────────────────────────────────────────────────
     with httpx.Client(timeout=timeout) as client:
@@ -683,6 +691,18 @@ def evidence_export_cmd(
                 )
                 if p_status == 404 or p_status == 409:
                     # Skip records we can't currently prove. 409 = tail.
+                    # Record the skip so we can surface it to the
+                    # operator (stderr) and to post-hoc auditors
+                    # (manifest.json::skipped_records). Without this
+                    # the omission is invisible and the bundle's
+                    # ``record_count`` silently undercounts.
+                    reason = (
+                        "checkpoint_pending"
+                        if p_status == 409
+                        else "record_not_found"
+                    )
+                    skipped_records.append({"id": rid, "reason": reason})
+                    record_ids_seen.add(rid)
                     continue
                 if p_status != 200 or proof_body is None:
                     raise click.ClickException(
@@ -735,6 +755,12 @@ def evidence_export_cmd(
         "until": until,
         "checkpoint_count": checkpoint_count,
         "record_count": record_count,
+        # Always include the field (empty list on a clean run) so
+        # downstream consumers can presence-check without branching
+        # on key existence. The field is stable across bundle
+        # versions; new reason codes may appear but the shape will
+        # not change.
+        "skipped_records": skipped_records,
     }
     manifest_bytes = json.dumps(
         manifest, sort_keys=True, separators=(",", ":")
@@ -748,6 +774,46 @@ def evidence_export_cmd(
         import shutil
 
         shutil.rmtree(bundle_root.parent, ignore_errors=True)
+
+    # ── Surface skipped records to stderr ────────────────────────────
+    # Auditors and operators need to know when the bundle is missing
+    # records that were enumerated but couldn't be proven. The warning
+    # is informational (exit 0 — tail-window skips are expected
+    # routine in a streaming system), but it is loud and structured so
+    # it can't be missed in a CI log or terminal session.
+    if skipped_records:
+        click.echo(
+            f"WARN  {len(skipped_records)} records skipped from this "
+            "bundle:",
+            err=True,
+        )
+        cap = 50
+        for entry in skipped_records[:cap]:
+            click.echo(
+                f"  - {entry['id']}  reason={entry['reason']}",
+                err=True,
+            )
+        if len(skipped_records) > cap:
+            click.echo(
+                f"  (and {len(skipped_records) - cap} more — see "
+                "manifest.json::skipped_records)",
+                err=True,
+            )
+        click.echo(
+            "These records may have been written too recently to be "
+            "sealed into a",
+            err=True,
+        )
+        click.echo(
+            "checkpoint (try re-running --since one cadence period "
+            "earlier), or",
+            err=True,
+        )
+        click.echo(
+            "were deleted server-side after the action list was "
+            "fetched.",
+            err=True,
+        )
 
     click.echo(
         f"Exported {record_count} records across {checkpoint_count} "
