@@ -6,6 +6,50 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`vera verify --merkle-proof <record_id>`** — online verification of
+  a single record. Fetches the Merkle proof from Vera, folds the path
+  to reconstruct the checkpoint's Merkle root, and validates the KMS
+  signature against the current key history. Exits 0 on success; 1 on
+  `merkle_proof_invalid` / `signature_invalid` / `root_mismatch`; 2 on
+  network / auth / 404 / 409 `checkpoint_pending`.
+- **`vera verify --offline <bundle_path>`** — offline verification of
+  a pre-exported evidence bundle. No Vera credentials, no network. Reads
+  the bundle's `manifest.json`, `checkpoints/`, `records/`, and
+  `kms_keys.json`; folds every record's Merkle path against the sealed
+  root; validates every checkpoint signature using either the bundled
+  PEM (asymmetric) or `VERA_HMAC_SECRET` (HMAC). First failure prints a
+  structured reason to stderr.
+- **`vera evidence-export --customer <tenant_id> --since <date> --until
+  <date> --out <path>`** — produce a self-contained `bundle.tar.gz`
+  scoped to one customer over a date range. Bundle includes only the
+  target customer's records plus the sibling hashes their Merkle proofs
+  require — an auditor cannot count or reconstruct any other customer's
+  records.
+- **`vera.verify` subpackage** — refactored from inline CLI code into a
+  reusable module (`vera.verify.bundle`, `vera.verify.merkle`,
+  `vera.verify.kms`). The CLI commands above are thin wrappers; the
+  same primitives are importable for programmatic use.
+- **`sdk/examples/verify_offline_walkthrough/`** — runnable
+  no-credentials walkthrough of the produce-bundle / verify-bundle
+  contract. Includes a tamper-detection check; `run.sh` exits 0 only
+  when both happy-path and tamper-rejection behave as expected.
+- **SDK README — `## Verification` section** — full reference for the
+  three commands above, bundle shape (`manifest.json`,
+  `checkpoints/<id>.json`, `records/<id>.json`, `kms_keys.json`), and
+  the HMAC vs asymmetric KMS distinction.
+
+### Environment
+
+- **`VERA_HMAC_SECRET`** — shared HMAC secret for `vera verify
+  --offline` on HMAC-signed bundles. Mirrors the backend's
+  `ACTIONLEDGER_SIGNING_KEY` value. Required when `manifest.json` has
+  `hmac_secret_required: true`. Ignored for asymmetric bundles.
+- **`VERA_TARGET_ORG_ID`** — pin an org context for `vera verify
+  --offline` and `vera evidence-export` when an API key covers multiple
+  orgs or when bundle metadata needs explicit scoping. Optional for
+  single-org accounts.
+
 ## [1.1.0] - 2026-05-24
 
 ### Added

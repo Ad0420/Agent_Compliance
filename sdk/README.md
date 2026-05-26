@@ -22,6 +22,7 @@ forensics project into a single SQL query.
 - [HIPAA and medtech](#hipaa-and-medtech)
 - [Environment variables](#environment-variables)
 - [Command-line interface](#command-line-interface)
+- [Verification](#verification)
 - [Troubleshooting](#troubleshooting)
 - [HTTP API reference](#http-api-reference)
 - [Versioning policy](#versioning-policy)
@@ -915,6 +916,225 @@ vera tail --result failure --json --limit 500 | jq -s 'length'
 
 All commands respect every `VERA_*` env var. Run `vera <command> --help` for
 the full option set.
+
+## Verification
+
+Vera's value to a regulator or auditor depends on three guarantees being
+verifiable independently of Vera itself:
+
+1. The record you're shown was the record we captured (Merkle inclusion).
+2. The checkpoint that sealed it has not been altered (KMS signature).
+3. The chain of records leading up to it is intact (previous-hash continuity).
+
+Three CLI commands cover the verification flow end-to-end. They share a
+common bundle format so an auditor can verify a customer's entire
+evidence trail with only the bundle file and (for HMAC-signed bundles)
+a shared secret.
+
+A runnable, no-credentials walkthrough lives in
+[`examples/verify_offline_walkthrough/`](./examples/verify_offline_walkthrough/).
+Run it once before reading the rest of this section — the shape lands
+faster from the bundle than from prose.
+
+### `vera verify --merkle-proof <record_id>`
+
+Online verification. Hits Vera, downloads the Merkle proof for one
+record, then validates it locally against the customer's KMS public-key
+history. Use this for spot checks during incident review or before
+filing a regulator response.
+
+```bash
+vera verify --merkle-proof act_01H7XKCRJF8
+# OK action_record act_01H7XKCRJF8 verified against checkpoint cp_2026-05-12
+#   merkle_root:    93276b21b8623b35...
+#   kms_key_id:     vera-prod-2026q2
+#   signed_at:      2026-05-12T23:59:59+00:00
+```
+
+Exit codes:
+
+- `0`: proof valid against the live KMS key history.
+- `1`: proof invalid (tampered leaf, tampered sibling, root mismatch,
+  or signature invalid). The specific reason prints to stderr.
+- `2`: network / auth / 404 / 409 (record found but its checkpoint
+  hasn't sealed yet — retry after `Retry-After: 60` per Wave 3B.2).
+
+### `vera evidence-export --customer <tenant_id> --since <date> --out <path>`
+
+Build a self-contained tar.gz bundle of one customer's records over a
+date range. The bundle contains the Merkle proofs, signed checkpoints,
+and KMS key history needed to verify every record without further
+network calls.
+
+```bash
+vera evidence-export --customer cleveland_clinic \
+                     --since 2026-02-25 --until 2026-05-25 \
+                     --out ./evidence-cleveland-2026q2.tar.gz
+```
+
+Selective disclosure is structural: the bundle includes only Cleveland
+Clinic's records and only the sibling hashes their Merkle proofs
+require. An auditor inspecting the bundle cannot count or reconstruct
+records belonging to any other customer.
+
+For HMAC-signed bundles, hand the shared secret over an out-of-band
+channel (BAA-covered email, signed envelope, in-person handoff). For
+asymmetric bundles, the public keys travel inside the bundle and the
+auditor needs nothing else.
+
+### `vera verify --offline <bundle_path>`
+
+Verify a bundle with no network access. The auditor runs this; you
+don't need to.
+
+```bash
+vera verify --offline ./evidence-cleveland-2026q2.tar.gz
+# OK 1,247 record(s) verified across 90 checkpoint(s)
+# OK Chain integrity: all sibling links validate
+# OK KMS signatures: all valid (vera-prod-2026q2)
+```
+
+Exit codes:
+
+- `0`: every record verifies, every checkpoint signature validates.
+- `1`: verification failed. The first failure prints to stderr with a
+  structured reason: `merkle_proof_invalid`, `signature_invalid`,
+  `root_mismatch`, `kms_key_not_in_history`, `record_count_mismatch`,
+  `manifest_missing`, or `hmac_secret_missing`.
+- `2`: bundle malformed or unreadable (bad tar, missing files).
+
+### End-to-end session
+
+Copy-paste-runnable. Substitute your real `tenant_id` and date range.
+
+```bash
+# 1. Export evidence for a specific customer over the last 90 days.
+vera evidence-export --customer cleveland_clinic \
+                     --since 2026-02-25 --until 2026-05-25 \
+                     --out ./evidence-cleveland-2026q2.tar.gz
+
+# 2. Hand the bundle to your compliance team or auditor.
+scp ./evidence-cleveland-2026q2.tar.gz auditor@example.com:~
+
+# 3. The auditor verifies offline — no Vera credentials needed.
+vera verify --offline ./evidence-cleveland-2026q2.tar.gz
+# OK 1,247 record(s) verified across 90 checkpoint(s)
+# OK Chain integrity: all sibling links validate
+# OK KMS signatures: all valid (vera-prod-2026q2)
+```
+
+For HMAC-signed bundles, the auditor needs the secret in their
+environment before step 3:
+
+```bash
+export VERA_HMAC_SECRET="$(vault read -field=secret secret/vera/hmac/2026q2)"
+vera verify --offline ./evidence-cleveland-2026q2.tar.gz
+```
+
+### Bundle shape
+
+What `vera evidence-export` writes and what `vera verify --offline`
+reads. Field names match the live API exactly so an auditor familiar
+with one is immediately at home with the other.
+
+```
+bundle.tar.gz
+  manifest.json                   bundle metadata + record + checkpoint counts
+  checkpoints/<checkpoint_id>.json   one per sealed checkpoint
+  records/<record_id>.json           one Merkle proof payload per record
+  kms_keys.json                   KMS key history (algorithm + PEM per key_id)
+```
+
+**`manifest.json`** — top-level summary. Fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `schema_version` | int | Bundle schema version. Currently `1`. |
+| `tenant_id` | string | The customer this bundle is scoped to. |
+| `org_id` | string | The Vera organization that produced the bundle. |
+| `since` / `until` | ISO date | The window covered. |
+| `generated_at` | ISO timestamp | When the bundle was produced. |
+| `record_count` | int | Total records included. |
+| `checkpoints` | array | One summary entry per sealed checkpoint (`id`, `date`, `record_count`, `merkle_root`). |
+| `kms_algorithm` | string | Dominant signing algorithm. `hmac-sha256`, `rsa-pss-sha256`, or `ecdsa-p256-sha256`. |
+| `hmac_secret_required` | bool | `true` if any checkpoint in the bundle is HMAC-signed. |
+
+**`checkpoints/<id>.json`** — one per sealed checkpoint. Mirrors the
+`GET /v1/checkpoints/{date}` response body verbatim (Wave 3B.1):
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | string | Stable checkpoint identifier. |
+| `org_id` | string | Owning organization. |
+| `date` | ISO date | The day this checkpoint sealed. |
+| `sequence_at_checkpoint` | int | Last record sequence number sealed under this checkpoint. |
+| `hash_at_checkpoint` | hex | Chain head hash at seal time. |
+| `merkle_root` | hex | Merkle root over the records in this checkpoint window. |
+| `signed_at` | ISO timestamp | KMS signing timestamp. |
+| `key_id` | string | KMS key that signed this checkpoint. Look up in `kms_keys.json`. |
+| `algorithm` | string | One of `hmac-sha256`, `rsa-pss-sha256`, `ecdsa-p256-sha256`. |
+| `signature` | hex | KMS signature over the canonical message bytes. |
+| `record_count` | int | Records sealed under this checkpoint. |
+
+**`records/<record_id>.json`** — one Merkle proof per record. Mirrors
+the `GET /v1/records/{id}/merkle-proof` response body verbatim
+(Wave 3B.2):
+
+| Field | Type | Description |
+|---|---|---|
+| `action_record_id` | string | The record this proof is for. |
+| `action_record_canonical` | string | Canonical JSON bytes that hashed into the chain at insert time. |
+| `leaf_hash` | hex | SHA-256(`previous_hash` + `action_record_canonical`). |
+| `merkle_path` | array | Sibling hashes from leaf to root: `[{sibling_hash, direction}, ...]`. `direction` is `"left"` or `"right"`. |
+| `merkle_root` | hex | The root of the Merkle tree for this checkpoint window. |
+| `checkpoint_id` | string | The checkpoint that sealed this record. |
+| `checkpoint_signed_at` | ISO timestamp | When that checkpoint was signed. |
+| `kms_key_id` | string | KMS key used. Look up in `kms_keys.json`. |
+| `kms_signature` | hex | The checkpoint signature. |
+| `kms_algorithm` | string | The signing algorithm. |
+| `kms_public_key_pem` | string \| null | The PEM for asymmetric keys; `null` for HMAC. |
+
+**`kms_keys.json`** — array of every KMS key referenced by any
+checkpoint in the bundle. The verifier walks this when a checkpoint's
+`key_id` doesn't match the current production key (i.e., a rotation
+happened during the bundle's window):
+
+| Field | Type | Description |
+|---|---|---|
+| `key_id` | string | Unique identifier. |
+| `algorithm` | string | `hmac-sha256`, `rsa-pss-sha256`, or `ecdsa-p256-sha256`. |
+| `public_key_pem` | string \| null | PEM-encoded public key for asymmetric algorithms; `null` for HMAC. |
+| `first_seen_at` | ISO timestamp | When this key first signed a checkpoint. |
+| `retired_at` | ISO timestamp \| null | When this key was rotated out, if at all. |
+
+### HMAC vs asymmetric KMS
+
+The signing material is the load-bearing distinction between a
+self-contained bundle and one that needs out-of-band coordination.
+
+| Mode | Bundle self-contained? | What the auditor needs |
+|---|---|---|
+| `hmac-sha256` | No | The bundle + `VERA_HMAC_SECRET` shared out-of-band |
+| `rsa-pss-sha256` | Yes | Just the bundle |
+| `ecdsa-p256-sha256` | Yes | Just the bundle |
+
+HMAC is fine for internal review and dev workflows. For external
+auditors, regulator submissions, and any context where you'd rather not
+hand a customer's compliance team your signing secret, move the org to
+asymmetric KMS. Contact <support@usevera.xyz> to coordinate the
+migration; the KMS history table (Wave 3A.a) means past checkpoints
+keep verifying against their original signing keys without re-signing.
+
+### Verification-specific environment variables
+
+| Variable | Used by | Description |
+|---|---|---|
+| `VERA_HMAC_SECRET` | `vera verify --offline` | Shared HMAC secret for HMAC-signed bundles. Required when `manifest.json` has `hmac_secret_required: true`. Mirrors the backend's `ACTIONLEDGER_SIGNING_KEY` value. |
+| `VERA_TARGET_ORG_ID` | `vera verify --offline`, `vera evidence-export` | Pin an org context when your API key is multi-org or when bundle metadata needs explicit scoping. Optional for single-org accounts. |
+
+The standard `VERA_API_KEY` / `VERA_API_URL` apply only to
+`evidence-export` and `verify --merkle-proof` (both hit Vera).
+`verify --offline` never reads them — it has no network surface.
 
 ## Troubleshooting
 
