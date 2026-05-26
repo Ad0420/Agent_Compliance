@@ -113,6 +113,17 @@ async def _patch_async_session_local_for_webhooks(db_engine, monkeypatch):
         )
     except Exception:
         pass
+    # Wave 3A.c — staff_audit_log writer uses its own ``AsyncSessionLocal``
+    # binding so the audit row persists across a rolled-back request
+    # transaction. Point it at the test engine the same way.
+    try:
+        import app.services.iam as _iam_module
+
+        monkeypatch.setattr(
+            _iam_module, "AsyncSessionLocal", session_factory
+        )
+    except Exception:
+        pass
     yield
     # Drain any in-flight webhook delivery tasks BEFORE the next test
     # opens a session. Lingering background tasks holding the same

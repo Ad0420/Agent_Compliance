@@ -54,8 +54,9 @@ import logging
 from enum import Enum
 from typing import Any, Optional
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..database import AsyncSessionLocal
 from ..models import StaffAuditLog
 
 logger = logging.getLogger("vera.iam")
@@ -159,7 +160,7 @@ def redact_approval(approval: dict, tier: IamTier) -> dict:
 
 
 async def audit_staff_read(
-    session: AsyncSession,
+    session: AsyncSession,  # noqa: ARG001 — kept for API symmetry; we use AsyncSessionLocal
     *,
     staff_id: str,
     endpoint: str,
@@ -187,12 +188,15 @@ async def audit_staff_read(
     ("this engineer accessed this record at 14:02 AND at 16:31").
     """
     try:
-        # Use a fresh session bound to the request engine — the caller's
-        # request transaction may roll back, and we want the audit row
-        # to persist regardless. AsyncSession.bind exposes the engine.
-        bind = session.get_bind()
-        factory = async_sessionmaker(bind, expire_on_commit=False)
-        async with factory() as audit_session:
+        # Use a fresh session via the module-level ``AsyncSessionLocal``
+        # factory — the caller's request transaction may roll back, and
+        # we want the audit row to persist regardless. This mirrors the
+        # Wave 2B A3 webhook pattern (``services/webhooks.py``).
+        #
+        # Tests patch this module-level binding to the test engine's
+        # session factory (see ``tests/conftest.py``); production reads
+        # the real DB engine.
+        async with AsyncSessionLocal() as audit_session:
             row = StaffAuditLog(
                 staff_id=staff_id,
                 endpoint=endpoint,
