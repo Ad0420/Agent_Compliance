@@ -164,7 +164,7 @@ async def create_dev_org(
     """Provision a new local-dev org + admin API key.
 
     Idempotency: relies on the database's UNIQUE constraint on
-    ``organizations.name`` (migration ``s9n1o2p3q4r5``). A duplicate
+    ``organizations.name`` (migration ``t0o2p3q4r5s6``). A duplicate
     name surfaces as an ``IntegrityError`` from the flush and is
     translated to a 409 here. We deliberately do NOT do a
     "fetch-then-create" pre-check — that's racy with a sibling
