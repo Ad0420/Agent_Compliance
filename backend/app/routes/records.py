@@ -45,7 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..database import get_db
 from ..models import ActionRecord
 from ..services.auth import AuthContext, require_permission_with_context
-from ..services.iam import IamTier, audit_staff_read
+from ..services.iam import audit_staff_read
 from ..services.merkle_proof import ProofUnavailable, build_proof
 
 logger = logging.getLogger("vera.records.merkle_proof")
@@ -91,7 +91,11 @@ async def get_merkle_proof(
     # fields without invalidating the proof — the verifier hashes the
     # bytes and compares to the leaf. So: refuse the read entirely for
     # staff, and audit-log the refusal so the customer can see it.
-    if ctx.tier == IamTier.STAFF_READ_ONLY:
+    #
+    # Per Wave 3B.3 policy, we branch on ``ctx.is_staff`` so a future
+    # STAFF_FULL tier inherits the same PHI guard without a per-route
+    # fix.
+    if ctx.is_staff:
         await audit_staff_read(
             session,
             staff_id=ctx.staff_id or "",

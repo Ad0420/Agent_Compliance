@@ -453,7 +453,33 @@ class AuthContext:
 
     @property
     def is_staff(self) -> bool:
+        """True if the caller is Vera-internal staff (any staff tier).
+
+        Route handlers MUST use this property — not a direct
+        ``ctx.tier == IamTier.STAFF_READ_ONLY`` comparison — when
+        branching on staff-vs-customer. The reason: ``IamTier.STAFF_FULL``
+        is reserved for a v2 break-glass tier and MUST behave identically
+        to ``STAFF_READ_ONLY`` in v1 (same redaction, same audit, same
+        read-only surface). A direct ``== STAFF_READ_ONLY`` comparison
+        would silently treat a future STAFF_FULL caller as a customer —
+        wrong tier, wrong audit, wrong PHI redaction.
+
+        The CI lint rule ``scripts/check_iam_tier_usage.sh`` enforces
+        this. Motivated by PR #236 (Wave 3B.3) CRITICAL finding and
+        PR #240 (Wave 3D.1) INFORMATIONAL finding — same antipattern
+        caught twice.
+        """
         return self.tier in (IamTier.STAFF_READ_ONLY, IamTier.STAFF_FULL)
+
+    @property
+    def is_customer(self) -> bool:
+        """True if the caller is a customer (not staff).
+
+        Inverse of ``is_staff``. Use this on routes that need a
+        "customer-only" branch (e.g. skip-redaction shortcut). See
+        ``is_staff`` docstring for the policy rationale.
+        """
+        return not self.is_staff
 
 
 def require_permission(permission: str):
