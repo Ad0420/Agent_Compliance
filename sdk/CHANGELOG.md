@@ -26,6 +26,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   target customer's records plus the sibling hashes their Merkle proofs
   require — an auditor cannot count or reconstruct any other customer's
   records.
+- **`vera evidence-export` — skipped-record surfacing** — when a
+  per-record proof fetch returns 404 (`record_not_found`) or 409
+  (`checkpoint_pending`, the tail-window race), the record is skipped
+  but the omission is now auditable: a structured `WARN` block lists
+  each skipped record ID and reason to stderr (capped at 50 IDs, with
+  an "and N more" pointer for the overflow), and the full list is
+  written to `manifest.json::skipped_records` as `[{id, reason}, ...]`
+  (always present, empty array on a clean run). Exit code remains 0
+  for tail-window skips — they're routine in a streaming system and
+  shouldn't break CI; the warning is loud but informational.
 - **`vera.verify` subpackage** — refactored from inline CLI code into a
   reusable module (`vera.verify.bundle`, `vera.verify.merkle`,
   `vera.verify.kms`). The CLI commands above are thin wrappers; the

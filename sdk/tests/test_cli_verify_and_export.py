@@ -1017,3 +1017,336 @@ def test_truncate_for_error_caps_at_80_chars() -> None:
     # blob must NOT be in the output verbatim.
     assert "A" * 1000 not in long
     assert "..." in long
+
+
+# ── Skipped-record surfacing (stderr + manifest) ────────────────────────
+# Tail-window race: a record exists in the action list (200 from
+# /v1/actions) but its individual proof fetch returns 409
+# (checkpoint_pending) or 404 (record_not_found between enumeration and
+# proof fetch). Phase 3 follow-up: surface these to stderr + manifest
+# so the omission is auditable. Record IDs are real uuid4 strings to
+# satisfy the path-traversal guard (Wave 3C.2 follow-up).
+
+
+def _make_export_handler_with_proof_overrides(
+    checkpoint_dates: list[str],
+    org_record_map: dict[str, list[tuple[str, int]]],
+    proofs: dict[str, dict],
+    proof_status_overrides: dict[str, int],
+):
+    """Variant of ``_make_export_handler`` that lets a test force a
+    specific HTTP status (409 / 404) for a given record_id's
+    merkle-proof endpoint.
+    """
+    seq_for_date: dict[str, int] = {}
+    for date_iso in checkpoint_dates:
+        rows = org_record_map.get(date_iso, [])
+        seq_for_date[date_iso] = max((s for _, s in rows), default=0)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.startswith("/v1/checkpoints/"):
+            date_iso = path.split("/")[-1]
+            if date_iso not in checkpoint_dates:
+                return httpx.Response(
+                    404, json={"code": "checkpoint_not_found"}
+                )
+            body = _build_checkpoint_body(
+                date_iso=date_iso,
+                sequence=seq_for_date[date_iso],
+                record_count=len(org_record_map.get(date_iso, [])),
+            )
+            return httpx.Response(200, json=body)
+        if path == "/v1/actions":
+            tenant_filter = request.url.params.get("tenant_id")
+            offset = int(request.url.params.get("offset", "0"))
+            limit = int(request.url.params.get("limit", "200"))
+            records: list[dict] = []
+            for date_iso, lst in org_record_map.items():
+                for rid, seq in lst:
+                    proof = proofs.get(rid, {})
+                    rec_tenant = proof.get("tenant_id")
+                    if tenant_filter and rec_tenant != tenant_filter:
+                        continue
+                    records.append(
+                        {
+                            "id": rid,
+                            "sequence_number": seq,
+                            "tenant_id": rec_tenant,
+                        }
+                    )
+            records.sort(
+                key=lambda r: r["sequence_number"], reverse=True
+            )
+            page = records[offset : offset + limit]
+            return httpx.Response(200, json={"records": page})
+        if path.startswith("/v1/records/") and path.endswith(
+            "/merkle-proof"
+        ):
+            rid = path.split("/")[3]
+            if rid in proof_status_overrides:
+                forced = proof_status_overrides[rid]
+                code = (
+                    "checkpoint_pending"
+                    if forced == 409
+                    else "record_not_found"
+                )
+                return httpx.Response(forced, json={"code": code})
+            if rid not in proofs:
+                return httpx.Response(
+                    404, json={"code": "record_not_found"}
+                )
+            return httpx.Response(200, json=proofs[rid])
+        return httpx.Response(404, text=f"unknown path {path}")
+
+    return handler
+
+
+def test_evidence_export_409_skip_surfaces_in_stderr_and_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A 409 ``checkpoint_pending`` on one record-proof fetch:
+
+    * Exporter exits 0 (skips are non-fatal — tail-window is routine).
+    * ``manifest.json::skipped_records`` contains exactly the skipped
+      record's ID + ``reason=checkpoint_pending``.
+    * stderr contains ``"1 records skipped"`` + the record ID so an
+      operator can't miss it.
+    """
+    date_iso = "2026-05-20"
+    rid_ok_a = _new_uuid()
+    rid_ok_b = _new_uuid()
+    # rid_tail will return 409 from the merkle-proof endpoint even
+    # though it's in the action list — the tail-window race.
+    rid_tail = _new_uuid()
+    p_ok_a = _build_proof_payload(record_id=rid_ok_a, sequence=2)
+    p_ok_a["tenant_id"] = "cleveland_clinic"
+    p_ok_b = _build_proof_payload(record_id=rid_ok_b, sequence=3)
+    p_ok_b["tenant_id"] = "cleveland_clinic"
+    p_tail = _build_proof_payload(record_id=rid_tail, sequence=4)
+    p_tail["tenant_id"] = "cleveland_clinic"
+    org_records = {
+        date_iso: [
+            (rid_ok_a, 2),
+            (rid_ok_b, 3),
+            (rid_tail, 4),
+        ],
+    }
+    handler = _make_export_handler_with_proof_overrides(
+        [date_iso],
+        org_records,
+        {
+            rid_ok_a: p_ok_a,
+            rid_ok_b: p_ok_b,
+            rid_tail: p_tail,
+        },
+        proof_status_overrides={rid_tail: 409},
+    )
+    _install_transport(monkeypatch, handler)
+    for k, v in _make_runner_env().items():
+        monkeypatch.setenv(k, v)
+
+    out = tmp_path / "bundle"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "evidence-export",
+            "--since",
+            date_iso,
+            "--until",
+            date_iso,
+            "--out",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, (result.stdout, result.stderr)
+
+    # Manifest: skipped_records carries exactly the one ID + reason.
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["skipped_records"] == [
+        {"id": rid_tail, "reason": "checkpoint_pending"}
+    ]
+    # record_count counts only the successful fetches.
+    assert manifest["record_count"] == 2
+
+    # stderr: structured warning that an operator/CI log can spot.
+    assert "1 records skipped" in result.stderr
+    assert rid_tail in result.stderr
+    assert "checkpoint_pending" in result.stderr
+
+    # The skipped record's proof file is NOT written.
+    assert not (out / f"records/{rid_tail}.json").exists()
+    # The successful records' proofs ARE written.
+    assert (out / f"records/{rid_ok_a}.json").exists()
+    assert (out / f"records/{rid_ok_b}.json").exists()
+
+
+def test_evidence_export_404_skip_surfaces_as_record_not_found(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Same shape as the 409 test, but the forced status is 404 →
+    ``reason=record_not_found``. Models the "deleted server-side
+    between enumeration and proof fetch" case.
+    """
+    date_iso = "2026-05-20"
+    rid_ok = _new_uuid()
+    rid_gone = _new_uuid()
+    p_ok = _build_proof_payload(record_id=rid_ok, sequence=2)
+    p_ok["tenant_id"] = "cleveland_clinic"
+    p_gone = _build_proof_payload(record_id=rid_gone, sequence=3)
+    p_gone["tenant_id"] = "cleveland_clinic"
+    org_records = {
+        date_iso: [(rid_ok, 2), (rid_gone, 3)],
+    }
+    handler = _make_export_handler_with_proof_overrides(
+        [date_iso],
+        org_records,
+        {rid_ok: p_ok, rid_gone: p_gone},
+        proof_status_overrides={rid_gone: 404},
+    )
+    _install_transport(monkeypatch, handler)
+    for k, v in _make_runner_env().items():
+        monkeypatch.setenv(k, v)
+
+    out = tmp_path / "bundle"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "evidence-export",
+            "--since",
+            date_iso,
+            "--until",
+            date_iso,
+            "--out",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, (result.stdout, result.stderr)
+
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert manifest["skipped_records"] == [
+        {"id": rid_gone, "reason": "record_not_found"}
+    ]
+    assert manifest["record_count"] == 1
+
+    assert "1 records skipped" in result.stderr
+    assert rid_gone in result.stderr
+    assert "record_not_found" in result.stderr
+
+
+def test_evidence_export_no_skips_emits_empty_array_and_no_warning(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Clean run (every proof fetch returns 200): no stderr warning,
+    and ``manifest.json::skipped_records`` is an EMPTY ARRAY (not
+    omitted).
+
+    Choosing "always-present empty array" over "omit the field on a
+    clean run" so downstream consumers can presence-check without
+    branching on key existence — the schema stays stable across
+    bundles regardless of whether any records were skipped.
+    """
+    date_iso = "2026-05-20"
+    rid = _new_uuid()
+    p1 = _build_proof_payload(record_id=rid, sequence=2)
+    p1["tenant_id"] = "cleveland_clinic"
+    org_records = {date_iso: [(rid, 2)]}
+    handler = _make_export_handler(
+        [date_iso], org_records, {rid: p1}
+    )
+    _install_transport(monkeypatch, handler)
+    for k, v in _make_runner_env().items():
+        monkeypatch.setenv(k, v)
+
+    out = tmp_path / "bundle"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "evidence-export",
+            "--since",
+            date_iso,
+            "--until",
+            date_iso,
+            "--out",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, (result.stdout, result.stderr)
+
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert "skipped_records" in manifest
+    assert manifest["skipped_records"] == []
+
+    # No "records skipped" line on stderr when nothing was skipped.
+    assert "records skipped" not in result.stderr
+    # The success line still prints to stdout.
+    assert "Exported 1 records" in result.stdout
+
+
+def test_evidence_export_skip_list_caps_at_50_in_stderr(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With > 50 skips, stderr prints the first 50 and an ``(and N more
+    — see manifest.json::skipped_records)`` summary line. The manifest
+    contains the FULL list — the cap is purely a stderr-readability
+    knob, not a data drop.
+
+    The actions endpoint returns ``sequence_number DESC``, so the
+    highest-seq record is enumerated first and appears in stderr; the
+    lowest-seq record is at position 55 and gets dropped by the 50-cap
+    into the "and N more" pointer.
+    """
+    date_iso = "2026-05-20"
+    rows: list[tuple[str, int]] = []
+    proofs: dict[str, dict] = {}
+    overrides: dict[str, int] = {}
+    # Track the highest- and lowest-seq IDs explicitly so the
+    # cap-behavior assertions don't depend on guessing UUIDs.
+    rid_by_seq: dict[int, str] = {}
+    for i in range(1, 56):  # 55 records, all return 409.
+        rid = _new_uuid()
+        p = _build_proof_payload(record_id=rid, sequence=i)
+        p["tenant_id"] = "cleveland_clinic"
+        rows.append((rid, i))
+        proofs[rid] = p
+        overrides[rid] = 409
+        rid_by_seq[i] = rid
+    org_records = {date_iso: rows}
+    handler = _make_export_handler_with_proof_overrides(
+        [date_iso], org_records, proofs, proof_status_overrides=overrides
+    )
+    _install_transport(monkeypatch, handler)
+    for k, v in _make_runner_env().items():
+        monkeypatch.setenv(k, v)
+
+    out = tmp_path / "bundle"
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        [
+            "evidence-export",
+            "--since",
+            date_iso,
+            "--until",
+            date_iso,
+            "--out",
+            str(out),
+        ],
+    )
+    assert result.exit_code == 0, (result.stdout, result.stderr)
+
+    # Stderr: opening line, first 50 IDs, "and 5 more" pointer.
+    assert "55 records skipped" in result.stderr
+    assert "(and 5 more" in result.stderr
+    assert "manifest.json::skipped_records" in result.stderr
+    # Highest seq (55) is at position 0 → in stderr;
+    # lowest seq (1) is at position 54 → dropped by the 50-cap.
+    assert rid_by_seq[55] in result.stderr
+    assert rid_by_seq[1] not in result.stderr
+    # Manifest still carries all 55 entries — the cap is a stderr
+    # readability knob, not a data drop.
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert len(manifest["skipped_records"]) == 55
