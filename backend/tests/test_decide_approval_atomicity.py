@@ -104,6 +104,10 @@ async def test_chain_write_failure_rolls_back_vote_and_status(
                     decision="approve",
                     approver="dr_smith:attending_physician",
                     note="should not persist",
+                    # W1.1: gated approval (context.required_role
+                    # set in _seed_pending_approval) now requires
+                    # reviewer_role on the decide call.
+                    reviewer_role="attending_physician",
                 ),
             )
 
@@ -184,6 +188,8 @@ async def test_resolve_failure_after_chain_write_rolls_back_vote(
                 decision=ApprovalDecision(
                     decision="approve",
                     approver="dr_smith:attending_physician",
+                    # W1.1: gated approval requires reviewer_role.
+                    reviewer_role="attending_physician",
                 ),
             )
 
@@ -248,6 +254,8 @@ async def test_happy_path_vote_status_and_chain_record_all_commit(
         decision=ApprovalDecision(
             decision="approve",
             approver="dr_smith:attending_physician",
+            # W1.1: gated approval requires reviewer_role.
+            reviewer_role="attending_physician",
         ),
     )
 
