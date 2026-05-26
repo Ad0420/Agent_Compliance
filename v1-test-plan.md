@@ -52,6 +52,9 @@ This is the test plan that closes the gaps surfaced by the eng review. Each NEW 
 | Bootstrap key/org validation (W1.6) | unit: bootstrap warns when env_file key authenticates against different org than expected slug | covered |
 | Gate-evaluate response is non-blocking on webhook dispatch (W1.4) | integration: org with webhook URL pointed at slow/dead receiver; POST /v1/gates/evaluate returns in <500ms; webhook delivery row created with status=in_progress | covered |
 | SDK audit batch roundtrip (W1.3 — audit-batch-422) | integration: SDK-emitted batch payload posts to /v1/actions/batch and returns 200; records persist to chain; no dropped-records warning | covered |
+| Housekeeping trio — /v1/register removed (W2.3) | integration: POST /v1/register returns 404 (not 410); no route handler, no import in main.py; previous 410-Gone stub deleted alongside its tests | covered (W2.3) |
+| Housekeeping trio — orgs dedupe maintenance CLI (W2.3) | unit: `python -m app.cli orgs dedupe` happy path merges duplicate org + re-points api_keys/customers/chain_state FKs; --dry-run prints SQL without mutating; refuses on single-row name, --keep not in matches, or no match | covered (W2.3) |
+| Housekeeping trio — Phase 2 acceptance findings doc (W2.3) | docs: `docs/v1/phase2-acceptance-findings.md` checked in with rolled-up W1.1–W1.6 + W2.x status table; replaces the ephemeral working file that kept getting recreated across branch switches | covered (W2.3) |
 
 ## Phase 3 — Off-Vera checkpoint + offline verify
 
