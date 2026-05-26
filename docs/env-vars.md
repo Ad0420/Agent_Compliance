@@ -119,6 +119,8 @@ client = VeraClient(
 | `VERA_API_KEY` | yes | API key from the Vera dashboard. Passed to `VeraClient(api_key=...)`. | customer's runtime |
 | `VERA_API_URL` | no | Backend URL. Defaults to `https://api.usevera.xyz`. | customer's runtime |
 | `VERA_AGENT_NAME` | no | Agent identifier. Defaults to `default-agent`. | customer's runtime |
+| `VERA_HMAC_SECRET` | conditional | Shared HMAC secret read by `vera verify --offline` when the bundle's `manifest.json` has `hmac_secret_required: true`. Mirrors the backend's `ACTIONLEDGER_SIGNING_KEY` value. Ignored for asymmetric bundles. | auditor's runtime |
+| `VERA_TARGET_ORG_ID` | no | Pin an org context for `vera verify --offline` and `vera evidence-export` when an API key covers multiple orgs or when bundle metadata needs explicit scoping. | customer's / auditor's runtime |
 
 (If the SDK ever grows a built-in env-var fallback, update this section and
 the docstring in `sdk/vera/client.py`.)
