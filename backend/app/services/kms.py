@@ -39,6 +39,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger("actionledger.kms")
@@ -250,16 +251,16 @@ async def ensure_key_registered(
         public_key_pem=kms.get_public_key_pem(),
         is_active=True,
     )
-    session.add(row)
-    # Flush — caller controls the outer commit boundary (typically the
-    # checkpoint or approval transaction). A flush is enough to insert
-    # the row and surface uniqueness errors locally.
+    # Wrap the insert in a SAVEPOINT (``begin_nested()``) so a
+    # concurrent-insert IntegrityError rolls back ONLY the savepoint —
+    # the caller's outer transaction (e.g. the checkpoint write in
+    # ``create_checkpoint``) stays intact. A bare ``session.rollback()``
+    # here would discard the caller's in-session reads/writes, silently
+    # corrupting concurrent checkpoint creation on the loser side.
     try:
-        await session.flush()
-    except Exception:
-        # Concurrent insert won the race. Roll back the failed flush
-        # via a fresh lookup and return that row.
-        await session.rollback()
+        async with session.begin_nested():
+            session.add(row)
+    except IntegrityError:
         existing = await session.get(KmsKey, key_id)
         if existing is not None:
             return existing
