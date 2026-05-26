@@ -693,7 +693,19 @@ async def test_clerk_unreachable_uses_cached_role_with_warn(
 
     _handler = _ListHandler()
     _attached: list[logging.Logger] = []
-    for _name in ("app.middleware.clerk_auth", "backend.app.middleware.clerk_auth"):
+    # Attach to the live module's actual logger object — this is the
+    # ground truth regardless of import-path name.
+    _live_logger = logging.getLogger(clerk_auth.__name__)
+    _live_logger.setLevel(logging.WARNING)
+    _live_logger.addHandler(_handler)
+    _attached.append(_live_logger)
+    # Also attach to known name variants AND the root logger so any
+    # propagation path is covered.
+    for _name in (
+        "app.middleware.clerk_auth",
+        "backend.app.middleware.clerk_auth",
+        "",  # root
+    ):
         _logger = logging.getLogger(_name)
         _logger.setLevel(logging.WARNING)
         _logger.addHandler(_handler)
@@ -723,6 +735,10 @@ async def test_clerk_unreachable_uses_cached_role_with_warn(
         "freshness check failed" in r.getMessage() for r in _handler.records
     ), (
         f"warning never fired despite _boom being called {boom_calls['n']} times; "
+        f"clerk_auth.__name__={clerk_auth.__name__!r}; "
+        f"live_logger.name={_live_logger.name!r}; "
+        f"live_logger.level={_live_logger.level}; "
+        f"live_logger.disabled={_live_logger.disabled}; "
         f"records={[(r.name, r.levelname, r.getMessage()) for r in _handler.records]}"
     )
 
