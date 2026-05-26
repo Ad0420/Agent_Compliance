@@ -748,3 +748,116 @@ export interface AttestationConflictResponse {
   review_id: string;
   detail: string;
 }
+
+// ── Wave 3D.2 — Customer Verification & Evidence Trail panel ───────────
+//
+// Backed by ``GET /v1/customers/{tenant_id}/chain-summary``. The panel
+// renders the customer's latest checkpoint summary + a 30-day timeline
+// strip + a "Download evidence bundle" CTA + an inline "Verify this
+// customer's chain" button.
+//
+// ``verification_supported=false`` greys out the inline verify CTA:
+// HMAC-SHA256 chains can't be verified in the browser without the
+// shared secret (which must never live client-side); asymmetric KMS
+// keys (RSA-PSS / ECDSA) carry a public PEM that the Web Crypto API
+// can use to verify the checkpoint signature without holding any
+// secret. The dashboard renders an honest reason in either branch.
+
+export type ChainTimelineStatus = "sealed" | "none" | "pending";
+
+export interface ChainTimelineDay {
+  /** ISO calendar date for this tile (e.g., "2026-05-19"). */
+  date: string;
+  status: ChainTimelineStatus;
+  checkpoint_id: string | null;
+  customer_record_count: number;
+}
+
+export interface ChainLatestCheckpoint {
+  checkpoint_id: string;
+  merkle_root: string | null;
+  /** Naive UTC ISO string with millisecond precision. */
+  signed_at: string;
+  kms_key_id: string | null;
+  kms_algorithm: string | null;
+  /** PEM-encoded public key for asymmetric KMS providers; null otherwise. */
+  kms_public_key_pem: string | null;
+  customer_record_count: number;
+  total_record_count: number;
+  sequence_at_checkpoint: number;
+}
+
+export interface CustomerChainSummary {
+  tenant_id: string;
+  customer_display_name: string | null;
+  latest_checkpoint: ChainLatestCheckpoint | null;
+  timeline: ChainTimelineDay[];
+  verification_supported: boolean;
+  /**
+   * Documented reason the inline Verify button is greyed out. Today
+   * the only value is ``"hmac_symmetric_no_shared_secret"`` (HMAC
+   * chains need the shared secret out-of-band). Future values can be
+   * added without breaking the contract — consumers fall back to the
+   * generic "verification not available in browser" copy if the code
+   * isn't recognised.
+   */
+  verification_unsupported_reason: string | null;
+}
+
+// ── Evidence bundle preview (selective-disclosure modal) ───────────────
+
+export interface EvidenceExportPreviewRequest {
+  start_date?: string;
+  end_date?: string;
+  preview: true;
+}
+
+export interface EvidenceExportPreview {
+  tenant_id: string;
+  customer_display_name: string | null;
+  customer_record_count: number;
+  checkpoint_count: number;
+  /**
+   * Honest warnings the dashboard surfaces alongside the count.
+   * ``"hmac_chain_no_offline_signature_verify"`` = the verifier can
+   * confirm Merkle-path integrity from the bundle alone, but the
+   * checkpoint signature itself requires the shared HMAC secret which
+   * the customer holds out-of-band.
+   * ``"tail_records_excluded"`` = some records in the date range have
+   * not been sealed into a checkpoint yet; they were not included.
+   */
+  warnings: string[];
+  date_range: { start: string; end: string };
+}
+
+export interface EvidenceExportRequest {
+  start_date?: string;
+  end_date?: string;
+  preview?: false;
+}
+
+// ── Merkle proof payload (Wave 3B.2 — for in-browser verification) ──────
+//
+// Returned by ``GET /v1/records/{id}/merkle-proof``. Mirrors the
+// ``MerkleProofPayload`` shape from ``backend/app/services/merkle_proof.py``
+// verbatim so the in-browser Merkle walker doesn't drift from the
+// canonical proof generator.
+
+export interface MerklePathStep {
+  sibling_hash: string;
+  direction: "left" | "right";
+}
+
+export interface MerkleProofPayload {
+  action_record_id: string;
+  action_record_canonical: string;
+  leaf_hash: string;
+  merkle_path: MerklePathStep[];
+  merkle_root: string;
+  checkpoint_id: string;
+  checkpoint_signed_at: string;
+  kms_key_id: string;
+  kms_signature: string;
+  kms_algorithm: string;
+  kms_public_key_pem: string | null;
+}

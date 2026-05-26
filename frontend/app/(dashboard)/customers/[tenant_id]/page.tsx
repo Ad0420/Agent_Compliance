@@ -41,6 +41,7 @@ import {
 } from "@/components/dashboard/coverage-matrix";
 import { BaaUploadWidget } from "@/components/dashboard/baa-upload";
 import { DecisionsTab } from "@/components/customers/decisions-tab";
+import { VerificationPanel } from "@/components/customers/verification-panel";
 import { formatRelativeTime } from "@/lib/utils";
 import type {
   BAAStatus,
@@ -463,6 +464,12 @@ function PopulatedSections({ customer }: { customer: Customer }) {
 
           {/* Status section — count summary + rollup. */}
           <StatusSection customer={customer} agents={agents} />
+
+          {/* Verification & Evidence Trail (Wave 3D.2). The panel
+              owns its own data fetch so the Overview tab doesn't
+              block on the chain-summary endpoint and so a slow
+              checkpoint query never holds back the coverage matrix. */}
+          <VerificationPanel tenant_id={customer.tenant_id} />
 
           {/* BAA management — show current state + allow re-upload. */}
           <BaaManagement customer={customer} />
