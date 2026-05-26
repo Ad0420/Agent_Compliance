@@ -680,9 +680,13 @@ async def test_clerk_unreachable_uses_cached_role_with_warn(
             headers={"Authorization": f"Bearer {token}"},
         )
     assert resp.status_code == 200, resp.text
+    # Use rec.getMessage() instead of rec.message — the .message attribute
+    # is lazily populated by pytest's caplog handler and can be empty when
+    # the test runs after others that touch the same logger's filters. The
+    # symptom: assertion passed in isolation, failed in full-suite runs.
     assert any(
-        "freshness check failed" in rec.message for rec in caplog.records
-    )
+        "freshness check failed" in rec.getMessage() for rec in caplog.records
+    ), f"caplog.text was: {caplog.text!r}"
 
 
 @pytest.mark.asyncio
