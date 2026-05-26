@@ -231,6 +231,45 @@ def _normalize_result_for_wire(result: str) -> tuple[str, Optional[str]]:
         return mapped, result
     return result, None
 
+
+def normalize_record_for_wire(payload: dict) -> dict:
+    """Wire-boundary normaliser shared by sync + async clients.
+
+    Returns a SHALLOW-copied dict with the ``result`` field rewritten to a
+    backend-acceptable value if it was a gate-vocabulary string, plus
+    ``metadata.gate_result`` set to the original. Inputs already on the
+    wire-acceptable enum are returned with ``result`` untouched and
+    ``metadata`` unchanged.
+
+    Caller-supplied ``metadata.gate_result`` is OVERWRITTEN when this
+    function rewrites ``result`` — the SDK is authoritative about which
+    rewrite it performed, and preserving a caller-supplied (potentially
+    contradictory) ``gate_result`` next to a SDK-rewritten ``result``
+    would let the audit trail lie about the gate verdict.
+
+    Used by:
+      * ``VeraClient._strip_internal_fields`` / ``AsyncVeraClient._strip_internal_fields``
+        — covers the background spool/queue flush path (catches pre-fix
+        spool rows + direct ``enqueue_action`` callers).
+      * ``VeraClient.record_action_batch`` / ``AsyncVeraClient.record_action_batch``
+        — covers callers that bypass the background queue entirely.
+    """
+    raw_result = payload.get("result")
+    if not isinstance(raw_result, str):
+        return payload
+    wire_result, original_result = _normalize_result_for_wire(raw_result)
+    if original_result is None:
+        return payload
+    out = dict(payload)
+    out["result"] = wire_result
+    metadata = dict(out.get("metadata") or {})
+    # Authoritative: when we rewrote ``result`` we own ``gate_result``.
+    # A caller-supplied value is overwritten so the audit trail
+    # cannot claim a gate verdict that doesn't match the SDK rewrite.
+    metadata["gate_result"] = original_result
+    out["metadata"] = metadata
+    return out
+
 _unknown_ruling_warned: set[str] = set()
 
 

@@ -938,9 +938,19 @@ class VeraClient:
         return resp.json()
 
     def record_action_batch(self, records: list[dict]) -> list[dict]:
-        """Record a batch of actions synchronously."""
+        """Record a batch of actions synchronously.
+
+        W1.3 (audit-batch-422) — also runs the wire-boundary normaliser so
+        a caller using SDK gate vocabulary (``result="pending_review"`` /
+        ``"blocked"``) on this synchronous-ack path doesn't 422 the way
+        the background batch did pre-fix. The background flush path goes
+        through ``_strip_internal_fields`` which already calls this
+        helper; the explicit-batch path needs it too.
+        """
+        from .gate import normalize_record_for_wire  # local: avoid cycle
         if self._redactor is not None:
             records = [self._redact_payload_fields(r) for r in records]
+        records = [normalize_record_for_wire(r) for r in records]
         headers = {"Idempotency-Key": uuid.uuid4().hex}
         resp = self._request_with_retry(
             "post", "/v1/actions/batch", json={"records": records}, headers=headers
@@ -1494,18 +1504,10 @@ class VeraClient:
         #     before the upgrade would 422 in perpetuity)
         #   * direct callers of ``enqueue_action`` who pass gate-vocabulary
         #     values without going through ``vera.gate``
-        # The mapping table lives in ``vera.gate`` so both layers share one
-        # source of truth.
-        from .gate import _normalize_result_for_wire  # local: avoid cycle
-        raw_result = out.get("result")
-        if isinstance(raw_result, str):
-            wire_result, original_result = _normalize_result_for_wire(raw_result)
-            if original_result is not None:
-                out["result"] = wire_result
-                metadata = dict(out.get("metadata") or {})
-                metadata.setdefault("gate_result", original_result)
-                out["metadata"] = metadata
-        return out
+        # The shared helper lives in ``vera.gate`` so sync + async clients
+        # AND the public ``record_action_batch`` path use one source of truth.
+        from .gate import normalize_record_for_wire  # local: avoid cycle
+        return normalize_record_for_wire(out)
 
     @staticmethod
     def _batch_idempotency_key(batch: list[dict]) -> str:
