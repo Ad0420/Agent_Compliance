@@ -30,6 +30,7 @@ from .routes import (
     kms_router,
     records_router,
     dashboard_chain_integrity_router,
+    compliance_router,
 )
 from .routes.dashboard_demo import router as dashboard_demo_router
 from .routes.dashboard_api_keys import router as dashboard_api_keys_router
@@ -222,6 +223,12 @@ app.include_router(dashboard_s3_mirror_router)
 # ``require_permission_with_context`` so the same endpoint serves the SDK
 # health-check use case AND the dashboard tile.
 app.include_router(dashboard_chain_integrity_router, prefix="/v1")
+# Phase 4 Wave 1 PR B1 — Compliance Posture endpoint. The router defines its
+# own ``/compliance`` prefix; auth is dual-mode (customer admin OR Vera
+# staff via X-Org-Id) via ``require_permission_with_context``. Staff calls
+# write a ``staff_audit_log`` row (resource_type='compliance_posture'); the
+# response carries no PHI so ``redacted=False``.
+app.include_router(compliance_router, prefix="/v1")
 # Clerk webhooks — signature-verified via Svix, no bearer auth. Mounted at
 # /v1 so the public path is /v1/clerk/webhooks (matches the env.example doc).
 app.include_router(clerk_webhooks_router, prefix="/v1")
