@@ -43,14 +43,8 @@ from app.models.kms_key import KmsKey
 from app.services import auth as auth_service
 from app.services.auth import generate_api_key
 from app.services.checkpoint import create_checkpoint
-from app.services.hashing import (
-    HASHABLE_FIELDS,
-    canonicalize,
-    compute_record_hash,
-    extract_hashable_fields,
-)
-from app.services.kms import LocalKMS, get_kms, set_kms
-from app.services.merkle import build_tree_from_records, verify_proof, MerkleProof
+from app.services.hashing import compute_record_hash
+from app.services.kms import get_kms, set_kms
 from app.services.merkle_proof import (
     ProofUnavailable,
     build_proof,

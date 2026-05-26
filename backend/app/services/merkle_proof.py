@@ -123,15 +123,11 @@ def canonicalize_action_record(record: ActionRecord) -> str:
     return canonicalize(fields)
 
 
-def _leaf_hash_for(record: ActionRecord) -> str:
-    """Return the leaf hash this record contributes to the Merkle tree.
-
-    Per ``services.checkpoint.create_checkpoint`` the tree is built over
-    ``ActionRecord.record_hash`` values (not over canonical bytes). Keep
-    this in lockstep — if the seal-time tree changes its leaf
-    representation, this function must change with it.
-    """
-    return record.record_hash
+# Note on leaf representation: ``services.checkpoint.create_checkpoint``
+# builds the Merkle tree directly over ``ActionRecord.record_hash``
+# values (not over canonical bytes), and ``build_proof`` below pulls
+# those same hashes via SELECT. If the seal-time tree ever changes its
+# leaf representation, ``build_proof``'s SELECT must change with it.
 
 
 # ── Lookup: which checkpoint sealed this record? ───────────────────────
