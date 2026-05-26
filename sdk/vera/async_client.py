@@ -657,14 +657,21 @@ class AsyncVeraClient:
         the server can dedupe per record across restart-induced batch
         recomposition. See :meth:`vera.client.VeraClient._strip_internal_fields`
         for the full rationale.
+
+        W1.3 (audit-batch-422) — also runs the wire-boundary normaliser
+        from ``vera.gate`` so spool rows written by a pre-fix SDK and
+        direct ``enqueue_action`` callers don't permanently 422 on the
+        async flush path. MUST stay in lockstep with the sync version;
+        both share ``gate.normalize_record_for_wire``.
         """
+        from .gate import normalize_record_for_wire  # local: avoid cycle
         out = {k: v for k, v in payload.items() if not k.startswith("_")}
         idem = payload.get("_idempotency_key")
         if isinstance(idem, str) and idem:
             metadata = dict(out.get("metadata") or {})
             metadata.setdefault("record_idempotency_key", idem)
             out["metadata"] = metadata
-        return out
+        return normalize_record_for_wire(out)
 
     @staticmethod
     def _is_permanent_failure(exc: BaseException) -> bool:
@@ -856,8 +863,13 @@ class AsyncVeraClient:
             await self._flush()
 
     async def record_action_batch(self, records: list[dict]) -> list[dict]:
+        # W1.3 (audit-batch-422) — wire-boundary normaliser so SDK
+        # gate-vocabulary results don't 422 on the synchronous-ack path.
+        # Mirrors the sync ``VeraClient.record_action_batch``.
+        from .gate import normalize_record_for_wire  # local: avoid cycle
         if self._redactor is not None:
             records = [self._redact_payload_fields(r) for r in records]
+        records = [normalize_record_for_wire(r) for r in records]
         headers = {"Idempotency-Key": uuid.uuid4().hex}
         resp = await self._request_with_retry(
             "post", "/v1/actions/batch", json={"records": records}, headers=headers
