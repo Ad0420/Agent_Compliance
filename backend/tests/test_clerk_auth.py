@@ -674,26 +674,44 @@ async def test_clerk_unreachable_uses_cached_role_with_warn(
         algorithm="RS256",
         headers={"kid": _TEST_KID},
     )
-    # Capture at WARNING on the root logger (not scoped to a logger name —
-    # pytest's import-path can produce `app.middleware.clerk_auth` or
-    # `backend.app.middleware.clerk_auth` depending on conftest discovery,
-    # which silently breaks scoped capture). Also force propagate=True on
-    # the source logger in case a prior test disabled it.
-    clerk_logger = logging.getLogger("app.middleware.clerk_auth")
-    clerk_logger.propagate = True
-    backend_clerk_logger = logging.getLogger("backend.app.middleware.clerk_auth")
-    backend_clerk_logger.propagate = True
-    with caplog.at_level(logging.WARNING):
+    # Bypass pytest's caplog entirely. Two prior fix attempts confirmed
+    # the warning never reaches caplog under full-suite test order, even
+    # with propagate=True and root-logger capture. Suspect cause: pytest's
+    # caplog handler is detached or filtered by some upstream test config.
+    # Attach our own list-handler directly to the middleware's logger
+    # (both possible import-path names — see comment in prior fix attempt).
+    class _ListHandler(logging.Handler):
+        def __init__(self):
+            super().__init__(level=logging.WARNING)
+            self.records: list[logging.LogRecord] = []
+
+        def emit(self, record):  # type: ignore[override]
+            self.records.append(record)
+
+    _handler = _ListHandler()
+    _attached: list[logging.Logger] = []
+    for _name in ("app.middleware.clerk_auth", "backend.app.middleware.clerk_auth"):
+        _logger = logging.getLogger(_name)
+        _logger.setLevel(logging.WARNING)
+        _logger.addHandler(_handler)
+        _attached.append(_logger)
+
+    try:
         resp = await async_client.get(
             "/v1/dashboard/api-keys",
             headers={"Authorization": f"Bearer {token}"},
         )
+    finally:
+        for _logger in _attached:
+            _logger.removeHandler(_handler)
+
     assert resp.status_code == 200, resp.text
-    # Use rec.getMessage() — .message is lazy-populated by the formatter
-    # and can be empty even when the record was captured.
     assert any(
-        "freshness check failed" in rec.getMessage() for rec in caplog.records
-    ), f"caplog.text was: {caplog.text!r}; records={[(r.name, r.levelname, r.getMessage()) for r in caplog.records]}"
+        "freshness check failed" in r.getMessage() for r in _handler.records
+    ), (
+        f"warning never fired; "
+        f"records={[(r.name, r.levelname, r.getMessage()) for r in _handler.records]}"
+    )
 
 
 @pytest.mark.asyncio
