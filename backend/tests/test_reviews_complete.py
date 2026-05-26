@@ -467,10 +467,13 @@ async def test_complete_review_already_expired_returns_410_without_re_resolve(
     approval = await _seed_hitl_approval(
         db_session, org.id, expires_in_seconds=60
     )
-    # Pre-resolve as expired (sweeper path).
+    # Pre-resolve as expired (sweeper path). A6.5: _resolve_and_record
+    # no longer commits — the caller owns the transaction boundary.
     from app.services.approvals import _resolve_and_record
 
     await _resolve_and_record(db_session, approval, "expired")
+    await db_session.commit()
+    await db_session.refresh(approval)
     original_resolution_id = approval.resolution_record_id
 
     response = await async_client.post(

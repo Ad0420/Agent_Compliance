@@ -151,6 +151,27 @@ async def _resolve_and_record(
     final_status is one of: 'approved', 'rejected', 'expired'.
     Emits an ActionRecord with action_type='human_approval_resolved' and
     result='success' for approved, 'failure' for rejected/expired.
+
+    Wave 2D PR A6.5 — atomicity contract
+    ------------------------------------
+    This function performs **no** ``session.commit()`` of its own. All
+    writes (chain ``ActionRecord`` + ``Approval.status`` flip) land via
+    ``session.flush()`` so the caller can commit the vote write, the
+    resolution chain record, and the terminal status flip **in a single
+    transaction**. The earlier two-commit pattern (vote commit then
+    chain+status commit) released the ``SELECT … FOR UPDATE`` lock that
+    ``services/reviews.py::complete_review`` held across the call,
+    letting a concurrent caller observe a half-resolved row. See
+    A6 PR #224 Codex finding #1.
+
+    Webhook dispatch still fires inline here — ``dispatch_event`` is
+    fire-and-forget (schedules ``asyncio.create_task``) so it's safe to
+    run before the caller's commit. If the caller subsequently rolls
+    back, the webhook will reference a row that doesn't exist in the
+    canonical state; the subscriber's idempotency key
+    (``approval_id`` / ``review_id``) makes the spurious delivery a
+    no-op on retry. Callers that don't intend to commit MUST handle
+    rollback themselves.
     """
     result = "success" if final_status == "approved" else "failure"
 
@@ -169,15 +190,19 @@ async def _resolve_and_record(
             "decisions": approval.decisions,
         },
     )
+    # commit=False keeps the chain advance + the status flip below in
+    # the caller's outer transaction. See A6.5 contract above.
     resolution_record = await build_and_insert_record(
-        session, approval.org_id, resolution_record_data
+        session,
+        approval.org_id,
+        resolution_record_data,
+        commit=False,
     )
 
     approval.status = final_status
     approval.resolved_at = _now()
     approval.resolution_record_id = resolution_record.id
-    await session.commit()
-    await session.refresh(approval)
+    await session.flush()
 
     # ── Wave 2B PR A3 — dual emission ─────────────────────────────────
     # Legacy ``approval.resolved`` continues to fire with the pre-A3
@@ -240,15 +265,65 @@ async def _resolve_and_record(
     return approval
 
 
+def _is_sqlite_session(session: AsyncSession) -> bool:
+    """Mirror ``services.chain._is_sqlite`` without importing it.
+
+    SQLite ignores ``SELECT … FOR UPDATE`` (no row locks); Postgres
+    honours it. The flag gates the lock acquisition below.
+    """
+    url = str(session.bind.url) if session.bind else ""
+    return "sqlite" in url
+
+
+async def _lock_approval_row(
+    session: AsyncSession, org_id: str, approval_id: str
+) -> Optional[Approval]:
+    """Fetch the approval row under a row-level lock on Postgres.
+
+    Wave 2D PR A6.5: keeps the lock held across the vote write +
+    resolution chain record + status flip so a concurrent caller cannot
+    interleave between the writes. Closes Codex /review finding from
+    A6 #224 where the previous two-commit shape released the lock the
+    moment ``decide_approval`` committed the vote.
+
+    SQLite path falls back to ``session.get`` — the driver is
+    single-threaded and the in-process locks A6 added in
+    ``services.reviews`` cover same-process races in the test suite.
+    """
+    if _is_sqlite_session(session):
+        approval = await session.get(Approval, approval_id)
+    else:
+        result = await session.execute(
+            select(Approval)
+            .where(Approval.id == approval_id, Approval.org_id == org_id)
+            .with_for_update()
+        )
+        approval = result.scalar_one_or_none()
+    if approval is None or approval.org_id != org_id:
+        return None
+    return approval
+
+
 async def decide_approval(
     session: AsyncSession,
     org_id: str,
     approval_id: str,
     decision: ApprovalDecision,
 ) -> Approval:
-    """Record one reviewer's vote. Resolve if enough approvers have voted."""
-    approval = await session.get(Approval, approval_id)
-    if approval is None or approval.org_id != org_id:
+    """Record one reviewer's vote. Resolve if enough approvers have voted.
+
+    Wave 2D PR A6.5 — single-transaction atomicity
+    ----------------------------------------------
+    Vote append, terminal status flip, and resolution ``ActionRecord``
+    write commit together or roll back together. The row is fetched
+    under ``SELECT … FOR UPDATE`` on Postgres and the lock is held
+    until the single ``session.commit()`` at the end of the function,
+    so a concurrent caller blocks on the row lock rather than observing
+    a vote-without-status intermediate state. See the A6 #224 Codex
+    finding (lock released mid-flow on Postgres).
+    """
+    approval = await _lock_approval_row(session, org_id, approval_id)
+    if approval is None:
         raise HTTPException(status_code=404, detail="Approval not found")
 
     if approval.status != "pending":
@@ -257,9 +332,13 @@ async def decide_approval(
             detail=f"Approval is already {approval.status}",
         )
 
-    # Lazy expiration check
+    # Lazy expiration check. Falls into the single-transaction write
+    # path below; the 410 raise commits the expired status + chain
+    # record together.
     if approval.expires_at is not None and _now() > approval.expires_at:
         await _resolve_and_record(session, approval, "expired")
+        await session.commit()
+        await session.refresh(approval)
         raise HTTPException(status_code=410, detail="Approval has expired")
 
     # Dual-verification guard: same approver can't vote twice
@@ -291,20 +370,26 @@ async def decide_approval(
     # Rebind so SQLAlchemy detects the change on JSON column
     approval.decisions = [*approval.decisions, vote]
 
-    # Any rejection terminates immediately
+    # Compute terminal state in-memory; _resolve_and_record is no-op-
+    # safe to skip when the vote does not push the row over the
+    # threshold (stays pending).
+    terminal_status: Optional[str] = None
     if decision.decision == "reject":
-        await session.commit()
-        await session.refresh(approval)
-        return await _resolve_and_record(session, approval, "rejected")
+        terminal_status = "rejected"
+    else:
+        approve_count = sum(
+            1 for d in approval.decisions if d.get("decision") == "approve"
+        )
+        if approve_count >= approval.approvers_required:
+            terminal_status = "approved"
 
-    # Otherwise: count approvals, resolve if threshold met
-    approve_count = sum(1 for d in approval.decisions if d.get("decision") == "approve")
-    if approve_count >= approval.approvers_required:
-        await session.commit()
-        await session.refresh(approval)
-        return await _resolve_and_record(session, approval, "approved")
+    if terminal_status is not None:
+        # A6.5: chain record + status flip happen inside the SAME open
+        # transaction as the vote append. _resolve_and_record now uses
+        # flush() so the single commit below is the durability
+        # boundary.
+        await _resolve_and_record(session, approval, terminal_status)
 
-    # Not enough approvers yet — stay pending
     await session.commit()
     await session.refresh(approval)
     return approval
@@ -313,9 +398,15 @@ async def decide_approval(
 async def cancel_approval(
     session: AsyncSession, org_id: str, approval_id: str, canceller: str
 ) -> Approval:
-    """Admin or requesting agent cancels a pending approval."""
-    approval = await session.get(Approval, approval_id)
-    if approval is None or approval.org_id != org_id:
+    """Admin or requesting agent cancels a pending approval.
+
+    Wave 2D PR A6.5 — same single-transaction atomicity as
+    ``decide_approval``: cancel-vote append, terminal status flip,
+    and cancellation ``ActionRecord`` commit together under a held row
+    lock so a concurrent decider can't observe a half-cancelled row.
+    """
+    approval = await _lock_approval_row(session, org_id, approval_id)
+    if approval is None:
         raise HTTPException(status_code=404, detail="Approval not found")
     if approval.status != "pending":
         raise HTTPException(
@@ -333,7 +424,9 @@ async def cancel_approval(
     approval.status = "cancelled"
     approval.resolved_at = _now()
 
-    # Write a cancellation record to the chain
+    # Write a cancellation record to the chain. commit=False keeps the
+    # chain advance inside the outer transaction so the vote + status
+    # + chain record all commit or roll back together (A6.5 contract).
     resolution_record_data = ActionRecordCreate(
         action_name=approval.action_name,
         action_type="human_approval_resolved",
@@ -346,7 +439,7 @@ async def cancel_approval(
         reasoning={"final_status": "cancelled", "cancelled_by": canceller},
     )
     resolution_record = await build_and_insert_record(
-        session, org_id, resolution_record_data
+        session, org_id, resolution_record_data, commit=False
     )
     approval.resolution_record_id = resolution_record.id
 
@@ -396,7 +489,14 @@ async def get_approval_with_lazy_expiry(
         and approval.expires_at is not None
         and _now() > approval.expires_at
     ):
-        return await _resolve_and_record(session, approval, "expired")
+        # A6.5: _resolve_and_record no longer commits on its own —
+        # callers own the transaction boundary. Commit here so the
+        # lazy-expiry path stays equivalent to the pre-refactor
+        # behaviour (one read → one durable expiry transition).
+        await _resolve_and_record(session, approval, "expired")
+        await session.commit()
+        await session.refresh(approval)
+        return approval
     return approval
 
 

@@ -439,8 +439,11 @@ async def test_expired_review_is_not_treated_as_attestation_conflict(
     approval = await _seed_hitl_approval(
         db_session, org.id, expires_in_seconds=60
     )
-    # Sweeper path: row is already terminal-state expired.
+    # Sweeper path: row is already terminal-state expired. A6.5:
+    # _resolve_and_record no longer commits — caller owns the boundary.
     await _resolve_and_record(db_session, approval, "expired")
+    await db_session.commit()
+    await db_session.refresh(approval)
 
     r = await async_client.post(
         f"/v1/reviews/{approval.id}/complete",
