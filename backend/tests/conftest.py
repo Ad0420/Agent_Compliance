@@ -73,6 +73,33 @@ async def db_session(db_engine):
         yield session
 
 
+@pytest.fixture(autouse=True)
+def _patch_ssrf_dns_for_tests(monkeypatch):
+    """Wave 2D B3 — make synthetic test URLs resolve to a benign public IP.
+
+    The SSRF guard in ``services/webhook_url_validation.py`` rejects
+    hostnames whose DNS resolution fails (fail-closed). Most tests use
+    ``hooks.example.com`` / ``x.example.com`` / ``attacker.example``
+    style sentinel URLs that don't resolve, which would otherwise turn
+    every webhook test into ``400 ssrf_blocked``.
+
+    For tests, point all hostname lookups at a known public IP
+    (``93.184.216.34`` — example.com). Tests that need to assert the
+    SSRF guard itself patch ``socket.getaddrinfo`` directly inside the
+    test body, which takes precedence over this fixture's monkeypatch.
+    """
+    import socket as _socket
+    import app.services.webhook_url_validation as _v
+
+    def _fake_getaddrinfo(host, *args, **kwargs):
+        # If a test points at a literal IP it'll never hit this branch
+        # (the validator's literal-IP fast path runs first). For
+        # hostnames, return one synthetic public A record.
+        return [(_socket.AF_INET, _socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))]
+
+    monkeypatch.setattr(_v.socket, "getaddrinfo", _fake_getaddrinfo)
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _patch_async_session_local_for_webhooks(db_engine, monkeypatch):
     """Wave 2B PR A3 — point ``AsyncSessionLocal`` at the test engine.

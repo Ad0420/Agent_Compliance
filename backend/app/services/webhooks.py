@@ -78,6 +78,7 @@ from .webhook_retry import (
     MAX_ATTEMPTS,
     compute_next_retry_at,
 )
+from .webhook_url_validation import is_safe_outbound_url
 
 
 logger = logging.getLogger("vera.webhooks")
@@ -334,25 +335,36 @@ async def _attempt_delivery(delivery_id: str) -> bool:
     response_excerpt: Optional[str] = None
     started = _now()
     success = False
-    try:
-        async with httpx.AsyncClient(timeout=DELIVERY_TIMEOUT_SECONDS) as client:
-            response = await client.post(url, content=body_bytes, headers=headers)
-            status_code = response.status_code
-            success = 200 <= status_code < 300
-            try:
-                raw_body = getattr(response, "content", None)
-                # Defensive: tests pass MagicMock responses where
-                # ``content`` is itself a mock, not bytes. Only extract
-                # if we have real bytes.
-                if isinstance(raw_body, (bytes, bytearray)) and raw_body:
-                    response_excerpt = bytes(
-                        raw_body[:RESPONSE_BODY_EXCERPT_BYTES]
-                    ).decode("utf-8", errors="replace")
-            except Exception:
-                response_excerpt = None
-    except Exception as exc:  # pragma: no cover - exercised via tests w/ mocks
-        error_msg = repr(exc)
-        success = False
+    # ── SSRF re-check at delivery time (defense in depth) ──────────
+    # Even if the URL passed at registration, DNS could now resolve to
+    # an internal IP (DNS rebinding) or the subscription could pre-date
+    # this guard. If unsafe, skip the HTTP call entirely and force the
+    # delivery into the abort branch — these URLs are permanently
+    # unsafe; retrying gains nothing.
+    ssrf_safe, ssrf_reason = is_safe_outbound_url(url)
+    ssrf_blocked = not ssrf_safe
+    if ssrf_blocked:
+        error_msg = f"ssrf_blocked:{ssrf_reason}"
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=DELIVERY_TIMEOUT_SECONDS) as client:
+                response = await client.post(url, content=body_bytes, headers=headers)
+                status_code = response.status_code
+                success = 200 <= status_code < 300
+                try:
+                    raw_body = getattr(response, "content", None)
+                    # Defensive: tests pass MagicMock responses where
+                    # ``content`` is itself a mock, not bytes. Only extract
+                    # if we have real bytes.
+                    if isinstance(raw_body, (bytes, bytearray)) and raw_body:
+                        response_excerpt = bytes(
+                            raw_body[:RESPONSE_BODY_EXCERPT_BYTES]
+                        ).decode("utf-8", errors="replace")
+                except Exception:
+                    response_excerpt = None
+        except Exception as exc:  # pragma: no cover - exercised via tests w/ mocks
+            error_msg = repr(exc)
+            success = False
 
     duration_ms = max(
         0, int((_now() - started).total_seconds() * 1000)
@@ -388,7 +400,10 @@ async def _attempt_delivery(delivery_id: str) -> bool:
                 sub.last_delivery_status = "success"
                 sub.consecutive_failures = 0
         else:
-            if attempt_number >= MAX_ATTEMPTS:
+            # SSRF-blocked URLs are permanently unsafe — abort immediately
+            # rather than burning all MAX_ATTEMPTS retries on a target we
+            # already refused to reach.
+            if ssrf_blocked or attempt_number >= MAX_ATTEMPTS:
                 delivery.status = "aborted"
                 delivery.aborted_at = _now()
                 delivery.next_retry_at = None
