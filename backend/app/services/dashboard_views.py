@@ -140,25 +140,37 @@ def serialize_approval_for_dashboard(approval: Approval) -> dict[str, Any]:
 def serialize_decision_for_dashboard(
     decision: CustomerDecisionResponse,
 ) -> dict[str, Any]:
-    """Pass-through serializer for the Customer Decisions feed.
+    """Strip PHI from a Customer Decisions feed row.
 
-    ``services/decisions.list_customer_decisions`` already constructs a
-    PHI-free composite: it pulls only the whitelisted gate-metadata
-    fields from ``Approval.context`` (via ``_build_ruling``), surfaces
-    operational webhook-delivery status, and never touches
-    ``ActionRecord.input_data`` or ``Approval.action_summary``.
+    ``services/decisions._build_ruling`` populates
+    ``CustomerDecisionRuling.reason_detail`` from
+    ``Approval.action_summary`` — which is a human-readable narrative
+    that the clinical gates commonly write with PHI baked in
+    ("Commit note for encounter MRN-31504806: 1 new diagnosis, 2
+    controlled medications."). That's fine for the SDK reviewer surface
+    (in-band, in-scope for the customer's BAA) but it cannot reach the
+    dashboard.
 
-    This function exists so the route layer can call a single
-    ``serialize_decision_for_dashboard`` regardless of which feed the
-    response originated from — keeps the dashboard-vs-SDK split visible
-    at the route layer and gives us a single place to add tighter strip
-    logic if the join service ever starts surfacing more PHI.
+    We project the response down to:
+
+    * All operational fields (id, sequence_number, timestamps, agent/
+      action names, result, webhook delivery, hitl_expires_at).
+    * Ruling gate-metadata only (effect / reason / citation / review_id
+      / fix_url / required_role / gate_name). ``reason_detail`` is
+      nulled — that's the PHI carrier.
 
     Returns a dict (not the Pydantic model) so the call shape matches
     ``serialize_approval_for_dashboard``. The route's ``response_model``
-    re-validates the shape on the way out.
+    re-validates and re-shapes the dict on the way out.
     """
-    return decision.model_dump()
+    payload = decision.model_dump()
+    ruling = payload.get("ruling")
+    if ruling is not None:
+        # ``reason_detail`` comes from Approval.action_summary; null it
+        # so the dashboard cannot read the narrative PHI the gate wrote
+        # for the in-band reviewer.
+        ruling["reason_detail"] = None
+    return payload
 
 
 def is_dashboard_request(api_key: object | None) -> bool:

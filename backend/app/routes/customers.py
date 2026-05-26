@@ -544,19 +544,19 @@ async def list_customer_decisions_endpoint(
 
     PHI handling (W1.2 — HIPAA minimum-necessary)
     ---------------------------------------------
-    The Decisions feed is **already PHI-clean by construction**: the
-    join service only surfaces gate-metadata fields from
-    ``Approval.context`` (via ``_build_ruling``) plus operational
-    webhook + timing fields. No ``data_subject_id``, no free-text PHI.
-    Both dashboard (Clerk) and SDK (API key) callers see the same
-    ``CustomerDecisionResponse`` shape — the schema itself encodes the
-    minimum-necessary contract.
-
-    We still route through ``serialize_decision_for_dashboard`` for
-    dashboard callers so the PHI-redaction policy stays visible at the
-    route layer. If the join service ever starts surfacing more
-    ``Approval.context`` keys, the strip would happen here without a
-    route refactor.
+    Most of the Decisions feed is PHI-clean by construction (the join
+    service only surfaces whitelisted gate-metadata from
+    ``Approval.context`` plus operational webhook + timing fields and
+    never carries ``data_subject_id``). One leak vector remains: the
+    Ruling's ``reason_detail`` field, which ``_build_ruling`` populates
+    from ``Approval.action_summary`` — gates routinely write
+    PHI-bearing narratives there ("Commit note for encounter
+    MRN-31504806…"). ``serialize_decision_for_dashboard`` nulls
+    ``reason_detail`` for dashboard callers so the dashboard sees the
+    gate badge + role but not the patient-bearing narrative. SDK
+    callers (API-key bearer) keep the full shape — they're in-band, in
+    scope for the customer's BAA, and need ``reason_detail`` for the
+    customer's own review surface.
     """
     org_id, api_key = auth
     # Reuse the org-scoped lookup helper so the 404 message matches the
