@@ -40,6 +40,24 @@ class Settings(BaseSettings):
     # expiry writes a chain ActionRecord (acquires the per-org lock).
     approval_expiry_batch_size: int = 20
 
+    # ── Phase 3 Wave 3A.b: checkpoint cadence sweeper ─────────────────
+    # Background asyncio task that walks each org once per tick and
+    # triggers ``services.checkpoint.create_checkpoint`` when the org's
+    # ``checkpoint_cadence`` says the last checkpoint is overdue
+    # (daily: >24h; hourly: >1h; disabled: never). Separate from the
+    # webhook sweeper (different concern, different cadence). Disabled
+    # in tests by default — see ``backend/tests/conftest.py``.
+    checkpoint_sweeper_enabled: bool = True
+    # Tick cadence — how often the sweeper scans the org table looking
+    # for due checkpoints. 5 minutes (300s) is much smaller than the
+    # finest cadence threshold (1h) so worst-case lag for an hourly org
+    # is one tick. Tunable down for tests that exercise the loop.
+    checkpoint_sweeper_tick_seconds: int = 300
+    # Max orgs the sweeper considers per tick. The query is a single
+    # LEFT JOIN against ``checkpoints``, so the cost is bounded by the
+    # number of orgs — typical Vera deploy has hundreds, not millions.
+    checkpoint_sweeper_batch_size: int = 100
+
     # Max size for JSON blob fields (bytes of serialized JSON)
     max_json_field_size: int = 1_000_000  # 1 MB
 

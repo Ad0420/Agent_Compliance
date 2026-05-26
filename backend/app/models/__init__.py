@@ -19,6 +19,7 @@ from .customer import Customer
 from .customer_agent import CustomerAgent
 from .baa_agreement import BAAAgreement
 from .baa_scope import BAAScope
+from .kms_key import KmsKey
 from .staff_audit import StaffAuditLog
 
 __all__ = [
@@ -45,5 +46,6 @@ __all__ = [
     "CustomerAgent",
     "BAAAgreement",
     "BAAScope",
+    "KmsKey",
     "StaffAuditLog",
 ]

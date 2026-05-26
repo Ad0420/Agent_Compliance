@@ -294,6 +294,28 @@ async def generate_api_key(
     session.add(api_key)
     await session.commit()
     await session.refresh(api_key)
+
+    # Phase 3 Wave 3A.b — auto-promote checkpoint cadence on first live
+    # key. Done after the key is committed so an UPDATE failure can't
+    # roll back the key creation. Idempotent on the org row (skips if
+    # already 'hourly' or 'disabled' — operators who explicitly chose
+    # 'disabled' aren't second-guessed here). Lazy import to keep this
+    # module's import surface narrow.
+    if kind == "live":
+        from .checkpoint_cadence import (
+            maybe_promote_org_to_hourly_cadence,
+        )
+        try:
+            await maybe_promote_org_to_hourly_cadence(session, org_id)
+        except Exception:
+            # Promotion is a UX improvement, not a correctness gate —
+            # an unexpected error here must NOT cause the live-key
+            # creation to look failed to the caller. Log + continue.
+            logger.warning(
+                "checkpoint cadence auto-promotion failed for org %s",
+                org_id, exc_info=True,
+            )
+
     return raw_key, api_key
 
 
