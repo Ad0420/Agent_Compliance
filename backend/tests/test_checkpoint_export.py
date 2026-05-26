@@ -615,7 +615,7 @@ def test_migration_upgrade_creates_s3_export_arn_and_table(
     monkeypatch.setenv("DATABASE_URL", db_url)
     cfg = Config(alembic_ini)
     cfg.set_main_option("sqlalchemy.url", db_url)
-    command.upgrade(cfg, "u2r5s6t7u8v9")
+    command.upgrade(cfg, "v3s6t7u8v9w0")
 
     engine = sa.create_engine(db_url)
     insp = sa.inspect(engine)
@@ -665,7 +665,7 @@ def test_migration_is_idempotent(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", db_url)
     cfg = Config(alembic_ini)
     cfg.set_main_option("sqlalchemy.url", db_url)
-    command.upgrade(cfg, "u2r5s6t7u8v9")
+    command.upgrade(cfg, "v3s6t7u8v9w0")
 
     # Re-run the migration's upgrade() directly via the alembic
     # operations context (same trick as test_checkpoint_cadence.py).
@@ -673,9 +673,9 @@ def test_migration_is_idempotent(tmp_path, monkeypatch):
         backend_root,
         "alembic",
         "versions",
-        "u2r5s6t7u8v9_add_s3_export_arn_and_checkpoint_exports.py",
+        "v3s6t7u8v9w0_add_s3_export_arn_and_checkpoint_exports.py",
     )
-    spec = importlib.util.spec_from_file_location("u2_mig", mig_file)
+    spec = importlib.util.spec_from_file_location("v3_mig", mig_file)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 

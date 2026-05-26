@@ -1,6 +1,6 @@
 """add Organization.s3_export_arn + checkpoint_exports (Phase 3 Wave 3B.1)
 
-Revision ID: u2r5s6t7u8v9
+Revision ID: v3s6t7u8v9w0
 Revises: t1q4r5s6t7u8
 Create Date: 2026-05-25
 
@@ -40,7 +40,7 @@ import sqlalchemy as sa
 from alembic import op
 
 
-revision = "u2r5s6t7u8v9"
+revision = "v3s6t7u8v9w0"
 down_revision = "t1q4r5s6t7u8"
 branch_labels = None
 depends_on = None
