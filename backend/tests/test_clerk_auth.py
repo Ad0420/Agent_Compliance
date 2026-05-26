@@ -652,7 +652,10 @@ async def test_clerk_unreachable_uses_cached_role_with_warn(
     monkeypatch.setattr(settings, "clerk_secret_key", "sk_test_fake")
     monkeypatch.setattr(settings, "membership_freshness_seconds", 60)
 
+    boom_calls = {"n": 0}
+
     async def _boom(**_kwargs):
+        boom_calls["n"] += 1
         raise httpx.ConnectError("synthetic outage")
 
     monkeypatch.setattr(
@@ -706,10 +709,20 @@ async def test_clerk_unreachable_uses_cached_role_with_warn(
             _logger.removeHandler(_handler)
 
     assert resp.status_code == 200, resp.text
+    # Diagnostic: confirm the patched function was actually called.
+    # If boom_calls['n']==0, the freshness check was bypassed (a prior
+    # test mutated state — settings, OrgMembership.updated_at, etc.) so
+    # _boom never ran and no warning could fire.
+    assert boom_calls["n"] >= 1, (
+        f"_boom never called; freshness check path was bypassed. "
+        f"settings.membership_freshness_seconds={settings.membership_freshness_seconds}, "
+        f"settings.clerk_secret_key={settings.clerk_secret_key!r}, "
+        f"handler_records={[(r.name, r.levelname, r.getMessage()) for r in _handler.records]}"
+    )
     assert any(
         "freshness check failed" in r.getMessage() for r in _handler.records
     ), (
-        f"warning never fired; "
+        f"warning never fired despite _boom being called {boom_calls['n']} times; "
         f"records={[(r.name, r.levelname, r.getMessage()) for r in _handler.records]}"
     )
 
