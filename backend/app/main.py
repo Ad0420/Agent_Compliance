@@ -24,6 +24,7 @@ from .routes import (
     gates_router,
     reviews_router,
     webhooks_router,
+    kms_router,
 )
 from .routes.dashboard_demo import router as dashboard_demo_router
 from .routes.dashboard_api_keys import router as dashboard_api_keys_router
@@ -148,6 +149,9 @@ app.include_router(approvals_router, prefix="/v1")
 app.include_router(gates_router, prefix="/v1")
 app.include_router(reviews_router, prefix="/v1")
 app.include_router(webhooks_router, prefix="/v1")
+# Phase 3 Wave 3A.a — KMS key history (eng review finding 1A).
+# Read-only history dump consumed by Wave 3C `vera verify --offline`.
+app.include_router(kms_router, prefix="/v1")
 # Dashboard routes — authenticated via Clerk JWT (humans). The router defines
 # its own /v1/dashboard prefix, so no extra prefix here. Existing /v1/* routes
 # above continue to use API-key auth (machines).
