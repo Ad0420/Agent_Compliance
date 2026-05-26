@@ -41,6 +41,7 @@ import click
 
 from . import _cli_format as _fmt
 from .client import VeraClient
+from .verify.cli import register_verify_commands
 from .errors import (
     VeraAuthError,
     VeraError,
@@ -72,6 +73,12 @@ except Exception:  # pragma: no cover — defensive
 @click.version_option(_SDK_VERSION, package_name="vera-sdk")
 def cli() -> None:
     """Vera SDK command-line interface."""
+
+
+# Phase 3 Wave 3C.1 — attach the ``verify`` subcommand. The implementation
+# lives in ``vera.verify.cli`` so the offline pipeline can be exercised
+# without dragging the rest of cli.py into the test scope.
+register_verify_commands(cli)
 
 
 @cli.group()
