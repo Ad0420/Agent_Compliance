@@ -40,6 +40,17 @@ class Settings(BaseSettings):
     # expiry writes a chain ActionRecord (acquires the per-org lock).
     approval_expiry_batch_size: int = 20
 
+    # ── Phase 3 Wave 3B.1: customer S3 mirror exporter ─────────────────
+    # When enabled, ``services.checkpoint.create_checkpoint`` schedules a
+    # background asyncio task to mirror every sealed checkpoint to the
+    # org's configured S3 bucket (column ``Organization.s3_export_arn``).
+    # Disabled in tests by default so the export side effect doesn't
+    # race other tests that share the StaticPool in-memory DB
+    # connection. Specific tests opt in via ``monkeypatch.setattr(
+    # settings, "checkpoint_export_enabled", True)`` or by calling
+    # ``export_checkpoint_to_customer_mirror`` directly.
+    checkpoint_export_enabled: bool = True
+
     # ── Phase 3 Wave 3A.b: checkpoint cadence sweeper ─────────────────
     # Background asyncio task that walks each org once per tick and
     # triggers ``services.checkpoint.create_checkpoint`` when the org's

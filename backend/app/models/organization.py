@@ -101,6 +101,29 @@ class Organization(Base):
         default="daily",
     )
 
+    # Phase 3 Wave 3B.1 — Customer S3 mirror export target. Set via the
+    # off-Vera mirror onboarding flow (POST /v1/organizations/me/off-vera-
+    # mirror/validate; persistence lives behind a separate write endpoint
+    # — for v1 this column is populated via direct admin tooling /
+    # support workflow until the dashboard "Save" wiring lands).
+    #
+    # When NULL the checkpoint exporter SKIPS this org — they get
+    # checkpoints sealed in Vera's own external store but no customer-
+    # owned mirror. When set, every sealed checkpoint is asynchronously
+    # mirrored to ``<arn>/<org_id>/<checkpoint_id>.json`` with S3 Object
+    # Lock COMPLIANCE mode + 7-year retention. Failures are surfaced via
+    # the checkpoint_exports table (and the org's webhook channel if
+    # configured); they never block the in-band checkpoint sealing.
+    #
+    # Already-syntax-validated at write time by
+    # ``services.external_store.validate_s3_arn_syntax``. The exporter
+    # does NOT re-validate — if a bad ARN somehow gets persisted, the
+    # boto3 call fails and a failure row lands in checkpoint_exports
+    # with a structured reason.
+    s3_export_arn: Mapped[Optional[str]] = mapped_column(
+        String(512), nullable=True
+    )
+
     # Relationships
     agents: Mapped[list["Agent"]] = relationship("Agent", back_populates="organization")
     action_records: Mapped[list["ActionRecord"]] = relationship(

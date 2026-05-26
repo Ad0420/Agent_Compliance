@@ -21,6 +21,7 @@ from .baa_agreement import BAAAgreement
 from .baa_scope import BAAScope
 from .kms_key import KmsKey
 from .staff_audit import StaffAuditLog
+from .checkpoint_export import CheckpointExport, EXPORT_STATUSES
 
 __all__ = [
     "Base",
@@ -48,4 +49,6 @@ __all__ = [
     "BAAScope",
     "KmsKey",
     "StaffAuditLog",
+    "CheckpointExport",
+    "EXPORT_STATUSES",
 ]

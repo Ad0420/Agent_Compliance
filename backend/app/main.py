@@ -16,6 +16,7 @@ from .routes import (
     verification_router,
     organizations_router,
     checkpoints_router,
+    checkpoints_by_date_router,
     customers_router,
     export_router,
     register_router,
@@ -127,10 +128,20 @@ async def _flatten_dict_detail(
     ``detail`` values continue to round-trip as ``{"detail": "<string>"}``
     (preserving FastAPI's default for unstructured errors).
     """
+    # Preserve any headers the route handler attached (e.g. ``Retry-After``
+    # on 409 ``checkpoint_pending``). FastAPI's default handler drops them
+    # when the body is rewritten; we replicate the route's intent.
+    headers = getattr(exc, "headers", None)
     if isinstance(exc.detail, dict):
-        return JSONResponse(status_code=exc.status_code, content=exc.detail)
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=exc.detail,
+            headers=headers,
+        )
     return JSONResponse(
-        status_code=exc.status_code, content={"detail": exc.detail}
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers=headers,
     )
 
 
@@ -152,6 +163,10 @@ async def health_check():
 app.include_router(actions_router, prefix="/v1")
 app.include_router(agents_router, prefix="/v1")
 app.include_router(checkpoints_router, prefix="/v1")
+# Phase 3 Wave 3B.1 — GET /v1/checkpoints/{date} for auditor diff workflow.
+# Separate from the /v1/verify/checkpoints router above (different prefix
+# + different IAM model: this one supports staff X-Org-Id reads).
+app.include_router(checkpoints_by_date_router, prefix="/v1")
 app.include_router(customers_router, prefix="/v1")
 app.include_router(verification_router, prefix="/v1")
 app.include_router(organizations_router, prefix="/v1")
