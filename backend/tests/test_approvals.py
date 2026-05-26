@@ -343,8 +343,17 @@ async def test_api_decide_approval_happy_path(async_client, org_and_key):
 
 
 @pytest.mark.asyncio
-async def test_api_decide_requires_admin(async_client, org_and_key, db_session):
-    """Decide endpoint rejects non-admin keys."""
+async def test_api_decide_requires_write_not_admin(async_client, org_and_key, db_session):
+    """Wave 2D follow-up W1.1 — decide endpoint accepts ``write`` keys.
+
+    Closes phase2-acceptance-findings
+    ``require_permission-admin-too-strict-on-decide``: real reviewers
+    (attending physicians, nurses) should never need admin keys. The
+    security boundary is now the reviewer-role check inside
+    ``decide_approval`` for gated approvals; the API-key permission only
+    gates whether the caller can hit the endpoint at all. Read-only keys
+    still 403.
+    """
     org, raw_admin, _ = org_and_key
     headers_admin = {"Authorization": f"Bearer {raw_admin}"}
 
@@ -355,18 +364,38 @@ async def test_api_decide_requires_admin(async_client, org_and_key, db_session):
     )
     approval_id = create_r.json()["id"]
 
-    # Make a write-only key for the same org
+    # Write-only key passes — relaxed from admin requirement (W1.1).
+    # The seed approval is un-gated (no required_role), so no
+    # reviewer_role is needed.
     raw_write, _ = await generate_api_key(
         db_session, org.id, "writer-key", ["read", "write"]
     )
     headers_write = {"Authorization": f"Bearer {raw_write}"}
-
     r = await async_client.post(
         f"/v1/approvals/{approval_id}/decide",
         json={"decision": "approve", "approver": "bob"},
         headers=headers_write,
     )
-    assert r.status_code == 403
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "approved"
+
+    # Read-only key still 403 — write IS the minimum.
+    raw_read, _ = await generate_api_key(
+        db_session, org.id, "reader-key", ["read"]
+    )
+    headers_read = {"Authorization": f"Bearer {raw_read}"}
+    create_r2 = await async_client.post(
+        "/v1/approvals",
+        json={"agent_name": "a", "action_name": "x", "context": {}},
+        headers=headers_admin,
+    )
+    approval_id2 = create_r2.json()["id"]
+    r2 = await async_client.post(
+        f"/v1/approvals/{approval_id2}/decide",
+        json={"decision": "approve", "approver": "bob"},
+        headers=headers_read,
+    )
+    assert r2.status_code == 403
 
 
 @pytest.mark.asyncio

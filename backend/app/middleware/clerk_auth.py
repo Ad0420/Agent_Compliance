@@ -334,10 +334,23 @@ def require_clerk_role(allowed_roles: Iterable[str]):
         )
         membership = result.scalar_one_or_none()
         if membership is None:
-            raise HTTPException(
-                status_code=403,
-                detail="Not a member of this organization",
+            # Self-heal a missing OrgMembership by reconciling against
+            # Clerk's REST API as source-of-truth. See
+            # services/clerk_reconcile.py for the webhook gap modes this
+            # closes. Lazy import to avoid the auth ↔ reconcile import
+            # cycle (reconcile imports helpers from this module).
+            from ..services.clerk_reconcile import reconcile_membership_from_clerk
+
+            membership = await reconcile_membership_from_clerk(
+                session,
+                clerk_user_id=clerk_user_id,
+                clerk_org_id=clerk_org_id,
             )
+            if membership is None:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Not a member of this organization",
+                )
 
         # Defense-in-depth freshness re-check against Clerk's REST API.
         # Skipped fast when the row was recently touched (common case) or

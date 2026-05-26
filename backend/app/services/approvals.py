@@ -23,6 +23,7 @@ from ..schemas.action import ActionRecordCreate
 from ..schemas.approval import ApprovalCreate, ApprovalDecision
 from .chain import build_and_insert_record
 from .kms import get_kms
+from .reviewer_roles import is_role_sufficient
 from .webhooks import dispatch_event
 
 logger = logging.getLogger("vera.approvals")
@@ -30,6 +31,32 @@ logger = logging.getLogger("vera.approvals")
 
 def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _insufficient_role_detail(
+    review_id: str, required_role: str | None, reviewer_role: str
+) -> dict[str, object]:
+    """Flat 403 envelope mirroring ``services.reviews._insufficient_role_detail``.
+
+    Wave 2D follow-up W1.1 — the legacy ``POST /v1/approvals/{id}/decide``
+    endpoint now enforces the same reviewer-role hierarchy A4's
+    ``POST /v1/reviews/{id}/complete`` does. The error shape is
+    duplicated (not imported) on purpose: ``services.reviews`` already
+    imports from ``services.approvals`` — pulling the helper the other
+    way would introduce a circular import. Keep the two envelope shapes
+    in lock-step manually; the ``test_legacy_decide_role_enforcement``
+    tests pin both payloads to the same fields.
+    """
+    return {
+        "code": "reviewer_credentials_insufficient",
+        "review_id": review_id,
+        "required_role": required_role,
+        "reviewer_role": reviewer_role,
+        "detail": (
+            f"Reviewer role {reviewer_role!r} does not satisfy "
+            f"required role {required_role!r}."
+        ),
+    }
 
 
 def _sign_decision_message(
@@ -321,6 +348,28 @@ async def decide_approval(
     so a concurrent caller blocks on the row lock rather than observing
     a vote-without-status intermediate state. See the A6 #224 Codex
     finding (lock released mid-flow on Postgres).
+
+    Wave 2D follow-up W1.1 — reviewer-role enforcement
+    --------------------------------------------------
+    Backports A4's role check (``services.reviews.complete_review``)
+    to this legacy path so callers deciding on gated approvals (those
+    A2 stashed ``required_role`` on) can no longer silently approve
+    with the wrong role:
+
+    * ``context.required_role`` is None → un-gated, any reviewer passes
+      (legacy Phase 1 behaviour preserved).
+    * ``context.required_role`` set + ``decision.reviewer_role`` omitted
+      → 400 ``reviewer_role_required``.
+    * ``context.required_role`` set + role insufficient → 403
+      ``reviewer_credentials_insufficient`` with the same flat envelope
+      A4 uses; sets ``reviewed_below_threshold=True`` and writes a
+      chain record; approval stays pending so a higher-role reviewer
+      can still resolve it.
+
+    Closes phase2-acceptance-findings
+    ``legacy-decide-no-role-enforcement`` (Critical) +
+    ``require_permission-admin-too-strict-on-decide`` (Medium — the
+    route-level permission relaxation is in ``routes/approvals.py``).
     """
     approval = await _lock_approval_row(session, org_id, approval_id)
     if approval is None:
@@ -340,6 +389,94 @@ async def decide_approval(
         await session.commit()
         await session.refresh(approval)
         raise HTTPException(status_code=410, detail="Approval has expired")
+
+    # ── W1.1 reviewer-role enforcement ────────────────────────────────
+    # Mirrors ``services.reviews.complete_review``. Runs BEFORE the
+    # dual-verification guard so an under-credentialed reviewer's
+    # attempt is recorded as ``reviewer_credentials_insufficient``
+    # rather than potentially being swallowed by the "already voted"
+    # branch. No-op for un-gated legacy approvals where A2 didn't
+    # stash a ``required_role`` in ``context``.
+    context = approval.context or {}
+    required_role = context.get("required_role")
+    gate_name = context.get("gate_name")
+
+    if required_role is not None:
+        if decision.reviewer_role is None:
+            # Backward-compat callers who never sent ``reviewer_role``
+            # used to slip through silently; surface the requirement
+            # explicitly so they can't approve a gated review by
+            # accident. 400 (not 403) because the request shape is the
+            # problem, not the reviewer's credentials.
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "reviewer_role_required",
+                    "review_id": approval.id,
+                    "required_role": required_role,
+                    "detail": (
+                        "This approval is gated with required_role="
+                        f"{required_role!r}; decide calls must include "
+                        "a reviewer_role."
+                    ),
+                },
+            )
+
+        if not is_role_sufficient(decision.reviewer_role, required_role):
+            # Below-threshold callback. Write the chain record + flip
+            # the flag, then raise 403. We commit BEFORE raising so the
+            # audit row is durable even if the 403 response gets lost
+            # on the wire — matches the pattern in
+            # ``services.reviews._complete_review_locked``.
+            record_data = ActionRecordCreate(
+                action_name=approval.action_name,
+                action_type="reviewer_credentials_insufficient",
+                agent_name=approval.requested_by_agent,
+                data_subject_id=approval.data_subject_id,
+                authorized_by=f"reviewer:{decision.approver}",
+                authorization_scope=approval.risk_tier,
+                result="failure",
+                input_data={
+                    "review_id": approval.id,
+                    "request_record_id": approval.request_record_id,
+                },
+                reasoning={
+                    "required_role": required_role,
+                    "reviewer_role": decision.reviewer_role,
+                    "reviewer_id": decision.approver,
+                    "gate_name": gate_name,
+                    "attempted_decision": decision.decision,
+                    "note": decision.note,
+                    # Disambiguate from A4's path so audit-PDF
+                    # generators can render endpoint-specific copy if
+                    # they want; both endpoints share action_type.
+                    "endpoint": "legacy_decide",
+                },
+            )
+            await build_and_insert_record(session, org_id, record_data)
+
+            approval.reviewed_below_threshold = True
+            await session.commit()
+            await session.refresh(approval)
+
+            logger.info(
+                "decide_approval.insufficient_role",
+                extra={
+                    "review_id": approval.id,
+                    "org_id": org_id,
+                    "required_role": required_role,
+                    "reviewer_role": decision.reviewer_role,
+                    "reviewer_id": decision.approver,
+                    "gate_name": gate_name,
+                },
+            )
+
+            raise HTTPException(
+                status_code=403,
+                detail=_insufficient_role_detail(
+                    approval.id, required_role, decision.reviewer_role
+                ),
+            )
 
     # Dual-verification guard: same approver can't vote twice
     existing_approvers = {d.get("approver") for d in approval.decisions}
