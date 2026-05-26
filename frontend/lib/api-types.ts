@@ -738,18 +738,24 @@ export interface ReviewRecommendationsResponse {
   model: string;
 }
 
-// ── Wave 2D PR C2 — Review queue page (HITL completion) ──────────────────
+// ── Wave 2D PR C2 — POST /v1/reviews/{review_id}/complete wire shape ─────
 //
-// Body shape for ``POST /v1/reviews/{review_id}/complete`` — mirrors the
-// backend ``ReviewCompletionInput`` schema (backend/app/schemas/review.py).
-// Field constraints mirror the server's pydantic bounds verbatim so the
-// dashboard form catches input violations before they hit the wire:
+// Body shape mirrors the backend ``ReviewCompletionInput`` schema
+// (backend/app/schemas/review.py). Field constraints match the server's
+// pydantic bounds verbatim:
 //
 //   * reviewer_role: min_length=1, max_length=64
 //   * reviewer_id:   min_length=1, max_length=128
-//   * note:          max_length=2000 (regulation per spec requires a comment
-//                    of at least 10 chars on approve/reject — enforced UI-side)
+//   * note:          max_length=2000 (regulation requires a comment of
+//                    at least 10 chars on approve/reject — enforced by
+//                    the customer-EHR caller, not by the dashboard;
+//                    W2.2 removed the dashboard's invocation of this
+//                    endpoint).
 //   * signature:     max_length=512 (Phase 4 will verify; Phase 2 free-form)
+//
+// W2.2 — the dashboard does NOT call this endpoint anymore. The types
+// stay so ScribeMD's in-band caller + any future in-band UI share one
+// TypeScript contract with the backend schema.
 export interface CompleteReviewInput {
   decision: "approve" | "reject";
   reviewer_role: string;
