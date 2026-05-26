@@ -16,14 +16,17 @@ This is what `vera verify --offline <bundle.tar.gz>` does under the hood:
   3. Exit 0 if every record verifies; exit 1 otherwise with the first
      failure printed to stderr.
 
-The walkthrough handles two KMS modes:
+The walkthrough handles three KMS modes:
 
-  hmac-sha256       — verifier needs the shared secret out-of-band, read
-                      from VERA_HMAC_SECRET. Without it, the verifier
-                      can confirm Merkle structure but not the signature.
-  rsa-pss-sha256    — verifier reads `public_key_pem` from kms_keys.json
-                      and validates the signature with cryptography>=42.
-                      Fully self-contained — no shared secret required.
+  hmac-sha256        — verifier needs the shared secret out-of-band, read
+                       from VERA_HMAC_SECRET. Without it, the verifier
+                       can confirm Merkle structure but not the signature.
+  kms-hmac-sha256    — AWS KMS HMAC. Same on-the-wire signature shape as
+                       hmac-sha256 (AWS KMS produces standard HMAC-SHA256
+                       output); the verifier handles both as one branch.
+  rsa-pss-sha256     — verifier reads `public_key_pem` from kms_keys.json
+                       and validates the signature with cryptography>=42.
+                       Fully self-contained — no shared secret required.
 
 This file is intentionally readable as a specification of the bundle
 shape. Production code in `vera.verify` (the subpackage refactored in
@@ -57,17 +60,51 @@ class VerificationError(Exception):
 # ── Bundle extraction ───────────────────────────────────────────────────
 
 
+def _safe_extract_member(member: tarfile.TarInfo, dest: Path) -> None:
+    """Reject any tar member that would write outside `dest` or use unsafe
+    features. Mirrors what tarfile's `data` filter does (Python 3.12+; also
+    backported to 3.10.12 / 3.11.4 as a fix for CVE-2007-4559), implemented
+    by hand so the verifier works on every Python the SDK supports (3.10+).
+    """
+    if member.name.startswith("/") or ".." in Path(member.name).parts:
+        raise VerificationError(
+            "extract_unsafe",
+            f"bundle member {member.name!r} has an absolute or traversing path.",
+        )
+    target = (dest / member.name).resolve()
+    try:
+        target.relative_to(dest.resolve())
+    except ValueError as exc:
+        raise VerificationError(
+            "extract_unsafe",
+            f"bundle member {member.name!r} resolves outside the extract dir.",
+        ) from exc
+    if member.issym() or member.islnk():
+        raise VerificationError(
+            "extract_unsafe",
+            f"bundle member {member.name!r} is a symlink or hardlink; refusing.",
+        )
+    if member.isdev() or member.isfifo():
+        raise VerificationError(
+            "extract_unsafe",
+            f"bundle member {member.name!r} is a device or FIFO; refusing.",
+        )
+
+
 def _extract_bundle(bundle_path: Path) -> Path:
-    """Extract `bundle_path` into a fresh tempdir; return the work dir."""
+    """Extract `bundle_path` into a fresh tempdir; return the work dir.
+
+    Each member is validated by `_safe_extract_member` before extraction:
+    no absolute paths, no traversal segments, no symlinks/hardlinks, no
+    device files. Equivalent to what tarfile's `data` filter enforces on
+    Python 3.12+; reimplemented here so the verifier is safe on every
+    SDK-supported runtime (3.10+).
+    """
     work = Path(tempfile.mkdtemp(prefix="vera_verify_"))
     with tarfile.open(bundle_path, "r:gz") as tar:
-        # `data` filter (Python 3.12+) blocks path-traversal and absolute
-        # arcnames; fall back to no filter on older runtimes with a warning
-        # the verifier surface should normally pin to 3.12+.
-        try:
-            tar.extractall(work, filter="data")
-        except TypeError:
-            tar.extractall(work)
+        for member in tar.getmembers():
+            _safe_extract_member(member, work)
+        tar.extractall(work)  # noqa: S202 — every member validated above
     return work
 
 
@@ -112,7 +149,10 @@ def _verify_signature(
     public_key_pem: str | None,
     hmac_secret: bytes | None,
 ) -> bool:
-    if algorithm == "hmac-sha256":
+    if algorithm in {"hmac-sha256", "kms-hmac-sha256"}:
+        # AWS KMS HMAC (kms-hmac-sha256) produces standard HMAC-SHA256
+        # output, so the verification path is identical to LocalKMS HMAC.
+        # See backend/app/services/kms.py for the algorithm constants.
         if hmac_secret is None:
             raise VerificationError(
                 "hmac_secret_missing",

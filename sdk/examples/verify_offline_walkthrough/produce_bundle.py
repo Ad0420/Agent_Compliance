@@ -41,11 +41,9 @@ import argparse
 import hashlib
 import hmac
 import json
-import os
 import shutil
 import sys
 import tarfile
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -386,7 +384,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  records:     {len(RECORDS)}")
     print(f"  checkpoints: {len(CHECKPOINT_WINDOWS)}")
     print(f"  kms_key_id:  {KMS_KEY_ID}")
-    print(f"  hmac_secret: {'set out-of-band — see verify_bundle.py'}")
+    print("  hmac_secret: set out-of-band — see verify_bundle.py")
     return 0
 
 

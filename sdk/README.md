@@ -1056,7 +1056,7 @@ bundle.tar.gz
 | `generated_at` | ISO timestamp | When the bundle was produced. |
 | `record_count` | int | Total records included. |
 | `checkpoints` | array | One summary entry per sealed checkpoint (`id`, `date`, `record_count`, `merkle_root`). |
-| `kms_algorithm` | string | Dominant signing algorithm. `hmac-sha256`, `rsa-pss-sha256`, or `ecdsa-p256-sha256`. |
+| `kms_algorithm` | string | Dominant signing algorithm. `hmac-sha256` (LocalKMS), `kms-hmac-sha256` (AWS KMS HMAC), `rsa-pss-sha256`, or `ecdsa-p256-sha256`. |
 | `hmac_secret_required` | bool | `true` if any checkpoint in the bundle is HMAC-signed. |
 
 **`checkpoints/<id>.json`** — one per sealed checkpoint. Mirrors the
@@ -1072,7 +1072,7 @@ bundle.tar.gz
 | `merkle_root` | hex | Merkle root over the records in this checkpoint window. |
 | `signed_at` | ISO timestamp | KMS signing timestamp. |
 | `key_id` | string | KMS key that signed this checkpoint. Look up in `kms_keys.json`. |
-| `algorithm` | string | One of `hmac-sha256`, `rsa-pss-sha256`, `ecdsa-p256-sha256`. |
+| `algorithm` | string | One of `hmac-sha256`, `kms-hmac-sha256`, `rsa-pss-sha256`, `ecdsa-p256-sha256`. |
 | `signature` | hex | KMS signature over the canonical message bytes. |
 | `record_count` | int | Records sealed under this checkpoint. |
 
@@ -1102,7 +1102,7 @@ happened during the bundle's window):
 | Field | Type | Description |
 |---|---|---|
 | `key_id` | string | Unique identifier. |
-| `algorithm` | string | `hmac-sha256`, `rsa-pss-sha256`, or `ecdsa-p256-sha256`. |
+| `algorithm` | string | `hmac-sha256`, `kms-hmac-sha256`, `rsa-pss-sha256`, or `ecdsa-p256-sha256`. |
 | `public_key_pem` | string \| null | PEM-encoded public key for asymmetric algorithms; `null` for HMAC. |
 | `first_seen_at` | ISO timestamp | When this key first signed a checkpoint. |
 | `retired_at` | ISO timestamp \| null | When this key was rotated out, if at all. |
@@ -1114,7 +1114,8 @@ self-contained bundle and one that needs out-of-band coordination.
 
 | Mode | Bundle self-contained? | What the auditor needs |
 |---|---|---|
-| `hmac-sha256` | No | The bundle + `VERA_HMAC_SECRET` shared out-of-band |
+| `hmac-sha256` (LocalKMS) | No | The bundle + `VERA_HMAC_SECRET` shared out-of-band |
+| `kms-hmac-sha256` (AWS KMS HMAC) | No | The bundle + `VERA_HMAC_SECRET` shared out-of-band |
 | `rsa-pss-sha256` | Yes | Just the bundle |
 | `ecdsa-p256-sha256` | Yes | Just the bundle |
 

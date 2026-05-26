@@ -105,7 +105,8 @@ The trade-off:
 
 | Mode | Bundle self-contained? | What the auditor needs |
 |---|---|---|
-| `hmac-sha256` | No — needs the shared secret out-of-band | The bundle + `VERA_HMAC_SECRET` |
+| `hmac-sha256` (LocalKMS) | No — needs the shared secret out-of-band | The bundle + `VERA_HMAC_SECRET` |
+| `kms-hmac-sha256` (AWS KMS HMAC) | No — needs the shared secret out-of-band | The bundle + `VERA_HMAC_SECRET` |
 | `rsa-pss-sha256` / `ecdsa-p256-sha256` | Yes — public keys travel inside `kms_keys.json` | Just the bundle |
 
 For asymmetric verification, the verifier reads `public_key_pem` from
