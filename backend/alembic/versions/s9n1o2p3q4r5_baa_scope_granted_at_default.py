@@ -28,7 +28,14 @@ from alembic import op
 
 
 revision: str = "s9n1o2p3q4r5"
-down_revision: Union[str, None] = "r8m0n1o2p3q4"
+# Re-parented from "r8m0n1o2p3q4" to "v3s6t7u8v9w0" (Phase 3 tip) during
+# the develop→main release sync. Main shipped this migration as a hotfix
+# (sibling of r8m0) while develop's Phase 3 chain was in flight; both
+# branches need to land on a single linear head. The hotfix's content
+# (BAAScope.granted_at default backfill) is data-migration-style — order
+# of application across orgs doesn't affect correctness, so splicing it
+# after the Phase 3 schema additions (s0p3 → t1q4 → u2r5 → v3s6) is safe.
+down_revision: Union[str, None] = "v3s6t7u8v9w0"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

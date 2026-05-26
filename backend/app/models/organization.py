@@ -1,13 +1,28 @@
 import uuid
 from datetime import datetime
 from typing import Any, Optional
-from sqlalchemy import JSON, String, DateTime, Text, func
+from sqlalchemy import CheckConstraint, JSON, String, DateTime, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base
 
 
+# Phase 3 Wave 3A.b — per-org checkpoint cadence. Single source of truth for
+# the allowed values; consumed by both the model (CHECK constraint name) and
+# the route layer (PATCH-body validation + 422 error payload).
+CHECKPOINT_CADENCES: tuple[str, ...] = ("daily", "hourly", "disabled")
+
+
 class Organization(Base):
     __tablename__ = "organizations"
+    __table_args__ = (
+        # Phase 3 Wave 3A.b — keep the CHECK constraint in lockstep with
+        # ``CHECKPOINT_CADENCES`` above. Migration ``s0p3q4r5s6t7`` creates
+        # the same constraint on the live schema.
+        CheckConstraint(
+            "checkpoint_cadence IN ('daily', 'hourly', 'disabled')",
+            name="ck_organizations_checkpoint_cadence",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(
         String(36), primary_key=True, default=lambda: str(uuid.uuid4())
@@ -63,6 +78,54 @@ class Organization(Base):
     # template-generation work reads this to gate template downloads.
     wizard_completed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime, nullable=True
+    )
+
+    # Phase 3 Wave 3A.b — per-org checkpoint cadence (Eng review finding 1D).
+    # ``'daily'``    — sweeper triggers a checkpoint when the last checkpoint
+    #                   is older than 24h. Default for new orgs (and for orgs
+    #                   that only ever mint sandbox ``al_test_*`` API keys).
+    # ``'hourly'``   — sweeper triggers a checkpoint when the last checkpoint
+    #                   is older than 1h. Auto-promoted to this value the
+    #                   first time an org mints an ``al_live_*`` key (live
+    #                   traffic raises the regulator-relevant "less than 1
+    #                   hour of unverified actions" bar). Operators may also
+    #                   set this explicitly via PATCH.
+    # ``'disabled'`` — sweeper never auto-creates checkpoints for this org.
+    #                   Manual ``POST /v1/verify/checkpoints`` still works.
+    #                   Only an admin can opt in to this state via PATCH.
+    #
+    # ``index=False`` because the sweeper hot query filters by *last
+    # checkpoint age* (joins against the ``checkpoints`` table), not by
+    # cadence — the cadence is only read to decide the threshold. Adding
+    # an index here would be pure cost.
+    checkpoint_cadence: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default="daily",
+        default="daily",
+    )
+
+    # Phase 3 Wave 3B.1 — Customer S3 mirror export target. Set via the
+    # off-Vera mirror onboarding flow (POST /v1/organizations/me/off-vera-
+    # mirror/validate; persistence lives behind a separate write endpoint
+    # — for v1 this column is populated via direct admin tooling /
+    # support workflow until the dashboard "Save" wiring lands).
+    #
+    # When NULL the checkpoint exporter SKIPS this org — they get
+    # checkpoints sealed in Vera's own external store but no customer-
+    # owned mirror. When set, every sealed checkpoint is asynchronously
+    # mirrored to ``<arn>/<org_id>/<checkpoint_id>.json`` with S3 Object
+    # Lock COMPLIANCE mode + 7-year retention. Failures are surfaced via
+    # the checkpoint_exports table (and the org's webhook channel if
+    # configured); they never block the in-band checkpoint sealing.
+    #
+    # Already-syntax-validated at write time by
+    # ``services.external_store.validate_s3_arn_syntax``. The exporter
+    # does NOT re-validate — if a bad ARN somehow gets persisted, the
+    # boto3 call fails and a failure row lands in checkpoint_exports
+    # with a structured reason.
+    s3_export_arn: Mapped[Optional[str]] = mapped_column(
+        String(512), nullable=True
     )
 
     # Relationships

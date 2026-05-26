@@ -40,6 +40,35 @@ class Settings(BaseSettings):
     # expiry writes a chain ActionRecord (acquires the per-org lock).
     approval_expiry_batch_size: int = 20
 
+    # ── Phase 3 Wave 3B.1: customer S3 mirror exporter ─────────────────
+    # When enabled, ``services.checkpoint.create_checkpoint`` schedules a
+    # background asyncio task to mirror every sealed checkpoint to the
+    # org's configured S3 bucket (column ``Organization.s3_export_arn``).
+    # Disabled in tests by default so the export side effect doesn't
+    # race other tests that share the StaticPool in-memory DB
+    # connection. Specific tests opt in via ``monkeypatch.setattr(
+    # settings, "checkpoint_export_enabled", True)`` or by calling
+    # ``export_checkpoint_to_customer_mirror`` directly.
+    checkpoint_export_enabled: bool = True
+
+    # ── Phase 3 Wave 3A.b: checkpoint cadence sweeper ─────────────────
+    # Background asyncio task that walks each org once per tick and
+    # triggers ``services.checkpoint.create_checkpoint`` when the org's
+    # ``checkpoint_cadence`` says the last checkpoint is overdue
+    # (daily: >24h; hourly: >1h; disabled: never). Separate from the
+    # webhook sweeper (different concern, different cadence). Disabled
+    # in tests by default — see ``backend/tests/conftest.py``.
+    checkpoint_sweeper_enabled: bool = True
+    # Tick cadence — how often the sweeper scans the org table looking
+    # for due checkpoints. 5 minutes (300s) is much smaller than the
+    # finest cadence threshold (1h) so worst-case lag for an hourly org
+    # is one tick. Tunable down for tests that exercise the loop.
+    checkpoint_sweeper_tick_seconds: int = 300
+    # Max orgs the sweeper considers per tick. The query is a single
+    # LEFT JOIN against ``checkpoints``, so the cost is bounded by the
+    # number of orgs — typical Vera deploy has hundreds, not millions.
+    checkpoint_sweeper_batch_size: int = 100
+
     # Max size for JSON blob fields (bytes of serialized JSON)
     max_json_field_size: int = 1_000_000  # 1 MB
 
@@ -83,6 +112,16 @@ class Settings(BaseSettings):
     # delivery to ``POST /v1/clerk/webhooks``. Empty means the route refuses
     # all incoming events (503) — never silently accept unsigned bodies.
     clerk_webhook_secret: str = ""
+
+    # Vera-internal staff Clerk org. Wave 3A.c — when a Clerk session's
+    # ``org_id`` claim matches this value (OR the session carries an
+    # ``org_role == 'vera_staff'`` claim), the request is resolved to
+    # ``IamTier.STAFF_READ_ONLY``: PHI fields are redacted from every
+    # response and a row is written to ``staff_audit_log``. Empty in
+    # development; set in Vera-managed environments only. The role-claim
+    # path lets deployments that don't dedicate a single Clerk org work
+    # too.
+    clerk_staff_org_id: str = ""
 
     # Clerk Backend API secret key (``sk_live_…`` / ``sk_test_…``). Required
     # only for the defense-in-depth membership freshness re-check in

@@ -45,7 +45,11 @@ from ..schemas.customer import (
     CustomerUpdate,
 )
 from ..schemas.customer_decision import CustomerDecisionsListResponse
-from ..services.auth import require_permission
+from ..services.auth import (
+    AuthContext,
+    require_permission,
+    require_permission_with_context,
+)
 from ..services.baa import invalidate_org_baa_cache
 from ..services.dashboard_views import (
     is_dashboard_request,
@@ -56,6 +60,7 @@ from ..services.decisions import (
     MAX_LIMIT as DECISIONS_MAX_LIMIT,
     list_customer_decisions,
 )
+from ..services.iam import audit_staff_read
 
 router = APIRouter(prefix="/customers", tags=["customers"])
 
@@ -508,7 +513,7 @@ async def list_customer_decisions_endpoint(
     ),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_db),
-    auth: tuple[str, APIKey | None] = Depends(require_permission("read")),
+    ctx: AuthContext = Depends(require_permission_with_context("read")),
 ):
     """Decisions feed for the Customer detail page's Decisions tab.
 
@@ -558,7 +563,7 @@ async def list_customer_decisions_endpoint(
     scope for the customer's BAA, and need ``reason_detail`` for the
     customer's own review surface.
     """
-    org_id, api_key = auth
+    org_id = ctx.org_id
     # Reuse the org-scoped lookup helper so the 404 message matches the
     # other ``/v1/customers/{tenant_id}/*`` sub-routes (and so a customer
     # that exists in another org never leaks a 200).
@@ -573,7 +578,27 @@ async def list_customer_decisions_endpoint(
         limit=limit,
         offset=offset,
     )
-    if is_dashboard_request(api_key):
+    # Wave 3A.c. The Decisions feed surface is purpose-built — it surfaces
+    # gate metadata + webhook delivery state and does NOT expose raw
+    # ActionRecord.input_data / metadata to start with. There's no PHI to
+    # redact here today. We still audit-log staff access because the
+    # tenant_id itself is identifying information (customer wants to know
+    # if a Vera engineer pulled their decisions feed).
+    if ctx.is_staff:
+        await audit_staff_read(
+            session,
+            staff_id=ctx.staff_id or "",
+            endpoint="/v1/customers/{tenant_id}/decisions",
+            org_id=org_id,
+            resource_type="action_record",
+            resource_id=tenant_id,
+            resource_count=len(rows),
+            redacted=True,
+        )
+    # W1.2 — Clerk dashboard caller: strip reason_detail (frequent PHI
+    # carrier) via dashboard view serializer. SDK callers (API key) get
+    # the raw rows.
+    if is_dashboard_request(ctx.api_key):
         decisions = [serialize_decision_for_dashboard(r) for r in rows]
     else:
         decisions = rows

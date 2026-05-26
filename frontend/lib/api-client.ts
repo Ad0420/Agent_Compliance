@@ -25,10 +25,13 @@ import type {
   ApprovalQueryParams,
   Customer,
   CustomerAgentsResponse,
+  CustomerChainSummary,
   CustomerListResponse,
   CustomerQueryParams,
   CustomerDecisionsResponse,
   CustomerDecisionsQueryParams,
+  EvidenceExportPreview,
+  MerkleProofPayload,
   WizardAnswersResponse,
   WizardAnswersSubmission,
   BAAUploadInput,
@@ -37,6 +40,15 @@ import type {
   WebhookDeliveriesResponse,
   WebhookDeliveryReplayResponse,
   WebhookListResponse,
+  // W2.2 — CompleteReviewInput / CompleteReviewResponse kept in
+  // api-types.ts for SDK + future in-band UI parity but not imported
+  // here: the dashboard wrapper for POST /v1/reviews/{id}/complete was
+  // removed when the Review queue went read-only per HIPAA scope
+  // reduction. See lib/api-types.ts for the wire-shape contract.
+  S3MirrorConfig,
+  S3MirrorValidateInput,
+  S3MirrorValidateResponse,
+  ChainIntegrityResponse,
 } from "./api-types";
 
 export class ApiError extends Error {
@@ -90,19 +102,34 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: "Request failed" }));
     const detail = error?.detail;
-    // ``detail`` is a string in the common case (FastAPI's default
-    // HTTPException) and an object for endpoints that surface a
-    // structured envelope (e.g. POST /v1/reviews/{id}/complete on 403).
-    // We pass both: ``message`` is always a string for ``Error`` super,
-    // ``detail`` is the original payload so callers can narrow.
+    // Three shapes flow through here:
+    //   1. FastAPI's default ``{"detail": "<string>"}`` — common case.
+    //   2. Structured wrapped ``{"detail": {"code": ..., "detail": "..."}}``
+    //      (e.g. POST /v1/reviews/{id}/complete on 403). Callers narrow
+    //      on ``detail`` via type guards.
+    //   3. Flat error envelope (PR #201 pattern) — ``{"code": "...",
+    //      "message": "...", "hint": "..."}`` at TOP level, no nesting.
+    //      Used by /v1/dashboard/s3-export-arn/* and the SDK-side
+    //      off-vera-mirror/validate route. Read ``error.message``
+    //      directly so the toast renders the structured copy.
+    // ``message`` is always a string for ``Error`` super; ``detail`` is
+    // the original payload (or the flat-envelope object itself when
+    // detail was absent) so callers can narrow on either shape.
     const message =
       typeof detail === "string"
         ? detail
         : detail && typeof detail === "object" && "detail" in detail &&
             typeof (detail as { detail?: unknown }).detail === "string"
           ? (detail as { detail: string }).detail
-          : `Request failed (${response.status})`;
-    throw new ApiError(response.status, message, detail);
+          : typeof error?.message === "string"
+            ? error.message
+            : `Request failed (${response.status})`;
+    // When the response is a flat envelope, ``detail`` is undefined but
+    // the structured fields sit on ``error`` itself. Promote ``error``
+    // so callers can ``apiError.detail.code`` regardless of which shape
+    // the backend used.
+    const carrier = detail ?? error;
+    throw new ApiError(response.status, message, carrier);
   }
 
   if (response.status === 204) return undefined as T;
@@ -152,6 +179,11 @@ export function createCheckpoint(): Promise<Checkpoint> {
 
 export function verifyAllCheckpoints(): Promise<CheckpointVerifyAllResponse> {
   return request("/v1/verify/checkpoints/verify", { method: "POST" });
+}
+
+// Phase 3 Wave 3D.1 — Home Chain Integrity tile aggregate.
+export function getChainIntegrity(): Promise<ChainIntegrityResponse> {
+  return request("/v1/dashboard/chain-integrity");
 }
 
 // Agents
@@ -248,6 +280,91 @@ export function getCustomerDecisions(
   });
   return request(
     `/v1/customers/${encodeURIComponent(tenant_id)}/decisions${query}`,
+  );
+}
+
+// ── Wave 3D.2 — Customer Verification & Evidence Trail panel ────────────
+
+export function getCustomerChainSummary(
+  tenant_id: string,
+): Promise<CustomerChainSummary> {
+  return request(
+    `/v1/customers/${encodeURIComponent(tenant_id)}/chain-summary`,
+  );
+}
+
+export interface EvidenceExportInput {
+  start_date?: string;
+  end_date?: string;
+}
+
+export function previewEvidenceExport(
+  tenant_id: string,
+  input: EvidenceExportInput,
+): Promise<EvidenceExportPreview> {
+  return request(
+    `/v1/customers/${encodeURIComponent(tenant_id)}/evidence-export`,
+    {
+      method: "POST",
+      body: JSON.stringify({ ...input, preview: true }),
+    },
+  );
+}
+
+/**
+ * Stream the evidence bundle to a browser download.
+ *
+ * Bundle generation can be slow for large date ranges. The async
+ * fetch yields a single Blob; the caller surface drives a normal
+ * "Save as…" download via an in-memory object URL — same pattern as
+ * ``exportCsv`` / ``exportPdf``.
+ *
+ * Returns the suggested filename the backend put in
+ * ``Content-Disposition`` so the caller can show it as a confirmation
+ * line ("Downloaded ``vera-evidence-cleveland_clinic-2026-02-26_to_
+ * 2026-05-25.tar.gz``").
+ */
+export async function downloadEvidenceBundle(
+  tenant_id: string,
+  input: EvidenceExportInput,
+): Promise<{ filename: string }> {
+  const headers = await getHeaders();
+  const response = await fetch(
+    `${BASE_URL}/v1/customers/${encodeURIComponent(tenant_id)}/evidence-export`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ ...input, preview: false }),
+    },
+  );
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: "Export failed" }));
+    const detail =
+      typeof error?.detail === "string"
+        ? error.detail
+        : error?.code || `Export failed (${response.status})`;
+    throw new ApiError(response.status, detail, error);
+  }
+  const disposition = response.headers.get("content-disposition") || "";
+  const match = /filename="([^"]+)"/.exec(disposition);
+  const filename = match?.[1] || `vera-evidence-${tenant_id}.tar.gz`;
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  return { filename };
+}
+
+export function getMerkleProof(
+  action_record_id: string,
+): Promise<MerkleProofPayload> {
+  return request(
+    `/v1/records/${encodeURIComponent(action_record_id)}/merkle-proof`,
   );
 }
 
@@ -424,4 +541,45 @@ export function replayWebhookDelivery(
     `/v1/webhooks/${encodeURIComponent(webhook_id)}/deliveries/${encodeURIComponent(delivery_id)}/replay`,
     { method: "POST" },
   );
+}
+
+// ── Phase 3 Wave 3D.3 — Off-Vera S3 mirror configuration ─────────────────
+//
+// Settings → Off-Vera evidence mirror sub-page. Admin-only writes; admin
+// + developer reads (developers need visibility for SDK integration
+// debugging). See backend/app/routes/dashboard_s3_mirror.py.
+
+export function getS3MirrorConfig(): Promise<S3MirrorConfig> {
+  return request("/v1/dashboard/s3-export-config");
+}
+
+export function updateS3MirrorArn(arn: string): Promise<S3MirrorConfig> {
+  return request("/v1/dashboard/s3-export-arn", {
+    method: "PUT",
+    body: JSON.stringify({ arn }),
+  });
+}
+
+export function clearS3MirrorArn(): Promise<S3MirrorConfig> {
+  return request("/v1/dashboard/s3-export-arn", {
+    method: "DELETE",
+  });
+}
+
+export function validateS3MirrorArn(
+  input: S3MirrorValidateInput,
+): Promise<S3MirrorValidateResponse> {
+  return request("/v1/dashboard/s3-export-arn/validate", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function probeS3MirrorArn(
+  input: S3MirrorValidateInput,
+): Promise<S3MirrorValidateResponse> {
+  return request("/v1/dashboard/s3-export-arn/probe", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }

@@ -80,7 +80,15 @@ def sync_engine(tmp_path):
             " scrubbed_clerk_org_id VARCHAR,"
             " created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,"
             " wizard_answers JSON,"
-            " wizard_completed_at DATETIME"
+            " wizard_completed_at DATETIME,"
+            # Phase 3 Wave 3A.b — per-org checkpoint cadence (NOT NULL
+            # with server default 'daily'). Brought into the dedupe
+            # test fixture during the develop→main release sync; the
+            # original CREATE TABLE pre-dated the column.
+            " checkpoint_cadence VARCHAR(16) NOT NULL DEFAULT 'daily',"
+            # Phase 3 Wave 3B.1 — customer S3 mirror export target.
+            # Nullable; NULL means "no mirror configured".
+            " s3_export_arn VARCHAR(512)"
             ")"
         ))
         conn.execute(text("PRAGMA foreign_keys=ON"))

@@ -6,6 +6,73 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- **`records/<id>.json` now includes `previous_hash` per record** —
+  Phase 3 follow-up. Lets `vera verify --offline` enforce the chain
+  rule `sha256(previous_hash + action_record_canonical) == leaf_hash`
+  as a hard fail rather than soft-failing with
+  `previous_hash_unavailable`. The reason code for a chain-rule
+  mismatch is now `leaf_hash_mismatch` (was `canonical_leaf_mismatch`).
+  Legacy bundles produced before this change are still accepted —
+  they soft-fail with `previous_hash_unavailable` for backwards
+  compatibility. The `GET /v1/records/{id}/merkle-proof` payload also
+  carries `previous_hash` so `vera evidence-export` picks it up
+  automatically.
+
+### Added
+- **`vera verify --merkle-proof <record_id>`** — online verification of
+  a single record. Fetches the Merkle proof from Vera, folds the path
+  to reconstruct the checkpoint's Merkle root, and validates the KMS
+  signature against the current key history. Exits 0 on success; 1 on
+  `merkle_proof_invalid` / `signature_invalid` / `root_mismatch`; 2 on
+  network / auth / 404 / 409 `checkpoint_pending`.
+- **`vera verify --offline <bundle_path>`** — offline verification of
+  a pre-exported evidence bundle. No Vera credentials, no network. Reads
+  the bundle's `manifest.json`, `checkpoints/`, `records/`, and
+  `kms_keys.json`; folds every record's Merkle path against the sealed
+  root; validates every checkpoint signature using either the bundled
+  PEM (asymmetric) or `VERA_HMAC_SECRET` (HMAC). First failure prints a
+  structured reason to stderr.
+- **`vera evidence-export --customer <tenant_id> --since <date> --until
+  <date> --out <path>`** — produce a self-contained `bundle.tar.gz`
+  scoped to one customer over a date range. Bundle includes only the
+  target customer's records plus the sibling hashes their Merkle proofs
+  require — an auditor cannot count or reconstruct any other customer's
+  records.
+- **`vera evidence-export` — skipped-record surfacing** — when a
+  per-record proof fetch returns 404 (`record_not_found`) or 409
+  (`checkpoint_pending`, the tail-window race), the record is skipped
+  but the omission is now auditable: a structured `WARN` block lists
+  each skipped record ID and reason to stderr (capped at 50 IDs, with
+  an "and N more" pointer for the overflow), and the full list is
+  written to `manifest.json::skipped_records` as `[{id, reason}, ...]`
+  (always present, empty array on a clean run). Exit code remains 0
+  for tail-window skips — they're routine in a streaming system and
+  shouldn't break CI; the warning is loud but informational.
+- **`vera.verify` subpackage** — refactored from inline CLI code into a
+  reusable module (`vera.verify.bundle`, `vera.verify.merkle`,
+  `vera.verify.kms`). The CLI commands above are thin wrappers; the
+  same primitives are importable for programmatic use.
+- **`sdk/examples/verify_offline_walkthrough/`** — runnable
+  no-credentials walkthrough of the produce-bundle / verify-bundle
+  contract. Includes a tamper-detection check; `run.sh` exits 0 only
+  when both happy-path and tamper-rejection behave as expected.
+- **SDK README — `## Verification` section** — full reference for the
+  three commands above, bundle shape (`manifest.json`,
+  `checkpoints/<id>.json`, `records/<id>.json`, `kms_keys.json`), and
+  the HMAC vs asymmetric KMS distinction.
+
+### Environment
+
+- **`VERA_HMAC_SECRET`** — shared HMAC secret for `vera verify
+  --offline` on HMAC-signed bundles. Mirrors the backend's
+  `ACTIONLEDGER_SIGNING_KEY` value. Required when `manifest.json` has
+  `hmac_secret_required: true`. Ignored for asymmetric bundles.
+- **`VERA_TARGET_ORG_ID`** — pin an org context for `vera verify
+  --offline` and `vera evidence-export` when an API key covers multiple
+  orgs or when bundle metadata needs explicit scoping. Optional for
+  single-org accounts.
+
 ## [1.1.0] - 2026-05-24
 
 ### Added

@@ -1,0 +1,40 @@
+name: iam-tier-check
+
+# Enforces the Wave 3B.3 IAM tier policy: route handlers MUST branch on
+# ``ctx.is_staff`` / ``ctx.is_customer`` — never on a direct
+# ``ctx.tier == IamTier.X`` comparison. The latter silently mis-routes a
+# future STAFF_FULL caller. See ``scripts/check_iam_tier_usage.sh`` for
+# the full rationale; this workflow is the CI gate.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - develop
+
+concurrency:
+  group: iam-tier-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  iam-tier-check:
+    name: backend ctx.tier comparison lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run IAM-tier usage check
+        run: bash scripts/check_iam_tier_usage.sh
+
+      - name: Run IAM-tier usage self-tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pytest scripts/test_check_iam_tier_usage.py -v

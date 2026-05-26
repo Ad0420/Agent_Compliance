@@ -1,5 +1,38 @@
 # Vera — Agent Instructions
 
+## Git workflow
+
+This project uses a **`develop` → `main`** two-branch flow. Adopted at the
+start of Phase 3 to give us a real integration buffer before production.
+
+- **`main`** is the production branch. Only `develop` merges into `main`,
+  on release cadence (planned merges at phase or wave boundaries, never
+  feature-by-feature). `main` is what's actually deployed.
+- **`develop`** is the integration branch. All feature work happens
+  against `develop`; it's near-shippable at all times. Each phase's
+  acceptance gate runs on `develop` before the release merge into `main`.
+- **Feature branches** branch off `develop` and PR back into `develop`.
+  Naming pattern: `feat/<phase><wave><pr>-<short-description>` (e.g.
+  `feat/phase3-wave3a-checkpoint-export`).
+
+**Rules for humans + agents:**
+- **Default base branch is `develop`.** Never open a feature PR with
+  `main` as the base. Use `develop` unless you are explicitly doing a
+  release merge.
+- **Agent briefs MUST specify `develop` as the base.** When dispatching
+  an agent to implement a PR, include in the brief:
+  `git checkout develop && git pull --ff-only origin develop && git checkout -b <branch>`
+  and `gh pr create --base develop`.
+- **`develop` stays green.** Feature work that breaks integration tests
+  does not land. Conflicts get rebased against the current `develop`
+  head before merge.
+- **Release merges (`develop` → `main`)** are intentional events. Open a
+  PR titled `release: <phase or wave> → main`, walk the diff, run the
+  acceptance gate one last time on `develop`, then merge.
+- **Hotfix exception:** a true emergency fix may branch off `main` and
+  PR back into `main` directly, but must also be cherry-picked or
+  forward-merged into `develop` the same day so the branches stay in sync.
+
 ## Design System
 
 Always read [DESIGN.md](DESIGN.md) before making any visual or UI decisions.
@@ -71,3 +104,43 @@ unexpected hits — only true positives or correctly-allowlisted entries),
 and (2) at least 3 real violations have been caught in PR review since the
 rule landed. Both directions (strict→default and the reverse) are
 documented in the changelog.
+
+## IAM tier checks
+
+Wave 3B.3 (PR #236) established the IAM tier model: `IamTier.STAFF_FULL`
+is reserved for a v2 break-glass tier and MUST behave identically to
+`STAFF_READ_ONLY` in v1 (same redaction, same audit, same read-only
+surface). So route handlers MUST branch on the boolean helpers, never on
+a direct enum comparison:
+
+- **Use**: `ctx.is_staff` / `ctx.is_customer` (properties on
+  `AuthContext` in `backend/app/services/auth.py`).
+<!-- iam-tier-direct-comparison-ok: rule definition — banned pattern quoted intentionally -->
+- **Do NOT use**: `ctx.tier == IamTier.STAFF_READ_ONLY` or
+<!-- iam-tier-direct-comparison-ok: rule definition — banned pattern quoted intentionally -->
+  `ctx.tier == IamTier.CUSTOMER`. Either form silently mis-routes a
+  future STAFF_FULL caller.
+
+The CI gate is `iam-tier-check`
+(`.github/workflows/iam-tier-check.yml`). It runs
+`scripts/check_iam_tier_usage.sh` against `backend/app/routes/` on
+every PR. The same antipattern was caught by `/review` twice before the
+gate landed:
+
+- PR #236 (Wave 3B.3): `backend/app/routes/staff.py:99` — CRITICAL.
+- PR #240 (Wave 3D.1): `backend/app/routes/dashboard_chain_integrity.py:48` —
+  INFORMATIONAL.
+
+The PR that ships the gate also cleaned up five more pre-existing
+instances in `approvals.py`, `records.py`, and `checkpoints_by_date.py`
+that pre-dated the policy.
+
+To suppress a deliberate exact-tier introspection (rare), add an inline
+comment on the same line OR the immediately preceding line:
+
+```
+# iam-tier-direct-comparison-ok: <reason ≥8 chars>
+```
+
+The reason is mandatory (≥8 chars) and is surfaced when the script
+runs with `--report-json` for auditability.

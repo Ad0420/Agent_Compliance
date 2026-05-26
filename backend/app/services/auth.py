@@ -3,11 +3,12 @@ import hashlib
 import logging
 import secrets
 import time
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Optional
 
 import httpx
 import jwt
-from fastapi import Depends, HTTPException, Security
+from fastapi import Depends, HTTPException, Header, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..config import settings
 from ..database import get_db
 from ..models import APIKey, OrgMembership
+from .iam import IamTier, tier_from_claims
 
 logger = logging.getLogger(__name__)
 
@@ -292,6 +294,28 @@ async def generate_api_key(
     session.add(api_key)
     await session.commit()
     await session.refresh(api_key)
+
+    # Phase 3 Wave 3A.b — auto-promote checkpoint cadence on first live
+    # key. Done after the key is committed so an UPDATE failure can't
+    # roll back the key creation. Idempotent on the org row (skips if
+    # already 'hourly' or 'disabled' — operators who explicitly chose
+    # 'disabled' aren't second-guessed here). Lazy import to keep this
+    # module's import surface narrow.
+    if kind == "live":
+        from .checkpoint_cadence import (
+            maybe_promote_org_to_hourly_cadence,
+        )
+        try:
+            await maybe_promote_org_to_hourly_cadence(session, org_id)
+        except Exception:
+            # Promotion is a UX improvement, not a correctness gate —
+            # an unexpected error here must NOT cause the live-key
+            # creation to look failed to the caller. Log + continue.
+            logger.warning(
+                "checkpoint cadence auto-promotion failed for org %s",
+                org_id, exc_info=True,
+            )
+
     return raw_key, api_key
 
 
@@ -408,6 +432,70 @@ async def _authenticate_clerk_session(
     return refreshed.org_id, perms
 
 
+@dataclass
+class AuthContext:
+    """Resolved auth context — caller identity + IAM tier.
+
+    Wave 3A.c. Routes that need to know whether the caller is a Vera staff
+    member (so they can redact PHI + write an audit-log row) depend on
+    ``require_permission_with_context`` and receive this dataclass.
+    Existing routes that don't need the tier continue using
+    ``require_permission``, which still returns the legacy
+    ``(org_id, api_key)`` tuple — no API break.
+
+    Fields:
+      * ``org_id``    — Customer Organization the request reads/writes
+                        against. For staff sessions this comes from the
+                        ``X-Org-Id`` header (the customer whose ticket
+                        the staff member is responding to); for customer
+                        sessions it's resolved from the API key or
+                        Clerk OrgMembership.
+      * ``api_key``   — APIKey ORM row for API-key callers; ``None`` for
+                        Clerk-authenticated callers.
+      * ``tier``      — ``IamTier.CUSTOMER`` (default) or
+                        ``IamTier.STAFF_READ_ONLY`` (Vera-internal Clerk
+                        session). STAFF_FULL is reserved for v2.
+      * ``staff_id``  — Clerk user ID of the staff member; ``None`` for
+                        customer callers. Required to write
+                        ``staff_audit_log`` rows.
+    """
+
+    org_id: str
+    api_key: Optional[APIKey]
+    tier: IamTier
+    staff_id: Optional[str] = None
+
+    @property
+    def is_staff(self) -> bool:
+        """True if the caller is Vera-internal staff (any staff tier).
+
+        Route handlers MUST use this property — not a direct
+        ``ctx.tier == IamTier.STAFF_READ_ONLY`` comparison — when
+        branching on staff-vs-customer. The reason: ``IamTier.STAFF_FULL``
+        is reserved for a v2 break-glass tier and MUST behave identically
+        to ``STAFF_READ_ONLY`` in v1 (same redaction, same audit, same
+        read-only surface). A direct ``== STAFF_READ_ONLY`` comparison
+        would silently treat a future STAFF_FULL caller as a customer —
+        wrong tier, wrong audit, wrong PHI redaction.
+
+        The CI lint rule ``scripts/check_iam_tier_usage.sh`` enforces
+        this. Motivated by PR #236 (Wave 3B.3) CRITICAL finding and
+        PR #240 (Wave 3D.1) INFORMATIONAL finding — same antipattern
+        caught twice.
+        """
+        return self.tier in (IamTier.STAFF_READ_ONLY, IamTier.STAFF_FULL)
+
+    @property
+    def is_customer(self) -> bool:
+        """True if the caller is a customer (not staff).
+
+        Inverse of ``is_staff``. Use this on routes that need a
+        "customer-only" branch (e.g. skip-redaction shortcut). See
+        ``is_staff`` docstring for the policy rationale.
+        """
+        return not self.is_staff
+
+
 def require_permission(permission: str):
     """Returns a dependency that checks for a specific permission.
 
@@ -498,6 +586,269 @@ def require_permission(permission: str):
                 detail=f"Session role lacks '{permission}' permission",
             )
         return org_id, None
+    return _check
+
+
+async def _resolve_clerk_staff_context(
+    session: AsyncSession,
+    raw_token: str,
+    *,
+    requested_org_id: Optional[str],
+) -> Optional[AuthContext]:
+    """Verify a Clerk JWT and check if it represents a Vera-staff session.
+
+    Returns:
+      * ``AuthContext(tier=STAFF_READ_ONLY)`` if the JWT verifies AND the
+        claims indicate a staff session.
+      * ``None`` if the JWT verifies but the session is a regular customer
+        session (caller falls through to the customer-tier path).
+
+    Raises HTTPException on JWT verification failure (same shape as the
+    customer path so the response is consistent).
+
+    The staff caller MUST pass an ``X-Org-Id`` header identifying which
+    customer org's data they're requesting. Without it, we 400 — staff
+    can't read "their own org" because the Vera-internal staff org has
+    no compliance data.
+    """
+    try:
+        claims = await verify_clerk_jwt(raw_token)
+    except HTTPException:
+        return None
+    tier = tier_from_claims(claims, settings.clerk_staff_org_id or None)
+    if tier == IamTier.CUSTOMER:
+        return None
+    # Staff session. Resolve the target customer org from the X-Org-Id
+    # header. We refuse to default to anything — staff queries must be
+    # explicit about which customer they're accessing (the audit log
+    # then captures which customer was read).
+    if not requested_org_id:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "staff_org_id_required",
+                "detail": (
+                    "Vera staff sessions must specify an X-Org-Id header "
+                    "identifying the customer organization to access."
+                ),
+            },
+        )
+    staff_id = claims.get("sub")
+    if not staff_id:
+        raise HTTPException(
+            status_code=401, detail="Invalid or expired session"
+        )
+    return AuthContext(
+        org_id=requested_org_id,
+        api_key=None,
+        tier=tier,
+        staff_id=staff_id,
+    )
+
+
+def require_permission_with_context(permission: str):
+    """Dependency factory returning an ``AuthContext`` for the request.
+
+    Wave 3A.c. The drop-in replacement for ``require_permission`` when a
+    route needs IAM tier info (to redact PHI + write a staff audit row).
+
+    Behavior:
+      * API-key bearer → ``AuthContext(tier=CUSTOMER, api_key=<row>)``.
+        Permission gate enforced the same as ``require_permission``.
+      * Customer Clerk session → ``AuthContext(tier=CUSTOMER, api_key=None)``.
+      * Vera-staff Clerk session (org_id matches
+        ``settings.clerk_staff_org_id`` OR JWT has ``org_role=vera_staff``):
+        ``AuthContext(tier=STAFF_READ_ONLY, staff_id=<sub>, org_id=<from
+        X-Org-Id header>)``. Staff are read-only — any non-``read``
+        permission request 403s.
+
+    The new dependency lives alongside ``require_permission``; existing
+    routes are unchanged. Routes opting into the staff-tier flow swap
+    to this one + use ``ctx.tier`` to drive ``redact_*`` calls.
+    """
+    from .baa import is_org_baa_active
+
+    async def _check(
+        credentials: HTTPAuthorizationCredentials = Security(security),
+        session: AsyncSession = Depends(get_db),
+        x_org_id: Optional[str] = Header(default=None, alias="X-Org-Id"),
+    ) -> AuthContext:
+        raw = credentials.credentials
+
+        # ── API-key path: always CUSTOMER tier ─────────────────────────
+        if raw.startswith(settings.api_key_prefix):
+            api_key = await authenticate_request(session, raw)
+            if api_key is None:
+                raise HTTPException(
+                    status_code=401, detail="Invalid or revoked API key"
+                )
+            if permission not in api_key.permissions:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"API key lacks '{permission}' permission",
+                )
+            if api_key.kind == "live":
+                baa_active = await is_org_baa_active(session, api_key.org_id)
+                if not baa_active:
+                    raise HTTPException(
+                        status_code=403,
+                        detail={
+                            "code": "baa_expired",
+                            "detail": (
+                                "Live API keys require an active Business "
+                                "Associate Agreement on file for your "
+                                "organization."
+                            ),
+                            "fix_url": "/customers",
+                        },
+                    )
+            return AuthContext(
+                org_id=api_key.org_id,
+                api_key=api_key,
+                tier=IamTier.CUSTOMER,
+            )
+
+        # ── Clerk path: branch on staff vs customer ──────────────────
+        # Try the staff path first — if the JWT verifies and the claims
+        # indicate staff, we route through the staff branch (which honours
+        # X-Org-Id). Otherwise fall through to the customer branch.
+        staff_ctx = await _resolve_clerk_staff_context(
+            session, raw, requested_org_id=x_org_id
+        )
+        if staff_ctx is not None:
+            # Staff is read-only at v1. Any non-read permission demand
+            # rejects with 403 so the same dependency can guard both
+            # GET and write routes without per-route branching.
+            if permission != "read":
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "code": "staff_read_only",
+                        "detail": (
+                            "Vera staff sessions are read-only in this "
+                            "tier. Write operations require a customer "
+                            "credential."
+                        ),
+                    },
+                )
+            return staff_ctx
+
+        try:
+            clerk_result = await _authenticate_clerk_session(session, raw)
+        except _NoActiveOrgError:
+            raise HTTPException(
+                status_code=400,
+                detail="No active organization in Clerk session",
+            )
+        if clerk_result is None:
+            raise HTTPException(
+                status_code=401, detail="Invalid or expired session"
+            )
+        org_id, perms = clerk_result
+        if permission not in perms:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Session role lacks '{permission}' permission",
+            )
+        return AuthContext(
+            org_id=org_id,
+            api_key=None,
+            tier=IamTier.CUSTOMER,
+        )
+
+    return _check
+
+
+def require_staff_or_customer_admin():
+    """Dependency: allow Vera staff (read-only) OR customer-admin (full
+    rights on the org). Used by the staff audit-log endpoint which must
+    work for both:
+
+      * The staff member checking their own activity history.
+      * The customer admin checking which Vera engineers touched their
+        org's data.
+
+    Returns the same ``AuthContext`` shape as
+    ``require_permission_with_context``. Staff sessions DO satisfy the
+    gate (no extra 403). Customer sessions must hold the ``admin``
+    permission — API-key admin or Clerk-session admin role.
+    """
+    from .baa import is_org_baa_active
+
+    async def _check(
+        credentials: HTTPAuthorizationCredentials = Security(security),
+        session: AsyncSession = Depends(get_db),
+        x_org_id: Optional[str] = Header(default=None, alias="X-Org-Id"),
+    ) -> AuthContext:
+        raw = credentials.credentials
+
+        # API-key path — must be admin.
+        if raw.startswith(settings.api_key_prefix):
+            api_key = await authenticate_request(session, raw)
+            if api_key is None:
+                raise HTTPException(
+                    status_code=401, detail="Invalid or revoked API key"
+                )
+            if "admin" not in api_key.permissions:
+                raise HTTPException(
+                    status_code=403,
+                    detail="API key lacks 'admin' permission",
+                )
+            # Live-key BAA gate — same as require_permission. Keeps
+            # behaviour parity so an expired BAA can't read the audit log
+            # either.
+            if api_key.kind == "live":
+                baa_active = await is_org_baa_active(session, api_key.org_id)
+                if not baa_active:
+                    raise HTTPException(
+                        status_code=403,
+                        detail={
+                            "code": "baa_expired",
+                            "detail": (
+                                "Live API keys require an active Business "
+                                "Associate Agreement on file for your "
+                                "organization."
+                            ),
+                            "fix_url": "/customers",
+                        },
+                    )
+            return AuthContext(
+                org_id=api_key.org_id,
+                api_key=api_key,
+                tier=IamTier.CUSTOMER,
+            )
+
+        # Clerk path — staff bypass the admin gate; customer admin must
+        # match the admin role.
+        staff_ctx = await _resolve_clerk_staff_context(
+            session, raw, requested_org_id=x_org_id
+        )
+        if staff_ctx is not None:
+            return staff_ctx
+
+        try:
+            clerk_result = await _authenticate_clerk_session(session, raw)
+        except _NoActiveOrgError:
+            raise HTTPException(
+                status_code=400,
+                detail="No active organization in Clerk session",
+            )
+        if clerk_result is None:
+            raise HTTPException(
+                status_code=401, detail="Invalid or expired session"
+            )
+        org_id, perms = clerk_result
+        if "admin" not in perms:
+            raise HTTPException(
+                status_code=403,
+                detail="Session role lacks 'admin' permission",
+            )
+        return AuthContext(
+            org_id=org_id,
+            api_key=None,
+            tier=IamTier.CUSTOMER,
+        )
+
     return _check
 
 

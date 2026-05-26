@@ -794,3 +794,210 @@ export interface AttestationConflictResponse {
   review_id: string;
   detail: string;
 }
+
+// ── Wave 3D.2 — Customer Verification & Evidence Trail panel ───────────
+//
+// Backed by ``GET /v1/customers/{tenant_id}/chain-summary``. The panel
+// renders the customer's latest checkpoint summary + a 30-day timeline
+// strip + a "Download evidence bundle" CTA + an inline "Verify this
+// customer's chain" button.
+//
+// ``verification_supported=false`` greys out the inline verify CTA:
+// HMAC-SHA256 chains can't be verified in the browser without the
+// shared secret (which must never live client-side); asymmetric KMS
+// keys (RSA-PSS / ECDSA) carry a public PEM that the Web Crypto API
+// can use to verify the checkpoint signature without holding any
+// secret. The dashboard renders an honest reason in either branch.
+
+export type ChainTimelineStatus = "sealed" | "none" | "pending";
+
+export interface ChainTimelineDay {
+  /** ISO calendar date for this tile (e.g., "2026-05-19"). */
+  date: string;
+  status: ChainTimelineStatus;
+  checkpoint_id: string | null;
+  customer_record_count: number;
+}
+
+export interface ChainLatestCheckpoint {
+  checkpoint_id: string;
+  merkle_root: string | null;
+  /** Naive UTC ISO string with millisecond precision. */
+  signed_at: string;
+  kms_key_id: string | null;
+  kms_algorithm: string | null;
+  /** PEM-encoded public key for asymmetric KMS providers; null otherwise. */
+  kms_public_key_pem: string | null;
+  customer_record_count: number;
+  total_record_count: number;
+  sequence_at_checkpoint: number;
+}
+
+export interface CustomerChainSummary {
+  tenant_id: string;
+  customer_display_name: string | null;
+  latest_checkpoint: ChainLatestCheckpoint | null;
+  timeline: ChainTimelineDay[];
+  verification_supported: boolean;
+  /**
+   * Documented reason the inline Verify button is greyed out. Today
+   * the only value is ``"hmac_symmetric_no_shared_secret"`` (HMAC
+   * chains need the shared secret out-of-band). Future values can be
+   * added without breaking the contract — consumers fall back to the
+   * generic "verification not available in browser" copy if the code
+   * isn't recognised.
+   */
+  verification_unsupported_reason: string | null;
+}
+
+// ── Evidence bundle preview (selective-disclosure modal) ───────────────
+
+export interface EvidenceExportPreviewRequest {
+  start_date?: string;
+  end_date?: string;
+  preview: true;
+}
+
+export interface EvidenceExportPreview {
+  tenant_id: string;
+  customer_display_name: string | null;
+  customer_record_count: number;
+  checkpoint_count: number;
+  /**
+   * Honest warnings the dashboard surfaces alongside the count.
+   * ``"hmac_chain_no_offline_signature_verify"`` = the verifier can
+   * confirm Merkle-path integrity from the bundle alone, but the
+   * checkpoint signature itself requires the shared HMAC secret which
+   * the customer holds out-of-band.
+   * ``"tail_records_excluded"`` = some records in the date range have
+   * not been sealed into a checkpoint yet; they were not included.
+   */
+  warnings: string[];
+  date_range: { start: string; end: string };
+}
+
+export interface EvidenceExportRequest {
+  start_date?: string;
+  end_date?: string;
+  preview?: false;
+}
+
+// ── Merkle proof payload (Wave 3B.2 — for in-browser verification) ──────
+//
+// Returned by ``GET /v1/records/{id}/merkle-proof``. Mirrors the
+// ``MerkleProofPayload`` shape from ``backend/app/services/merkle_proof.py``
+// verbatim so the in-browser Merkle walker doesn't drift from the
+// canonical proof generator.
+
+export interface MerklePathStep {
+  sibling_hash: string;
+  direction: "left" | "right";
+}
+
+export interface MerkleProofPayload {
+  action_record_id: string;
+  action_record_canonical: string;
+  leaf_hash: string;
+  merkle_path: MerklePathStep[];
+  merkle_root: string;
+  checkpoint_id: string;
+  checkpoint_signed_at: string;
+  // Phase 3 follow-up: ``previous_hash`` is the predecessor leaf in
+  // the per-org chain (literal sentinel ``"GENESIS"`` for the first
+  // record). Required so an in-browser or offline verifier can
+  // enforce ``sha256(previous_hash + canonical) == leaf_hash`` rather
+  // than just folding the Merkle path. Added to the backend payload
+  // in the same wave; frontend type stays in sync.
+  previous_hash: string;
+  kms_key_id: string;
+  kms_signature: string;
+  kms_algorithm: string;
+  kms_public_key_pem: string | null;
+}
+
+// ── Phase 3 Wave 3D.3 — Off-Vera S3 mirror configuration ─────────────────
+//
+// Mirrors backend/app/routes/dashboard_s3_mirror.py response models.
+// Used by the Settings → Off-Vera evidence mirror sub-page.
+
+export type S3ExportStatus = "pending" | "success" | "failure" | "skipped";
+
+export interface S3MirrorRecentExport {
+  id: string;
+  checkpoint_id: string;
+  status: S3ExportStatus;
+  exported_at: string | null;
+  duration_ms: number | null;
+  record_count: number | null;
+  reason: string | null;
+}
+
+export interface S3MirrorConfig {
+  arn: string | null;
+  probe_enabled: boolean;
+  iam_role_supported: boolean;
+  success_total: number;
+  failure_total: number;
+  skipped_total: number;
+  pending_total: number;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  last_failure_reason: string | null;
+  recent_exports: S3MirrorRecentExport[];
+}
+
+export interface S3MirrorValidateInput {
+  arn: string;
+  role_arn?: string | null;
+}
+
+export interface S3MirrorValidateResponse {
+  ok: boolean;
+  can_put: boolean;
+  can_get: boolean;
+  stub: boolean;
+}
+
+// Flat-error envelope for /v1/dashboard/s3-export-arn/{validate,probe} +
+// PUT failures. Matches the existing PR #201 pattern: code + message
+// at top level, optional hint, never a nested {"detail": {...}}.
+export interface S3MirrorErrorDetail {
+  code: string;
+  message: string;
+  hint?: string;
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Phase 3 Wave 3D.1 — Home page Chain Integrity tile.
+//
+// Single-call aggregate that answers "is our evidence trail intact right
+// now?". Backend: ``GET /v1/dashboard/chain-integrity`` →
+// ``app.schemas.chain_integrity.ChainIntegrityResponse``.
+// ───────────────────────────────────────────────────────────────────────
+
+export type ChainIntegrityStatus = "ok" | "warn" | "error";
+
+export type CheckpointCadence = "hourly" | "daily" | "disabled";
+
+export interface LatestCheckpointSummary {
+  checkpoint_id: string;
+  /** ISO-8601 timestamp without timezone (UTC by contract). */
+  sealed_at: string;
+  sequence: number;
+  record_count: number;
+}
+
+export interface KmsKeySummary {
+  key_id: string;
+  algorithm: string;
+}
+
+export interface ChainIntegrityResponse {
+  status: ChainIntegrityStatus;
+  /** Regulator-ready, plain-English one-liner. */
+  message: string;
+  latest_checkpoint: LatestCheckpointSummary | null;
+  chain_depth: number;
+  kms_key: KmsKeySummary | null;
+  cadence: CheckpointCadence;
+}

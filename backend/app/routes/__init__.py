@@ -3,6 +3,8 @@ from .agents import router as agents_router
 from .verification import router as verification_router
 from .organizations import router as organizations_router
 from .checkpoints import router as checkpoints_router
+from .checkpoints_by_date import router as checkpoints_by_date_router
+from .customer_chain_summary import router as customer_chain_summary_router
 from .customers import router as customers_router
 from .dev import router as dev_router
 from .export import router as export_router
@@ -10,7 +12,11 @@ from .policies import router as policies_router
 from .approvals import router as approvals_router
 from .gates import router as gates_router
 from .reviews import router as reviews_router
+from .staff import router as staff_router
 from .webhooks import router as webhooks_router
+from .kms import router as kms_router
+from .records import router as records_router
+from .dashboard_chain_integrity import router as dashboard_chain_integrity_router
 
 # routes/api_keys.py was removed in the E4 cleanup. API-key management now
 # lives exclusively under /v1/dashboard/api-keys (Clerk-gated, see
@@ -29,6 +35,8 @@ __all__ = [
     "verification_router",
     "organizations_router",
     "checkpoints_router",
+    "checkpoints_by_date_router",
+    "customer_chain_summary_router",
     "customers_router",
     "dev_router",
     "export_router",
@@ -36,5 +44,9 @@ __all__ = [
     "approvals_router",
     "gates_router",
     "reviews_router",
+    "staff_router",
     "webhooks_router",
+    "kms_router",
+    "records_router",
+    "dashboard_chain_integrity_router",
 ]

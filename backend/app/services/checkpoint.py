@@ -19,7 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import ActionRecord, ChainState
 from ..models.checkpoint import Checkpoint
-from .kms import get_kms
+from .kms import (
+    ensure_key_registered,
+    get_kms,
+    verify_with_history,
+)
 from .locks import get_org_lock
 from .merkle import build_tree_from_records
 from .external_store import get_external_store, ExternalProof
@@ -91,8 +95,12 @@ async def create_checkpoint(session: AsyncSession, org_id: str) -> Checkpoint:
             tree = build_tree_from_records(record_hashes)
             merkle_root = tree.root
 
-        # Sign with KMS
+        # Sign with KMS. Phase 3 Wave 3A.a — register the key in the
+        # history table BEFORE signing so the audit row exists even if
+        # the checkpoint write fails later in the same transaction.
+        # Idempotent: re-registering an existing key_id is a no-op.
         kms = get_kms()
+        await ensure_key_registered(session, kms)
         message = _checkpoint_message(
             org_id, chain_state.latest_sequence, chain_state.latest_hash, timestamp
         )
@@ -110,6 +118,31 @@ async def create_checkpoint(session: AsyncSession, org_id: str) -> Checkpoint:
         session.add(checkpoint)
         await session.commit()
         await session.refresh(checkpoint)
+
+    # Phase 3 Wave 3B.1 — Customer S3 mirror export. Schedules a
+    # background asyncio task; never blocks checkpoint sealing on the
+    # S3 round-trip. Idempotent: re-running on an already-exported
+    # checkpoint writes a 'skipped' row. Inner exporter handles the
+    # "org has no s3_export_arn" case by recording a structured
+    # ``skipped`` row.
+    #
+    # Gated by ``settings.checkpoint_export_enabled`` so test code
+    # can disable it (the in-memory StaticPool test DB doesn't tolerate
+    # the export task's parallel session writes during concurrent-
+    # action regression tests — see
+    # ``test_checkpoint_does_not_race_with_concurrent_inserts``).
+    # Tests that exercise the exporter call ``schedule_export`` or
+    # ``export_checkpoint_to_customer_mirror`` directly.
+    from ..config import settings as _settings
+    if _settings.checkpoint_export_enabled:
+        try:
+            from .checkpoint_export import schedule_export
+            schedule_export(checkpoint.id)
+        except Exception:
+            logger.warning(
+                "Failed to schedule customer mirror export for checkpoint %s",
+                checkpoint.id, exc_info=True,
+            )
 
     # Publish to external store (best-effort — failure doesn't roll back checkpoint)
     try:
@@ -147,18 +180,49 @@ async def create_checkpoint(session: AsyncSession, org_id: str) -> Checkpoint:
 
 
 async def verify_checkpoint(session: AsyncSession, checkpoint: Checkpoint) -> bool:
-    """Verify a single checkpoint's signature, chain state, and external proof."""
+    """Verify a single checkpoint's signature, chain state, and external proof.
+
+    Phase 3 Wave 3A.a — signature verification is now **history-aware**:
+    we look up ``checkpoint.key_id`` in the ``kms_keys`` table and
+    verify against the historical key's algorithm / public key rather
+    than blindly using the current KMS. This is the path that keeps
+    "regulator-ready" intact across KMS rotations.
+
+    Fallback: if ``checkpoint.key_id`` is NULL (legacy checkpoint
+    written before this migration), we fall back to verifying against
+    the current KMS provider so existing checkpoints don't break. New
+    checkpoints always carry a ``key_id``.
+    """
     timestamp = checkpoint.created_at.isoformat()
 
-    # 1. Verify KMS signature
-    kms = get_kms()
     message = _checkpoint_message(
         checkpoint.org_id,
         checkpoint.sequence_at_checkpoint,
         checkpoint.hash_at_checkpoint,
         timestamp,
     )
-    if not kms.verify(message, checkpoint.signature):
+
+    # 1. Verify KMS signature — history-aware if key_id is set.
+    if checkpoint.key_id:
+        sig_ok = await verify_with_history(
+            session,
+            key_id=checkpoint.key_id,
+            message=message,
+            signature=checkpoint.signature,
+        )
+    else:
+        # Legacy checkpoint without a key_id — fall back to current KMS.
+        # Logged at debug because legacy rows are expected during the
+        # migration window; once all checkpoints have a key_id this
+        # branch is dead.
+        logger.debug(
+            "verify_checkpoint: checkpoint %s has no key_id — "
+            "falling back to current KMS provider (legacy path).",
+            checkpoint.id,
+        )
+        sig_ok = get_kms().verify(message, checkpoint.signature)
+
+    if not sig_ok:
         return False
 
     # 2. Verify the record at that sequence actually has that hash

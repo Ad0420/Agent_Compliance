@@ -8,6 +8,7 @@ import {
 import {
   getCustomer,
   getCustomerAgents,
+  getCustomerChainSummary,
   getCustomerDecisions,
   getCustomers,
   patchCustomer,
@@ -19,6 +20,7 @@ import type {
   BAAUploadResponse,
   Customer,
   CustomerAgentsResponse,
+  CustomerChainSummary,
   CustomerDecisionsQueryParams,
   CustomerDecisionsResponse,
   CustomerQueryParams,
@@ -100,6 +102,31 @@ export function useCustomerDecisions(
       );
       return hasInFlight ? 15_000 : false;
     },
+  });
+}
+
+// Wave 3D.2 — Customer Verification & Evidence Trail panel.
+//
+// Powers the per-customer "Latest checkpoint covering this customer"
+// summary + 30-day timeline strip + the gate that enables the inline
+// "Verify this customer's chain" button. The query keys carry the
+// tenant_id so React Query's cache holds independent snapshots per
+// customer; the panel sits on the Overview tab, so we keep it cheap by
+// disabling auto-refetch and only invalidate on demand.
+export function useCustomerChainSummary(
+  tenant_id: string,
+  enabled = true,
+) {
+  return useQuery<CustomerChainSummary>({
+    queryKey: ["customers", "chain-summary", tenant_id],
+    queryFn: () => getCustomerChainSummary(tenant_id),
+    enabled: !!tenant_id && enabled,
+    // 60s staleness — checkpoints don't seal more often than the
+    // configured cadence (default hourly for live keys), so a minute is
+    // a generous "fresh" window. The user can also hit the inline
+    // Verify button to force a fresh round-trip when they want to see
+    // the latest checkpoint immediately.
+    staleTime: 60_000,
   });
 }
 

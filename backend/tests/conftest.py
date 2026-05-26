@@ -6,6 +6,12 @@ import os
 # mid-test. Set BEFORE importing ``app.*`` so ``services.webhooks``
 # sees it at module load. Production never sets this.
 os.environ.setdefault("VERA_WEBHOOK_SYNC_DISPATCH", "1")
+# Phase 3 Wave 3A.b — disable the checkpoint cadence sweeper by default
+# in tests. Individual tests that need to exercise the sweeper opt in
+# explicitly via ``monkeypatch.setattr(settings, ...)`` or by calling
+# ``sweep_due_checkpoints`` directly. Mirrors the webhook sweeper
+# pattern; both default to enabled in production and disabled in tests.
+os.environ.setdefault("VERA_CHECKPOINT_SWEEPER_ENABLED", "false")
 
 import pytest
 import pytest_asyncio
@@ -74,6 +80,26 @@ async def db_session(db_engine):
 
 
 @pytest.fixture(autouse=True)
+def _disable_checkpoint_export_by_default(monkeypatch):
+    """Phase 3 Wave 3B.1 — disable the customer S3 mirror exporter by
+    default in tests.
+
+    ``services.checkpoint.create_checkpoint`` calls
+    ``schedule_export`` which spawns a background task on a separate
+    session; under the in-memory StaticPool DB this races the parent
+    session in concurrent-action regression tests. Tests that exercise
+    the exporter (e.g. test_checkpoint_export.py
+    ``test_sealing_checkpoint_schedules_export``) re-enable it via
+    ``monkeypatch.setattr(settings, "checkpoint_export_enabled", True)``.
+    The unit tests that call ``export_checkpoint_to_customer_mirror``
+    directly don't go through ``create_checkpoint`` so the flag is
+    irrelevant for them.
+    """
+    from app.config import settings as _settings
+    monkeypatch.setattr(_settings, "checkpoint_export_enabled", False)
+
+
+@pytest.fixture(autouse=True)
 def _patch_ssrf_dns_for_tests(monkeypatch):
     """Wave 2D B3 — make synthetic test URLs resolve to a benign public IP.
 
@@ -137,6 +163,27 @@ async def _patch_async_session_local_for_webhooks(db_engine, monkeypatch):
 
         monkeypatch.setattr(
             _sweeper_module, "AsyncSessionLocal", session_factory
+        )
+    except Exception:
+        pass
+    # Wave 3A.c — staff_audit_log writer uses its own ``AsyncSessionLocal``
+    # binding so the audit row persists across a rolled-back request
+    # transaction. Point it at the test engine the same way.
+    try:
+        import app.services.iam as _iam_module
+
+        monkeypatch.setattr(
+            _iam_module, "AsyncSessionLocal", session_factory
+        )
+    except Exception:
+        pass
+    # Wave 3B.1 — checkpoint S3 mirror exporter uses ``AsyncSessionLocal``
+    # the same way (fire-and-forget background task on its own session).
+    try:
+        import app.services.checkpoint_export as _export_module
+
+        monkeypatch.setattr(
+            _export_module, "AsyncSessionLocal", session_factory
         )
     except Exception:
         pass
