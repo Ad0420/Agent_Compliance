@@ -370,6 +370,27 @@ async def test_get_checkpoint_by_date_staff_without_org_id_400(
 
 
 @pytest.mark.asyncio
+async def test_get_checkpoint_by_date_disabled_cadence_returns_404_not_409(
+    async_client, db_session, org_and_key
+):
+    """Orgs with ``checkpoint_cadence=disabled`` never auto-checkpoint.
+    Today's missing checkpoint isn't "pending" — it's a 404. Without
+    this guard, SDK clients retry forever on a condition that will
+    never resolve (codex /review finding)."""
+    org, raw_key, _ = org_and_key
+    org.checkpoint_cadence = "disabled"
+    await db_session.commit()
+
+    today = datetime.now(timezone.utc).date()
+    resp = await async_client.get(
+        f"/v1/checkpoints/{today.isoformat()}",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["code"] == "checkpoint_not_found"
+
+
+@pytest.mark.asyncio
 async def test_get_checkpoint_by_date_returns_latest_in_day(
     async_client, db_session, org_and_key
 ):

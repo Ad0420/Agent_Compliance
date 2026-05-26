@@ -43,11 +43,11 @@ from datetime import date as date_cls, datetime, timedelta, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..database import get_db
-from ..models import ActionRecord, Checkpoint
+from ..models import ActionRecord, Checkpoint, Organization
 from ..services.auth import AuthContext, require_permission_with_context
 from ..services.iam import IamTier, audit_staff_read
 
@@ -98,6 +98,14 @@ async def _latest_checkpoint_in_window(
     """
     window_start = datetime.combine(day, datetime.min.time())
     window_end = window_start + timedelta(days=1)
+    # Tiebreaker on ``sequence_at_checkpoint`` guarantees the SAME row
+    # is returned across calls when two checkpoints share a
+    # ``created_at`` timestamp (millisecond ties happen — SQLite and
+    # Postgres both round to ms in different ways depending on the
+    # driver, and the test fixture deliberately uses identical clock
+    # values). Without the tiebreaker, the row returned is plan-
+    # dependent and breaks the byte-stable diff contract auditors
+    # rely on.
     q = (
         select(Checkpoint)
         .where(
@@ -107,7 +115,10 @@ async def _latest_checkpoint_in_window(
                 Checkpoint.created_at < window_end,
             )
         )
-        .order_by(Checkpoint.created_at.desc())
+        .order_by(
+            Checkpoint.created_at.desc(),
+            Checkpoint.sequence_at_checkpoint.desc(),
+        )
         .limit(1)
     )
     return (await session.execute(q)).scalars().first()
@@ -139,17 +150,16 @@ async def _record_count_in_window(
     checkpoint: Checkpoint,
     prior_seq: int,
 ) -> int:
-    q = (
-        select(ActionRecord.id)
-        .where(
-            ActionRecord.org_id == org_id,
-            ActionRecord.sequence_number > prior_seq,
-            ActionRecord.sequence_number
-            <= checkpoint.sequence_at_checkpoint,
-        )
+    # COUNT(*) at the DB layer — avoids materialising every row in
+    # Python just to call len(). For checkpoints with thousands of
+    # records this matters (e.g., an hourly cadence org under heavy
+    # load can checkpoint ~500-1000 records per window).
+    q = select(func.count(ActionRecord.id)).where(
+        ActionRecord.org_id == org_id,
+        ActionRecord.sequence_number > prior_seq,
+        ActionRecord.sequence_number <= checkpoint.sequence_at_checkpoint,
     )
-    res = await session.execute(q)
-    return len(res.scalars().all())
+    return int((await session.execute(q)).scalar_one() or 0)
 
 
 async def _prior_seq(
@@ -253,12 +263,24 @@ async def get_checkpoint_by_date(
     )
 
     if cp is None:
-        # 409 vs 404. If the day is today and we expect a checkpoint
-        # later (cadence sweeper is mid-tick), surface 409 with
-        # Retry-After so SDK callers back off cleanly instead of
-        # caching a 404 for the rest of the day.
+        # 409 vs 404. If the day is today AND the org has auto-cadence
+        # enabled (daily/hourly), the checkpoint may genuinely be
+        # pending — return 409 + Retry-After so SDK callers back off.
+        # For ``disabled`` cadence (manual-only checkpointing), 409
+        # would be a lie that retries forever, so we fall through to
+        # 404. Catches the codex-review finding "409 fires forever for
+        # disabled cadence".
         today = _utc_now().date()
+        is_today_pending = False
         if day == today:
+            org_row = await session.get(Organization, org_id)
+            if (
+                org_row is not None
+                and org_row.checkpoint_cadence in ("daily", "hourly")
+            ):
+                is_today_pending = True
+
+        if is_today_pending:
             if ctx.tier == IamTier.STAFF_READ_ONLY:
                 await audit_staff_read(
                     session,

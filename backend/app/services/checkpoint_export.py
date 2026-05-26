@@ -381,6 +381,14 @@ def canonical_document_bytes(
 # Module-level factory so tests can monkeypatch it with a stub that
 # returns a fake client. Production resolves boto3 lazily so the
 # import is cheap on systems where boto3 isn't installed.
+#
+# v1 limitation: uses ambient AWS credentials (the Vera process's own
+# role / env-var credentials). The Wave 3A.d off-Vera mirror validate
+# endpoint accepts an optional ``role_arn`` for future STS AssumeRole
+# support, but the role ARN is NOT yet persisted on the org row —
+# adding that column + the AssumeRole flow is a Wave 3B.2 follow-up.
+# Customers who require cross-account writes today must grant the
+# Vera deployment's role direct write access to their bucket.
 def _make_s3_client():
     """Return a boto3 S3 client. Raises ImportError if boto3 missing."""
     import boto3  # type: ignore[import-untyped]
@@ -415,11 +423,14 @@ async def _write_export_row(
     reason: Optional[str] = None,
     error_detail: Optional[str] = None,
     duration_ms: Optional[int] = None,
-) -> None:
+) -> CheckpointExport:
     """Insert a checkpoint_exports row. Commits on its own session.
 
     All writes go through this helper so the failure path matches the
-    success path 1:1. Best-effort: a DB write failure here is logged
+    success path 1:1. Returns the inserted row (caller may finalize
+    a ``pending`` insert via ``_finalize_export_row``).
+
+    Best-effort: a DB write failure here is logged at the call site
     and swallowed — the structured log line is the fallback record.
     """
     row = CheckpointExport(
@@ -434,6 +445,43 @@ async def _write_export_row(
         duration_ms=duration_ms,
     )
     session.add(row)
+    await session.commit()
+    await session.refresh(row)
+    return row
+
+
+async def _finalize_export_row(
+    session: AsyncSession,
+    row: CheckpointExport,
+    *,
+    status: str,
+    s3_location: Optional[str] = None,
+    document_hash: Optional[str] = None,
+    record_count: Optional[int] = None,
+    reason: Optional[str] = None,
+    error_detail: Optional[str] = None,
+    duration_ms: Optional[int] = None,
+) -> None:
+    """Flip a ``pending`` row to its terminal state.
+
+    The pre-call ``pending`` row + post-call UPDATE pattern means a
+    process crash mid-S3-call leaves a forensic ``pending`` row in the
+    DB rather than a silent gap. Ops can query "pending rows older
+    than N minutes" to find lost-in-flight exports.
+    """
+    row.status = status
+    if s3_location is not None:
+        row.s3_location = s3_location
+    if document_hash is not None:
+        row.document_hash = document_hash
+    if record_count is not None:
+        row.record_count = record_count
+    if reason is not None:
+        row.reason = reason
+    if error_detail is not None:
+        row.error_detail = error_detail
+    if duration_ms is not None:
+        row.duration_ms = duration_ms
     await session.commit()
 
 
@@ -566,18 +614,32 @@ async def export_checkpoint_to_customer_mirror(
                 days=DEFAULT_RETENTION_DAYS
             )
 
+            # ── Write a pending row BEFORE the S3 call so a crash
+            # mid-flight leaves a forensic record. Caught by the
+            # codex /review as "exports can be silently lost on crash"
+            # (Wave 3B.1 PR review). Ops can query
+            # ``SELECT * FROM checkpoint_exports WHERE status='pending'
+            # AND exported_at < now() - interval '15 minutes'`` to
+            # find lost-in-flight exports.
+            pending_row = await _write_export_row(
+                session,
+                checkpoint_id=cp.id,
+                org_id=cp.org_id,
+                status="pending",
+                s3_location=s3_location,
+                document_hash=digest,
+                record_count=len(records),
+            )
+
             # ── Boto3 call ────────────────────────────────────────
             try:
                 client = _make_s3_client()
             except ImportError:
                 duration_ms = int((time.perf_counter() - started) * 1000)
-                await _write_export_row(
+                await _finalize_export_row(
                     session,
-                    checkpoint_id=cp.id,
-                    org_id=cp.org_id,
+                    pending_row,
                     status="failure",
-                    record_count=len(records),
-                    document_hash=digest,
                     reason=REASON_BOTO3_UNAVAILABLE,
                     error_detail="boto3 not installed",
                     duration_ms=duration_ms,
@@ -588,8 +650,15 @@ async def export_checkpoint_to_customer_mirror(
                 logger.error("export: boto3 unavailable; failure logged")
                 return
 
+            # boto3 is synchronous. Offload to a worker thread so the
+            # asyncio event loop isn't blocked on the S3 round-trip
+            # (typically ~80-300ms, longer under throttling). This
+            # matters because the exporter runs in the same event loop
+            # as the request handlers; a blocking put_object on a cold
+            # S3 client stalls every other request for the duration.
             try:
-                client.put_object(
+                await asyncio.to_thread(
+                    client.put_object,
                     Bucket=bucket,
                     Key=key_path,
                     Body=body,
@@ -600,13 +669,10 @@ async def export_checkpoint_to_customer_mirror(
             except Exception as exc:  # noqa: BLE001 — wide on purpose
                 reason, detail = _classify_boto_error(exc)
                 duration_ms = int((time.perf_counter() - started) * 1000)
-                await _write_export_row(
+                await _finalize_export_row(
                     session,
-                    checkpoint_id=cp.id,
-                    org_id=cp.org_id,
+                    pending_row,
                     status="failure",
-                    record_count=len(records),
-                    document_hash=digest,
                     reason=reason,
                     error_detail=detail,
                     duration_ms=duration_ms,
@@ -634,14 +700,10 @@ async def export_checkpoint_to_customer_mirror(
 
             # ── Success ───────────────────────────────────────────
             duration_ms = int((time.perf_counter() - started) * 1000)
-            await _write_export_row(
+            await _finalize_export_row(
                 session,
-                checkpoint_id=cp.id,
-                org_id=cp.org_id,
+                pending_row,
                 status="success",
-                s3_location=s3_location,
-                document_hash=digest,
-                record_count=len(records),
                 duration_ms=duration_ms,
             )
             _metric_success(duration_ms / 1000)

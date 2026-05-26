@@ -54,7 +54,12 @@ _EXPORTS_INDEX_CHECKPOINT = "idx_checkpoint_exports_checkpoint_id"
 _EXPORTS_INDEX_ORG_STATUS = "idx_checkpoint_exports_org_status"
 _EXPORTS_UNIQUE_SUCCESS = "uq_checkpoint_exports_checkpoint_success"
 _STATUS_CHECK_NAME = "ck_checkpoint_exports_status"
-_STATUS_CHECK_SQL = "status IN ('success', 'failure', 'skipped')"
+# ``pending`` is the row state between scheduling and S3 round-trip
+# completion. It exists so a process crash mid-call leaves a forensic
+# row rather than a silent gap — ops can find "pending older than N
+# minutes" and either retry or escalate. The codex /review caught the
+# "silent loss on crash" gap (Wave 3B.1).
+_STATUS_CHECK_SQL = "status IN ('pending', 'success', 'failure', 'skipped')"
 
 
 def _has_table(inspector, name: str) -> bool:

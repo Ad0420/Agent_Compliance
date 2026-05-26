@@ -68,14 +68,25 @@ from .base import Base
 
 # Single source of truth for the allowed status values. Imported by the
 # exporter service so the route + service + migration CHECK all agree.
-EXPORT_STATUSES: tuple[str, ...] = ("success", "failure", "skipped")
+#
+# ``pending`` is the row state between scheduling and S3 round-trip
+# completion. We write the pending row BEFORE the boto3 call so a
+# process crash mid-flight leaves a forensic row rather than a silent
+# gap. Ops can query "pending older than N minutes" to find lost
+# exports and retry.
+EXPORT_STATUSES: tuple[str, ...] = (
+    "pending",
+    "success",
+    "failure",
+    "skipped",
+)
 
 
 class CheckpointExport(Base):
     __tablename__ = "checkpoint_exports"
     __table_args__ = (
         CheckConstraint(
-            "status IN ('success', 'failure', 'skipped')",
+            "status IN ('pending', 'success', 'failure', 'skipped')",
             name="ck_checkpoint_exports_status",
         ),
         # Idempotency hot path — used by every exporter call to ask
