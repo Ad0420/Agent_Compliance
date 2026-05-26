@@ -152,7 +152,7 @@ export function ReviewQueueTable({
       <div data-testid="review-queue-empty">
         <EmptyState
           title="No pending reviews"
-          subtitle="When agents need human approval, they'll appear here."
+          subtitle="When an agent decision awaits a clinician callback, it appears here for monitoring."
         />
       </div>
     );
