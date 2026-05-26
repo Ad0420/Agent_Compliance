@@ -17,6 +17,7 @@ from .routes import (
     organizations_router,
     checkpoints_router,
     checkpoints_by_date_router,
+    customer_chain_summary_router,
     customers_router,
     export_router,
     register_router,
@@ -169,6 +170,14 @@ app.include_router(checkpoints_router, prefix="/v1")
 # Separate from the /v1/verify/checkpoints router above (different prefix
 # + different IAM model: this one supports staff X-Org-Id reads).
 app.include_router(checkpoints_by_date_router, prefix="/v1")
+# Wave 3D.2 — Customer Verification & Evidence Trail panel data feed +
+# evidence bundle export. Mounted under the same /v1/customers prefix
+# the existing customers_router uses; registering BEFORE customers_router
+# ensures the more-specific paths (/{tenant_id}/chain-summary,
+# /{tenant_id}/evidence-export) match before the catch-all PATCH/GET on
+# the customers router would intercept them. FastAPI matches in
+# registration order.
+app.include_router(customer_chain_summary_router, prefix="/v1")
 app.include_router(customers_router, prefix="/v1")
 app.include_router(verification_router, prefix="/v1")
 app.include_router(organizations_router, prefix="/v1")

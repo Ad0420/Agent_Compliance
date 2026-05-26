@@ -25,10 +25,13 @@ import type {
   ApprovalQueryParams,
   Customer,
   CustomerAgentsResponse,
+  CustomerChainSummary,
   CustomerListResponse,
   CustomerQueryParams,
   CustomerDecisionsResponse,
   CustomerDecisionsQueryParams,
+  EvidenceExportPreview,
+  MerkleProofPayload,
   WizardAnswersResponse,
   WizardAnswersSubmission,
   BAAUploadInput,
@@ -274,6 +277,91 @@ export function getCustomerDecisions(
   });
   return request(
     `/v1/customers/${encodeURIComponent(tenant_id)}/decisions${query}`,
+  );
+}
+
+// ── Wave 3D.2 — Customer Verification & Evidence Trail panel ────────────
+
+export function getCustomerChainSummary(
+  tenant_id: string,
+): Promise<CustomerChainSummary> {
+  return request(
+    `/v1/customers/${encodeURIComponent(tenant_id)}/chain-summary`,
+  );
+}
+
+export interface EvidenceExportInput {
+  start_date?: string;
+  end_date?: string;
+}
+
+export function previewEvidenceExport(
+  tenant_id: string,
+  input: EvidenceExportInput,
+): Promise<EvidenceExportPreview> {
+  return request(
+    `/v1/customers/${encodeURIComponent(tenant_id)}/evidence-export`,
+    {
+      method: "POST",
+      body: JSON.stringify({ ...input, preview: true }),
+    },
+  );
+}
+
+/**
+ * Stream the evidence bundle to a browser download.
+ *
+ * Bundle generation can be slow for large date ranges. The async
+ * fetch yields a single Blob; the caller surface drives a normal
+ * "Save as…" download via an in-memory object URL — same pattern as
+ * ``exportCsv`` / ``exportPdf``.
+ *
+ * Returns the suggested filename the backend put in
+ * ``Content-Disposition`` so the caller can show it as a confirmation
+ * line ("Downloaded ``vera-evidence-cleveland_clinic-2026-02-26_to_
+ * 2026-05-25.tar.gz``").
+ */
+export async function downloadEvidenceBundle(
+  tenant_id: string,
+  input: EvidenceExportInput,
+): Promise<{ filename: string }> {
+  const headers = await getHeaders();
+  const response = await fetch(
+    `${BASE_URL}/v1/customers/${encodeURIComponent(tenant_id)}/evidence-export`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ ...input, preview: false }),
+    },
+  );
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: "Export failed" }));
+    const detail =
+      typeof error?.detail === "string"
+        ? error.detail
+        : error?.code || `Export failed (${response.status})`;
+    throw new ApiError(response.status, detail, error);
+  }
+  const disposition = response.headers.get("content-disposition") || "";
+  const match = /filename="([^"]+)"/.exec(disposition);
+  const filename = match?.[1] || `vera-evidence-${tenant_id}.tar.gz`;
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  return { filename };
+}
+
+export function getMerkleProof(
+  action_record_id: string,
+): Promise<MerkleProofPayload> {
+  return request(
+    `/v1/records/${encodeURIComponent(action_record_id)}/merkle-proof`,
   );
 }
 
