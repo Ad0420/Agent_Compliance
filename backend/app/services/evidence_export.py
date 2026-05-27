@@ -425,6 +425,18 @@ async def build_evidence_bundle_tar_gz(
                 if row.algorithm == ALGO_HMAC_SHA256:
                     warnings.add("hmac_chain_no_offline_signature_verify")
 
+        # ``signed_at`` MUST be byte-identical to the timestamp string
+        # the backend signed at checkpoint-creation time
+        # (``services.checkpoint.create_checkpoint`` uses
+        # ``datetime.now(timezone.utc).replace(tzinfo=None).isoformat()``,
+        # which is microsecond precision). The SDK rebuilds the HMAC
+        # signing message from the JSON payload, so any precision
+        # truncation here would produce a different message and the
+        # signature wouldn't verify offline (``hmac_mismatch``).
+        # Found during Phase 3 Scenario 4 acceptance testing — the
+        # exporter was truncating to millisecond precision via
+        # ``_format_iso_ms``, dropping the microseconds the backend
+        # had signed over.
         cp_meta[cp.id] = {
             "checkpoint_id": cp.id,
             "org_id": cp.org_id,
@@ -433,7 +445,7 @@ async def build_evidence_bundle_tar_gz(
             "kms_algorithm": kms_algorithm or None,
             "kms_public_key_pem": kms_public_key_pem,
             "signature": cp.signature,
-            "signed_at": _format_iso_ms(cp.created_at),
+            "signed_at": cp.created_at.isoformat(),
             "sequence_at_checkpoint": cp.sequence_at_checkpoint,
             "hash_at_checkpoint": cp.hash_at_checkpoint,
             "prior_sequence_at_checkpoint": prior,
