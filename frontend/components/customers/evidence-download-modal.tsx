@@ -113,8 +113,17 @@ export function EvidenceDownloadModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
+      {/*
+        Per-modal Vera light-theme override. The shared `DialogContent`
+        primitive (frontend/components/ui/dialog.tsx) uses `bg-background`,
+        which is portaled to `document.body` — outside the `.dashboard`
+        scope that remaps `--background` to `--paper`. Without this
+        override the modal renders on the global `.dark` slate background.
+        Pattern matches `frontend/components/wizard/onboarding-wizard.tsx`.
+        See hotfix/dialog-light-theme-evidence-download.
+      */}
       <DialogContent
-        className="max-w-lg"
+        className="max-w-lg bg-[color:var(--paper)] border-[color:var(--ink-4)] text-[color:var(--ink)]"
         data-testid="evidence-download-modal"
       >
         <DialogHeader>
