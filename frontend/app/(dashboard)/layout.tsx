@@ -12,8 +12,9 @@ import { OnboardingWizard } from "@/components/wizard/onboarding-wizard";
  * content all render inside this wrapper, so every shadcn token (bg-card,
  * text-foreground, border-border, ...) resolves to its warm-paper
  * equivalent here while non-dashboard routes (`/login`, `/api-keys`,
- * `/compliance`, etc.) continue to inherit the global `.dark` theme from
- * <html class="dark">.
+ * `/compliance-reviewer-legacy`, etc.) continue to inherit the global
+ * `.dark` theme from <html class="dark">. (``/compliance`` itself moved
+ * into the `(dashboard)` group in Phase 4 Wave 2 PR C1.)
  *
  * `bg-background` is the warm-paper `--paper` colour inside this scope.
  */

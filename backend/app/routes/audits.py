@@ -52,7 +52,11 @@ from ..models import (
     Organization,
 )
 from ..services.auth import AuthContext, require_permission_with_context
-from ..services.pdf import PdfRenderTimeout, generate_audit_pdf
+from ..services.pdf import (
+    PdfRenderTimeout,
+    TooManyRecordsForPdf,
+    generate_audit_pdf,
+)
 from ..services.pdf.sections import DEFAULT_SECTION_ORDER, SECTION_RENDERERS
 
 logger = logging.getLogger("vera.audits")
@@ -304,6 +308,23 @@ async def generate_audit_pdf_route(
                     "budget. Consider narrowing the date range and "
                     "retrying."
                 ),
+            },
+        )
+    except TooManyRecordsForPdf as exc:
+        # 413 Payload Too Large — the proof attachments would balloon the
+        # worker's memory + 30 s budget. Narrow the date range; per-day
+        # PDFs always work because the cap is per-PDF.
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "too_many_records_for_pdf",
+                "detail": (
+                    f"This date range contains {exc.record_count} captured "
+                    f"decisions (cap: {exc.cap}). Consider narrowing the "
+                    "date range and retrying."
+                ),
+                "record_count": exc.record_count,
+                "cap": exc.cap,
             },
         )
     except ValueError as exc:

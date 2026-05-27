@@ -88,7 +88,15 @@ def sync_engine(tmp_path):
             " checkpoint_cadence VARCHAR(16) NOT NULL DEFAULT 'daily',"
             # Phase 3 Wave 3B.1 — customer S3 mirror export target.
             # Nullable; NULL means "no mirror configured".
-            " s3_export_arn VARCHAR(512)"
+            " s3_export_arn VARCHAR(512),"
+            # Phase 4 Wave 2 PR A3 — white-label PDF cover. Three
+            # nullable columns covering the uploaded logo blob, its
+            # MIME, and the Customer-selected accent colour. Mirrored
+            # into the dedupe fixture so the model's INSERT (which
+            # includes these columns) matches the table shape.
+            " logo_bytes BLOB,"
+            " logo_mime VARCHAR(32),"
+            " accent_color_hex VARCHAR(7)"
             ")"
         ))
         conn.execute(text("PRAGMA foreign_keys=ON"))

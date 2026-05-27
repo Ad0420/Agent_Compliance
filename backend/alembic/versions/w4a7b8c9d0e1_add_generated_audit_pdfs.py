@@ -1,7 +1,7 @@
 """add generated_audit_pdfs (Phase 4 Wave 2 C4 — audit PDF history)
 
 Revision ID: w4a7b8c9d0e1
-Revises: t0o2p3q4r5s6
+Revises: w4t7u8v9w0x1
 Create Date: 2026-05-26
 
 Wave 2 C4 surfaces a "Generated audit PDFs" history table on the
@@ -65,7 +65,7 @@ from alembic import op
 
 
 revision = "w4a7b8c9d0e1"
-down_revision = "t0o2p3q4r5s6"
+down_revision = "w4t7u8v9w0x1"
 branch_labels = None
 depends_on = None
 

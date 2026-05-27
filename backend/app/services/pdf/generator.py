@@ -29,17 +29,19 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import logging
 from datetime import date
 from typing import Iterable, Optional
 
+from pypdf import PdfReader, PdfWriter
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
 from reportlab.platypus import SimpleDocTemplate
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...models import Customer, Organization
-from .context import PdfContext, build_context
+from .context import PdfContext, TooManyRecordsForPdf, build_context
 from .sections import (
     DEFAULT_SECTION_ORDER,
     SECTION_RENDERERS,
@@ -85,8 +87,10 @@ def _render_to_bytes(ctx: PdfContext, sections: list[str]) -> bytes:
     """Synchronous render path. Runs inside ``asyncio.to_thread``.
 
     Builds the Platypus story by calling each requested section
-    renderer in canonical order, then asks ``SimpleDocTemplate`` to lay
-    out the pages into a BytesIO buffer.
+    renderer in canonical order, asks ``SimpleDocTemplate`` to lay out
+    the pages into a BytesIO buffer, and finally post-processes the
+    result with pypdf to embed each Merkle proof JSON as a PDF
+    attachment.
     """
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -105,7 +109,45 @@ def _render_to_bytes(ctx: PdfContext, sections: list[str]) -> bytes:
         renderer(story, ctx)
 
     doc.build(story)
-    return buf.getvalue()
+    rendered = buf.getvalue()
+
+    # A2: attach per-decision Merkle proofs. If there's nothing to
+    # attach, skip the post-processing step entirely so this PR stays a
+    # no-op for date ranges with zero sealed records.
+    if not ctx.merkle_attachments:
+        return rendered
+    return _attach_proofs(rendered, ctx.merkle_attachments)
+
+
+def _attach_proofs(
+    pdf_bytes: bytes, attachments: list[tuple[str, dict]]
+) -> bytes:
+    """Embed one ``proof-*.json`` file per ActionRecord in the PDF.
+
+    Uses ``pypdf``'s built-in ``add_attachment`` rather than introducing
+    a new dependency (pikepdf). The attached files are visible in
+    Acrobat → View → Show/Hide → Navigation Panes → Attachments and in
+    Preview's sidebar; both surfaces let a regulator extract a
+    ``proof.json`` and pipe it into ``vera verify --merkle-proof``.
+
+    The function is CPU-bound (one full re-parse of the rendered PDF)
+    but well inside the 30 s render budget — the cap is 500 records and
+    a ~1 MB JSON per record, dominated by the underlying Merkle proof
+    build, not the attachment step.
+    """
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    writer = PdfWriter(clone_from=reader)
+    for filename, payload in attachments:
+        # ``json.dumps`` rather than carrying the raw bytes so we know
+        # the on-disk encoding is deterministic UTF-8 and the JSON shape
+        # is exactly the dict ``build_proof`` returned.
+        writer.add_attachment(
+            filename,
+            json.dumps(payload, sort_keys=True).encode("utf-8"),
+        )
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
 
 
 async def generate_audit_pdf(
@@ -118,6 +160,7 @@ async def generate_audit_pdf(
     sections: Optional[Iterable[str]] = None,
     branding: str = "customer",
     timeout_seconds: float = DEFAULT_RENDER_TIMEOUT_SECONDS,
+    records_hard_cap: Optional[int] = None,
 ) -> bytes:
     """Render the HIPAA AI Audit Trail PDF for one Customer / date range.
 
@@ -129,9 +172,17 @@ async def generate_audit_pdf(
     `sections`, `branding`). If ``sections`` is ``None`` we render every
     section in the canonical order — the typical PDF flow.
 
+    ``records_hard_cap`` overrides the default per-PDF cap on the number
+    of attached Merkle proofs (500 in v1). Tests lower the cap to
+    exercise the 413 path without seeding 500 records; in production
+    callers pass ``None`` so the module-level default holds.
+
     Raises:
       * ``PdfRenderTimeout`` if rendering exceeds ``timeout_seconds``.
         Route handlers map this to ``504 pdf_render_timeout``.
+      * ``TooManyRecordsForPdf`` if the in-range record count exceeds
+        ``records_hard_cap``. Route handlers map this to
+        ``413 too_many_records_for_pdf``.
       * ``ValueError`` if an unknown section name is requested.
     """
     section_list = _validate_section_names(
@@ -145,6 +196,7 @@ async def generate_audit_pdf(
         date_from=date_from,
         date_to=date_to,
         branding=branding,
+        records_hard_cap=records_hard_cap,
     )
 
     try:

@@ -10,11 +10,16 @@ import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 //                            The page-level `<SignedIn>` guard is keep-honest
 //                            UX; the middleware backstop is what actually
 //                            blocks unauthenticated requests.
-//   - `/compliance(.*)`    — Phase 4b F2 compliance reviewer dashboard. Same
-//                            shape as `/api-keys`: lives outside `(dashboard)`
-//                            specifically to be Clerk-gated. The page-level
-//                            server component re-checks `auth()` for defense
-//                            in depth.
+//   - `/compliance(.*)`    — Phase 4 Wave 2 C1 Compliance Posture dashboard
+//                            (asymmetric posture layout). Lives inside
+//                            `(dashboard)/compliance/` and is reachable from
+//                            the sidebar.
+//   - `/compliance-reviewer-legacy(.*)` — pre-Phase-4 Clerk-authenticated
+//                            compliance reviewer landing page (formerly
+//                            ``/compliance``). Moved off the canonical URL
+//                            in PR C1 so the new posture page could claim
+//                            it; preserved here so saved-view URLs keep
+//                            resolving.
 //   - `/home(.*)`          — Phase 1 PR 12 dashboard home. Same defense-in-depth
 //                            shape: the (dashboard) layout wraps these pages in
 //                            `<SignedIn>`/`<SignedOut>` guards, but the middleware
@@ -38,6 +43,7 @@ const isProtectedRoute = createRouteMatcher([
   "/api/protected(.*)",
   "/api-keys(.*)",
   "/compliance(.*)",
+  "/compliance-reviewer-legacy(.*)",
   "/home(.*)",
   "/customers(.*)",
   "/api/dashboard(.*)",

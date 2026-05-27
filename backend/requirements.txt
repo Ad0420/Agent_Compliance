@@ -26,6 +26,31 @@ reportlab>=4.0,<5
 # requirements-dev split — tests run against the same pinned environment
 # in CI.
 pypdf>=4.0
+# Phase 4 Wave 2 PR A3 — SVG → ReportLab Drawing conversion for the
+# white-label PDF cover. Customers upload an SVG logo, the cover renderer
+# converts it to a Platypus flowable. ``svglib`` is the canonical bridge
+# for this in the ReportLab ecosystem.
+#
+# Pinned ``<1.6`` because 1.6.0 added a hard dependency on
+# ``rlpycairo`` (and transitively ``pycairo``), which requires the
+# system ``libcairo2-dev`` headers to compile. The CI runner image
+# doesn't ship libcairo and the wheel build fails with
+# ``Dependency "cairo" not found``. 1.5.x exposes the same
+# ``svg2rlg`` API we use and pulls only ``lxml`` + ``cssselect2`` +
+# ``tinycss2`` (pure-Python or pre-built wheels).
+svglib>=1.5,<1.6
+# Pillow gives us header-only PNG validation in the branding-upload
+# endpoint without paying the cost of a full pixel decode. The audit-PDF
+# generator also uses Pillow indirectly through ReportLab's ImageReader,
+# but ReportLab vendors its own copy — this pin is for our own
+# ``_looks_like_png`` guard in ``routes/organizations.py``.
+Pillow>=10.0
+# python-multipart powers FastAPI's ``UploadFile`` / ``Form`` parsing,
+# used by the white-label branding upload endpoint
+# (PUT /v1/organizations/me/branding). FastAPI doesn't pull it in by
+# default; pinning here makes the dependency explicit at the project
+# level.
+python-multipart>=0.0.7
 # Clerk JWT verification (dashboard routes only — SDK still uses API keys).
 # `[crypto]` pulls in `cryptography` for RS256 / RSA JWK loading.
 # >=2.10.1 fixes CVE-2024-53861 (issuer validation bypass with list iss claim).
@@ -39,3 +64,9 @@ pyjwt[crypto]>=2.10.1
 # webhook-verification API we use is stable across 1.21–1.62, so cap below
 # the breaking change rather than bumping pydantic (transitive-dep risk).
 svix>=1.21.0,<1.63
+# Anthropic Claude SDK (Phase 4 Wave 2 PR B2). Drives the synchronous
+# Haiku call backing ``POST /v1/compliance/insights`` — the dashboard's
+# 3-5 recommendation cards.  Pinned with a floor (the AsyncAnthropic +
+# messages.create surface we use is stable from 0.40 onward) and no
+# upper bound so security fixes flow through without manual bumps.
+anthropic>=0.40

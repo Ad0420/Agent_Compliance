@@ -692,12 +692,14 @@ def test_history_migration_reversible(monkeypatch):
 
         # Stamp the chain at our migration's parent without running the
         # intermediate Postgres-only migration (``s9n1o2p3q4r5`` issues
-        # an ``ALTER COLUMN ... SET DEFAULT`` that's invalid on SQLite).
+        # an ``ALTER COLUMN ... SET DEFAULT`` that's invalid on SQLite)
+        # and without running A3's branding migration which ALTERs an
+        # ``organizations`` table that the stamp leaves uncreated.
         # We're testing OUR migration's reversibility, not the entire
         # chain's upgrade-from-zero path on a foreign dialect.
-        command.stamp(cfg, "t0o2p3q4r5s6")
+        command.stamp(cfg, "w4t7u8v9w0x1")
         command.upgrade(cfg, "w4a7b8c9d0e1")
-        command.downgrade(cfg, "t0o2p3q4r5s6")
+        command.downgrade(cfg, "w4t7u8v9w0x1")
         command.upgrade(cfg, "w4a7b8c9d0e1")
 
 

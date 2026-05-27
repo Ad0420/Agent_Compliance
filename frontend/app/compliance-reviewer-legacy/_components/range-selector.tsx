@@ -32,7 +32,7 @@ export function RangeSelector({ value }: { value: string }) {
     const params = new URLSearchParams(search?.toString() ?? "");
     params.set("range", next);
     startTransition(() => {
-      router.push(`/compliance?${params.toString()}`);
+      router.push(`/compliance-reviewer-legacy?${params.toString()}`);
     });
   };
 
