@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+- **HMAC signature silent-pass in offline Merkle proof verifier (hotfix)**
+  — `verify_proof_payload` previously returned `ok=True, reason="ok"`
+  with a `signature_warning=True` flag when an HMAC-signed proof was
+  verified without `VERA_HMAC_SECRET` set. Because the verifier never
+  actually computed the HMAC in that branch, a tampered `kms_signature`
+  was indistinguishable from a missing secret — both modes appeared
+  valid. This was surfaced during the Phase 4 acceptance walkthrough on
+  a dev HMAC chain. The fix: HMAC + no secret now returns
+  `ok=False, reason="signature_unverifiable_hmac"`; HMAC + wrong
+  secret returns `ok=False, reason="signature_invalid"`. `vera verify
+  --merkle-proof` exits 1 (was 0) with a stderr line that tells the
+  operator to set `VERA_HMAC_SECRET`. The Merkle structure check is
+  unaffected — it still catches tampered leaves / siblings / roots.
+  `ProofVerificationResult.signature_warning` is retained for
+  backwards compatibility but is now always `False`; new callers
+  should branch on `reason`.
+
 ### Changed
 - **`records/<id>.json` now includes `previous_hash` per record** —
   Phase 3 follow-up. Lets `vera verify --offline` enforce the chain
