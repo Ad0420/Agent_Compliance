@@ -482,8 +482,22 @@ async def build_evidence_bundle_tar_gz(
         proof = tree.get_proof(idx)
 
         canonical = _canonicalize_action_record(r)
+        # The SDK offline verifier (``sdk/vera/verify/offline.py``)
+        # reads the per-record JSON with the field names from the
+        # ``GET /v1/records/{id}/merkle-proof`` endpoint contract:
+        # ``action_record_canonical``, plus ``kms_algorithm`` and
+        # ``kms_public_key_pem`` denormalized onto each record (the
+        # endpoint embeds checkpoint KMS metadata per-record so an
+        # auditor can verify a single proof without holding the
+        # checkpoint envelope). The dashboard exporter previously used
+        # ``canonical`` and only put KMS metadata on
+        # ``checkpoints/<id>.json``, so the SDK couldn't verify the
+        # signature offline. Wave 3D.2 + Wave 3C.1 schema drift —
+        # found during Phase 3 Scenario 4 manual walkthrough.
+        cp_meta_for_record = cp_meta[cp.id]
         record_payload: dict[str, Any] = {
             "id": r.id,
+            "action_record_id": r.id,
             "tenant_id": r.tenant_id,
             "sequence_number": r.sequence_number,
             "recorded_at": _format_iso_ms(r.recorded_at)
@@ -491,7 +505,12 @@ async def build_evidence_bundle_tar_gz(
             else None,
             "previous_hash": r.previous_hash,
             "record_hash": r.record_hash,
+            # Both names emitted for compatibility — the SDK reads the
+            # ``action_record_canonical`` key; ``canonical`` is the
+            # dashboard's existing alias and is left in place so any
+            # downstream consumer that already reads it doesn't break.
             "canonical": canonical,
+            "action_record_canonical": canonical,
             "leaf_hash": proof.leaf_hash,
             "merkle_path": [
                 {"sibling_hash": h, "direction": d}
@@ -499,6 +518,24 @@ async def build_evidence_bundle_tar_gz(
             ],
             "checkpoint_id": cp.id,
             "merkle_root": proof.root,
+            # Denormalized checkpoint KMS metadata so the SDK verifier
+            # can pull algorithm + public key off any single record
+            # without needing the checkpoint envelope. Mirrors the
+            # ``GET /v1/records/{id}/merkle-proof`` endpoint shape.
+            "kms_key_id": cp_meta_for_record.get("kms_key_id"),
+            "kms_algorithm": cp_meta_for_record.get("kms_algorithm"),
+            "kms_public_key_pem": cp_meta_for_record.get(
+                "kms_public_key_pem"
+            ),
+            "kms_signature": cp_meta_for_record.get("signature"),
+            "checkpoint_signed_at": cp_meta_for_record.get("signed_at"),
+            "checkpoint_org_id": cp_meta_for_record.get("org_id"),
+            "checkpoint_sequence": cp_meta_for_record.get(
+                "sequence_at_checkpoint"
+            ),
+            "checkpoint_hash_at_checkpoint": cp_meta_for_record.get(
+                "hash_at_checkpoint"
+            ),
         }
         body = json.dumps(
             record_payload, sort_keys=True, separators=(",", ":")
