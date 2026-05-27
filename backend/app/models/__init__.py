@@ -23,6 +23,7 @@ from .kms_key import KmsKey
 from .staff_audit import StaffAuditLog
 from .checkpoint_export import CheckpointExport, EXPORT_STATUSES
 from .generated_audit_pdf import GeneratedAuditPdf
+from .generated_template import GeneratedTemplate
 
 __all__ = [
     "Base",
@@ -53,4 +54,5 @@ __all__ = [
     "CheckpointExport",
     "EXPORT_STATUSES",
     "GeneratedAuditPdf",
+    "GeneratedTemplate",
 ]
