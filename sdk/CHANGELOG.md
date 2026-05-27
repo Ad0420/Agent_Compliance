@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-05-27
+
 ### Security
 - **HMAC signature silent-pass in offline Merkle proof verifier (hotfix)**
   — `verify_proof_payload` previously returned `ok=True, reason="ok"`
