@@ -501,6 +501,128 @@ export async function generateAuditPdf(
   return { filename };
 }
 
+// ── Phase 4 Wave 2 C4 — Generated audit PDFs history table ──────────────
+//
+// Backed by:
+//   GET  /v1/customers/{customer_id}/audit-pdfs            (list)
+//   POST /v1/customers/{customer_id}/audit-pdfs/{pdf_id}/regenerate
+//
+// Note: the path parameter is the Customer **primary key** (UUID) — same
+// convention as ``POST /v1/audits/{customer_id}`` from C3-scaffold/A1.
+// The dashboard already holds the PK on the Customer detail page.
+//
+// Storage decision (v1 — see backend migration docstring): we do NOT
+// persist rendered PDF bytes. ``regenerateAuditPdf`` re-renders from the
+// persisted (date_from, date_to, sections, branding) tuple, so the call
+// takes the same 5-30s as the original render.
+//
+// Error envelope on regenerate matches ``generateAuditPdf``:
+//   403 { code: "baa_expired", detail: ... }
+//   404 (cross-org or missing pdf_id)
+//   504 { code: "pdf_render_timeout", detail: ... }
+
+export interface GeneratedBy {
+  user_id?: string | null;
+  user_email_or_name?: string | null;
+  api_key_id?: string | null;
+  api_key_name?: string | null;
+}
+
+export interface AuditPdfHistoryItem {
+  id: string;
+  generated_at: string; // ISO 8601 UTC with explicit ``Z`` suffix
+  generated_by: GeneratedBy | null;
+  date_from: string; // YYYY-MM-DD
+  date_to: string; // YYYY-MM-DD
+  sections: string[];
+  branding: AuditPdfBranding | string;
+  byte_size: number;
+}
+
+export interface AuditPdfHistoryResponse {
+  items: AuditPdfHistoryItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface AuditPdfHistoryQueryParams {
+  limit?: number;
+  offset?: number;
+}
+
+export function getAuditPdfHistory(
+  customer_id: string,
+  params?: AuditPdfHistoryQueryParams,
+): Promise<AuditPdfHistoryResponse> {
+  const qs = buildQuery({
+    limit: params?.limit,
+    offset: params?.offset,
+  });
+  return request(
+    `/v1/customers/${encodeURIComponent(customer_id)}/audit-pdfs${qs}`,
+  );
+}
+
+/**
+ * Re-render a previously generated audit PDF and stream it to a browser
+ * download. Mirrors ``generateAuditPdf``: same Content-Disposition
+ * handling, same ``ApiError.detail`` envelope shape, callers can use
+ * ``readAuditPdfErrorCode`` to map error codes to inline banner copy.
+ *
+ * Returns the filename the backend suggested via Content-Disposition so
+ * callers can log / confirm.
+ */
+export async function regenerateAuditPdf(
+  customer_id: string,
+  pdf_id: string,
+): Promise<{ filename: string }> {
+  const headers = await getHeaders();
+  const response = await fetch(
+    `${BASE_URL}/v1/customers/${encodeURIComponent(customer_id)}/audit-pdfs/${encodeURIComponent(pdf_id)}/regenerate`,
+    {
+      method: "POST",
+      headers,
+    },
+  );
+  if (!response.ok) {
+    // Accept both flat ``{code, message}`` and nested ``{error: {code, message}}``
+    // envelopes — same defense as ``generateAuditPdf``.
+    const carrier = await response.json().catch(() => null);
+    const flatMessage =
+      carrier && typeof carrier === "object" && typeof (carrier as Record<string, unknown>).message === "string"
+        ? ((carrier as Record<string, unknown>).message as string)
+        : null;
+    const nestedMessage =
+      carrier &&
+      typeof carrier === "object" &&
+      (carrier as Record<string, unknown>).error &&
+      typeof (carrier as Record<string, unknown>).error === "object"
+        ? ((carrier as { error: Record<string, unknown> }).error.message as
+            | string
+            | undefined) ?? null
+        : null;
+    const message =
+      flatMessage ??
+      nestedMessage ??
+      `Audit PDF re-download failed (${response.status})`;
+    throw new ApiError(response.status, message, carrier ?? undefined);
+  }
+  const disposition = response.headers.get("content-disposition") || "";
+  const match = /filename="([^"]+)"/.exec(disposition);
+  const filename = match?.[1] || `audit-${customer_id}-${pdf_id}.pdf`;
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  return { filename };
+}
+
 // ── Phase 4 Wave 2 C2 — AI Insights on Compliance ───────────────────────
 //
 // Backed by ``POST /v1/compliance/insights`` (Stream B2 in flight). The

@@ -14,6 +14,7 @@ from .routes import (
     actions_router,
     agents_router,
     audits_router,
+    audit_pdf_history_router,
     verification_router,
     organizations_router,
     checkpoints_router,
@@ -175,6 +176,12 @@ app.include_router(agents_router, prefix="/v1")
 # Phase 4 Wave 1 A1 — HIPAA AI Audit Trail PDF generator.
 # POST /v1/audits/{customer_id} returns application/pdf bytes.
 app.include_router(audits_router, prefix="/v1")
+# Phase 4 Wave 2 C4: list + regenerate endpoints for the Customer
+# detail page's "Generated audit PDFs" history table. Mounted under
+# /v1/customers/{customer_id}/audit-pdfs* — same URL family as the
+# rest of the customer-scoped reads, distinct from the POST-only
+# /v1/audits route above.
+app.include_router(audit_pdf_history_router, prefix="/v1")
 app.include_router(checkpoints_router, prefix="/v1")
 # Phase 3 Wave 3B.1 — GET /v1/checkpoints/{date} for auditor diff workflow.
 # Separate from the /v1/verify/checkpoints router above (different prefix

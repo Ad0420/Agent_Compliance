@@ -187,6 +187,18 @@ async def _patch_async_session_local_for_webhooks(db_engine, monkeypatch):
         )
     except Exception:
         pass
+    # Phase 4 Wave 2 C4 — the audits route persists a
+    # ``generated_audit_pdfs`` history row on a separate session
+    # (defense-in-depth: a history write that constraint-violates must
+    # not poison the request session). Same redirect.
+    try:
+        import app.routes.audits as _audits_route_module
+
+        monkeypatch.setattr(
+            _audits_route_module, "AsyncSessionLocal", session_factory
+        )
+    except Exception:
+        pass
     yield
     # Drain any in-flight webhook delivery tasks BEFORE the next test
     # opens a session. Lingering background tasks holding the same
