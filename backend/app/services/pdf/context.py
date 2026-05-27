@@ -21,6 +21,7 @@ from typing import Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import undefer
 
 from ...models import (
     ActionRecord,
@@ -77,6 +78,18 @@ class PdfContext:
     generated_at: datetime
     branding: str  # "customer" | "vera-neutral"
 
+    # ── White-label branding (Phase 4 Wave 2 PR A3) ──────────
+    # Pre-loaded off the ``Organization`` row in :func:`build_context` so
+    # the cover renderer is fully synchronous — no network / DB round
+    # trip during ReportLab layout. ``logo_bytes is None`` is the
+    # signal for "no logo configured" → the cover renderer falls back
+    # to a wordmark of the Customer name. ``accent_color_hex`` carries
+    # the ``#RRGGBB`` literal validated at upload time; ``None`` means
+    # "use project default".
+    logo_bytes: Optional[bytes] = None
+    logo_mime: Optional[str] = None
+    accent_color_hex: Optional[str] = None
+
     # ── Counts (aggregates; cheap to compute) ────────────────
     action_record_count: int = 0
     approval_count: int = 0
@@ -121,6 +134,25 @@ async def build_context(
     window_end = _to_naive_utc(date_to + timedelta(days=1))
     tenant_id = customer.tenant_id
 
+    # Phase 4 Wave 2 PR A3 — explicitly load ``Organization.logo_bytes``
+    # (the column is ``deferred=True`` on the model so generic
+    # ``session.get(Organization, ...)`` doesn't pull the up-to-1 MB
+    # blob on every dashboard fetch). Async SQLAlchemy raises
+    # ``MissingGreenlet`` if a deferred column is accessed without an
+    # explicit ``await`` round-trip; the cleanest pattern is to re-fetch
+    # the row with ``undefer`` so the bytes are materialised before
+    # ``_render_to_bytes`` runs inside ``asyncio.to_thread``.
+    logo_row = await session.execute(
+        select(Organization)
+        .where(Organization.id == org.id)
+        .options(undefer(Organization.logo_bytes))
+    )
+    org_with_logo = logo_row.scalar_one_or_none() or org
+    # Materialise the bytes here (still inside the async session) so the
+    # downstream renderer reads a plain ``bytes`` value, not an ORM
+    # attribute that could lazy-load on a thread without greenlet ctx.
+    logo_bytes_value = org_with_logo.logo_bytes
+
     ctx = PdfContext(
         org=org,
         customer=customer,
@@ -128,6 +160,13 @@ async def build_context(
         date_to=date_to,
         generated_at=datetime.now(timezone.utc).replace(tzinfo=None),
         branding=branding,
+        # Pre-loaded above so the cover renderer (inside
+        # ``asyncio.to_thread`` → ReportLab layout) never triggers a
+        # deferred-column lazy load on a thread without greenlet
+        # context.
+        logo_bytes=logo_bytes_value,
+        logo_mime=org.logo_mime,
+        accent_color_hex=org.accent_color_hex,
     )
 
     # ── ActionRecord count ───────────────────────────────────

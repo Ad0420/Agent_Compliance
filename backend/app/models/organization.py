@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Any, Optional
-from sqlalchemy import CheckConstraint, JSON, String, DateTime, Text, func
+from sqlalchemy import CheckConstraint, JSON, LargeBinary, String, DateTime, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from .base import Base
 
@@ -126,6 +126,36 @@ class Organization(Base):
     # with a structured reason.
     s3_export_arn: Mapped[Optional[str]] = mapped_column(
         String(512), nullable=True
+    )
+
+    # Phase 4 Wave 2 PR A3 — white-label PDF cover assets.
+    #
+    # ``logo_bytes`` carries the uploaded image (PNG or sanitised SVG)
+    # in-row so the PDF renderer can pull it synchronously without a
+    # network round-trip. The route layer caps the upload at 1 MB and
+    # validates the MIME so a misconfigured row can't blow up rendering.
+    # ``logo_mime`` is ``image/png`` or ``image/svg+xml``; ``None``
+    # alongside a ``None`` blob means "Customer hasn't uploaded a logo
+    # yet" → the cover falls back to a neutral wordmark.
+    # ``accent_color_hex`` is ``#RRGGBB``; ``None`` means "use project
+    # default" (the renderer's neutral grey).
+    #
+    # ``logo_bytes`` uses ``deferred=True`` so the up-to-1 MB blob is NOT
+    # pulled on every ``session.get(Organization, ...)`` — it only loads
+    # when explicitly accessed (e.g. inside the PDF render path's
+    # ``build_context``). Without deferral, every dashboard route that
+    # fetches the org row would pay the blob's network cost.
+    #
+    # See migration ``w4t7u8v9w0x1`` for the storage-choice rationale
+    # (blob column vs S3 bucket).
+    logo_bytes: Mapped[Optional[bytes]] = mapped_column(
+        LargeBinary, nullable=True, deferred=True
+    )
+    logo_mime: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True
+    )
+    accent_color_hex: Mapped[Optional[str]] = mapped_column(
+        String(7), nullable=True
     )
 
     # Relationships
