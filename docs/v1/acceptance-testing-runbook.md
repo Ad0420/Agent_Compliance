@@ -225,6 +225,49 @@ follow-up workstream tag.
 
 ---
 
+## 6b. HMAC chains and offline verification (Phase 4 hotfix)
+
+The dev default for chain signing is **HMAC-SHA-256** (production
+uses asymmetric KMS keys whose public key is embedded in the proof
+payload). When `vera verify --merkle-proof <record_id>` runs against
+an HMAC-signed chain, it needs the shared secret to verify the
+signature offline.
+
+**The contract:**
+
+- HMAC-signed chain + `VERA_HMAC_SECRET` set to the matching secret →
+  `ok=True, reason="ok"`. Exit code 0.
+- HMAC-signed chain + **no** `VERA_HMAC_SECRET` →
+  `ok=False, reason="signature_unverifiable_hmac"`. **Exit code 1.**
+  The Merkle structure is still verified — only the signature step is
+  incomplete. The CLI stderr line tells the operator: "Signature not
+  verified — set `VERA_HMAC_SECRET` to verify HMAC-signed chains
+  offline."
+- HMAC-signed chain + wrong `VERA_HMAC_SECRET` →
+  `ok=False, reason="signature_invalid"`. Exit code 1. Hard failure
+  (signal of tamper or wrong secret — operator cannot distinguish).
+- Asymmetric (RSA-PSS / ECDSA) chains carry the public key in the
+  proof payload itself, so no env var is required.
+
+**Operator guidance:** when handing off an HMAC-signed evidence bundle
+to an auditor, provide the shared secret out-of-band (separate channel
+from the bundle itself — a secure password manager or a sealed
+envelope, not the same email). If that's a bad fit for your operator
+workflow, migrate to asymmetric KMS keys (production-mode), which
+embed the public key in every proof and verify without a side channel.
+
+**History:** the Phase 4 acceptance walkthrough surfaced that the
+prior verifier returned `ok=True` on HMAC-signed proofs when no secret
+was set — including when the `kms_signature` had been tampered. That
+was incorrect: the verifier had never actually checked the signature,
+yet was claiming a clean pass. The hotfix (`hotfix/sdk-hmac-signature-
+silent-pass`) collapses both "no secret" and "tampered signature with
+no secret" into the same non-success reason
+(`signature_unverifiable_hmac`) so the CLI exit code reflects the
+truth.
+
+---
+
 ## 7. Quick reference — every common command
 
 ```bash

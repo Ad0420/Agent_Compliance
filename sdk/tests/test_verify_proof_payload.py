@@ -215,13 +215,91 @@ def test_full_verify_bad_signature_fails() -> None:
     assert result.reason == REASON_SIGNATURE_INVALID
 
 
-def test_full_verify_hmac_without_secret_is_non_fatal_warning() -> None:
-    """Per brief: HMAC + no shared secret → ok=True with warning flag."""
+def test_full_verify_hmac_without_secret_returns_signature_unverifiable_hmac() -> None:
+    """HMAC + no shared secret → ok=False, reason=signature_unverifiable_hmac.
+
+    Phase 4 acceptance walkthrough surfaced that the prior contract
+    (``ok=True`` + warning flag) made tampered HMAC-signed proofs look
+    valid: the verifier never actually checked the signature, so a
+    flipped ``kms_signature`` hex char was indistinguishable from a
+    missing secret. Both modes now collapse to the same non-success
+    reason — ``signature_unverifiable_hmac`` — and the caller picks the
+    UX (warn vs. hard-fail) based on context.
+    """
     payload, _ = _good_payload()
     result = verify_proof_payload(payload, hmac_secret=None)
-    assert result.ok is True
-    assert result.signature_warning is True
+    assert result.ok is False
+    assert result.reason == REASON_SIGNATURE_UNVERIFIABLE_HMAC
+    # Failure detail mentions HMAC + the env var name so an operator
+    # running the CLI sees actionable guidance.
     assert "HMAC" in result.failure_detail
+    assert "VERA_HMAC_SECRET" in result.failure_detail
+    # signature_warning is retained for back-compat but ALWAYS False now;
+    # callers should branch on reason instead.
+    assert result.signature_warning is False
+
+
+def test_hmac_chain_no_secret_returns_signature_unverifiable_hmac() -> None:
+    """Per Phase 4 hotfix: HMAC + no secret → ok=False, signature_unverifiable_hmac."""
+    payload, _ = _good_payload()
+    result = verify_proof_payload(payload, hmac_secret=None)
+    assert result.ok is False
+    assert result.reason == REASON_SIGNATURE_UNVERIFIABLE_HMAC
+
+
+def test_hmac_chain_with_correct_secret_passes() -> None:
+    """HMAC + matching secret → ok=True, reason=ok (happy path regression)."""
+    payload, secret = _good_payload()
+    result = verify_proof_payload(payload, hmac_secret=secret)
+    assert result.ok is True
+    assert result.reason == REASON_OK
+    assert result.signature_warning is False
+
+
+def test_hmac_chain_with_wrong_secret_returns_signature_invalid() -> None:
+    """HMAC + wrong secret → ok=False, signature_invalid (hard fail)."""
+    payload, _ = _good_payload()
+    wrong_secret = b"this-is-not-the-real-secret"
+    result = verify_proof_payload(payload, hmac_secret=wrong_secret)
+    assert result.ok is False
+    assert result.reason == REASON_SIGNATURE_INVALID
+
+
+def test_hmac_chain_tampered_signature_returns_signature_invalid_with_correct_secret() -> None:
+    """Tampered HMAC signature + correct secret → signature_invalid.
+
+    This is the load-bearing test that the Phase 4 acceptance bug
+    surfaced. With the prior contract, flipping one hex char in
+    ``kms_signature`` and running verify with no secret returned
+    ``ok=True`` because the verifier short-circuited on
+    ``hmac_secret_missing``. Now: with the secret present, tamper is
+    caught as ``signature_invalid``; without the secret, tamper
+    collapses into ``signature_unverifiable_hmac`` (see next test) —
+    EITHER way ``ok=False``.
+    """
+    payload, secret = _good_payload()
+    # Flip one hex char in the signature.
+    sig = payload["kms_signature"]
+    payload["kms_signature"] = ("0" if sig[0] != "0" else "1") + sig[1:]
+    result = verify_proof_payload(payload, hmac_secret=secret)
+    assert result.ok is False
+    assert result.reason == REASON_SIGNATURE_INVALID
+
+
+def test_hmac_chain_tampered_signature_returns_unverifiable_without_secret() -> None:
+    """Tampered HMAC signature + no secret → signature_unverifiable_hmac.
+
+    We can't tell tamper apart from missing-secret in this case
+    (the verifier never computed the HMAC), but the unverifiable
+    reason dominates and ``ok`` is still False — which is the whole
+    point of the hotfix. Pre-hotfix this returned ``ok=True``.
+    """
+    payload, _ = _good_payload()
+    sig = payload["kms_signature"]
+    payload["kms_signature"] = ("0" if sig[0] != "0" else "1") + sig[1:]
+    result = verify_proof_payload(payload, hmac_secret=None)
+    assert result.ok is False
+    assert result.reason == REASON_SIGNATURE_UNVERIFIABLE_HMAC
 
 
 def test_full_verify_unsupported_algorithm_fails() -> None:
