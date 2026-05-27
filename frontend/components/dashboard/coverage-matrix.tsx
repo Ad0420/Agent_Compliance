@@ -189,19 +189,19 @@ export function CoverageMatrixFull({ agents, isLoading, className }: FullMatrixP
                 <td className="px-4 py-3">
                   <PlaceholderCell
                     text={String(agent.hitl_gate_count)}
-                    tooltip="Populates in Phase 2 when gates ship."
+                    tooltip="Not yet available."
                   />
                 </td>
                 <td className="px-4 py-3">
                   <PlaceholderCell
                     text={agent.pdf_included ? "Yes" : "—"}
-                    tooltip="Populates in Phase 4 when the audit PDF generator ships."
+                    tooltip="Not yet available."
                   />
                 </td>
                 <td className="px-4 py-3">
                   <PlaceholderCell
                     text={agent.posture_included ? "Yes" : "—"}
-                    tooltip="Populates in Phase 4 when org posture compute ships."
+                    tooltip="Not yet available."
                   />
                 </td>
               </tr>

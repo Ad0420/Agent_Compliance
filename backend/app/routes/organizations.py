@@ -221,23 +221,24 @@ async def update_alert_email(
 
 
 def _require_all_fields(answers: WizardAnswers) -> None:
-    """Raise HTTPException(400) if any wizard field is missing.
+    """Raise HTTPException(400) if any required wizard field is missing.
 
     Called for ``completed=true`` submissions. Partial saves bypass this
     so the wizard can persist mid-flow without forcing the operator to
     answer every question up front.
+
+    Phase 5 wizard redesign — only ``jurisdictions`` (non-empty list
+    including ``us_federal``) and ``privacy_officer`` (with name +
+    email) are required. The retired ``agent_type`` /
+    ``decision_volume`` / ``channel`` checks were dropped because those
+    answers never drove product behaviour. ``jurisdictions_other`` is
+    NOT required even when ``other`` is in the jurisdictions list — the
+    AI Care Disclosure renders a placeholder section gracefully when
+    the list is empty (soft contract).
     """
     missing: list[str] = []
-    if answers.agent_type is None:
-        missing.append("agent_type")
-    if answers.agent_type == "other" and not answers.agent_type_other:
-        missing.append("agent_type_other")
     if not answers.jurisdictions:
         missing.append("jurisdictions")
-    if answers.decision_volume is None:
-        missing.append("decision_volume")
-    if answers.channel is None:
-        missing.append("channel")
     if answers.privacy_officer is None:
         missing.append("privacy_officer")
     if missing:

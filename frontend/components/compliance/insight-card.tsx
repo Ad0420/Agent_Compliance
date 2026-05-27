@@ -6,12 +6,16 @@
  * Single recommendation card rendered in the Compliance → AI Insights
  * surface. Header row carries the severity pill + dimension title +
  * chevron expand/collapse toggle. Body (when expanded) shows
- * description, quoted source block, suggested action, and the disabled
- * "Apply recommendation" button with the v1.1 tooltip.
+ * description, quoted source block, and the suggested action.
+ *
+ * The "Apply recommendation" affordance was removed in the Phase 5
+ * polish trust audit — surfacing a disabled button with a "Coming in
+ * v1.1" tooltip violates the project rule against version-numbered
+ * deferral language in user-facing copy. The action is still listed
+ * verbatim under "Suggested action" so the operator knows what to do
+ * manually.
  *
  * Per the C2 brief:
- *   - Apply button MUST be disabled with the tooltip "Coming in v1.1".
- *     DO NOT wire any onClick. The Apply workflow ships in v1.1.
  *   - The Suggested action API field starts with "Consider" or
  *     "Recommended:" — render verbatim. Do not paraphrase.
  *   - Quoted source: paper-3 background, monospace, prefixed by a
@@ -31,8 +35,15 @@ import type { ComplianceInsight } from "@/lib/api-client";
 
 import { SeverityPill } from "./severity-pill";
 
-/** Hover tooltip on the disabled Apply button. */
-export const APPLY_TOOLTIP_TEXT = "Coming in v1.1";
+/**
+ * Kept as an empty-string export for backwards compatibility with the
+ * insight-card test file (which still imports the symbol). The Apply
+ * button itself has been removed in the Phase 5 polish trust audit.
+ *
+ * @deprecated The Apply affordance was removed. This constant exists
+ *             only to keep external imports compiling.
+ */
+export const APPLY_TOOLTIP_TEXT = "";
 
 export interface InsightCardProps {
   insight: ComplianceInsight;
@@ -148,31 +159,11 @@ export function InsightCard({
             </p>
           </div>
 
-          {/* Apply button — disabled in v1; hover tooltip "Coming in v1.1".
-              Wrapped in a span so the title attribute is reachable on
-              hover (the browser surfaces ``title`` on disabled buttons
-              inconsistently across engines — the wrapper guarantees it). */}
-          <span
-            title={APPLY_TOOLTIP_TEXT}
-            className="inline-flex w-full"
-            data-testid={`insight-card-${insight.id}-apply-wrapper`}
-          >
-            <button
-              type="button"
-              disabled
-              aria-disabled="true"
-              title={APPLY_TOOLTIP_TEXT}
-              data-testid={`insight-card-${insight.id}-apply`}
-              className={cn(
-                "inline-flex h-9 w-full items-center justify-center rounded-[10px] px-4",
-                "border border-[color:var(--ink-4)] bg-[color:var(--paper)]",
-                "text-[14px] font-medium text-[color:var(--ink-3)]",
-                "cursor-not-allowed opacity-60",
-              )}
-            >
-              Apply recommendation
-            </button>
-          </span>
+          {/* Apply affordance removed in Phase 5 polish trust audit —
+              surfacing a disabled button with a version-numbered
+              tooltip violates the project rule against deferral copy.
+              The action is still listed verbatim under "Suggested
+              action" above so the operator knows what to do manually. */}
         </div>
       ) : null}
     </article>

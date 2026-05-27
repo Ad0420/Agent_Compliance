@@ -19,6 +19,30 @@ from ._common import REPLACE_MARKER, generated_note
 _COORDINATOR_MARKER = "<<REPLACE WITH NONDISCRIMINATION COORDINATOR NAME + CONTACT>>"
 
 
+def _coordinator_text(wizard_answers) -> str:
+    """Build the Coordinator block.
+
+    Section 1557 technically asks for a Nondiscrimination Coordinator,
+    which is often (but not always) the same person as the HIPAA
+    Privacy Officer. We pre-fill with the wizard's Privacy Officer
+    answer when present, prefixed with an HTML comment so counsel sees
+    that this was auto-filled and can replace inline if the
+    Nondiscrimination Coordinator is actually a different person.
+    """
+    po = getattr(wizard_answers, "privacy_officer", None)
+    if po is None:
+        return _COORDINATOR_MARKER
+    name = getattr(po, "name", None)
+    email = getattr(po, "email", None)
+    if not name or not email:
+        return _COORDINATOR_MARKER
+    return (
+        "<!-- Pre-filled from your onboarding answers (Privacy Officer). "
+        "If your Nondiscrimination Coordinator differs, replace inline. -->\n"
+        f"{name} ({email})"
+    )
+
+
 def generate_section_1557_ndp(wizard_answers, org) -> str:
     """Render the Section 1557 NDP Markdown skeleton."""
     org_name = (org.name or "Customer organization").strip() or "Customer organization"
@@ -60,7 +84,7 @@ def generate_section_1557_ndp(wizard_answers, org) -> str:
         "primary contact for individuals seeking accommodations."
     )
     parts.append("")
-    parts.append(f"{_COORDINATOR_MARKER}")
+    parts.append(_coordinator_text(wizard_answers))
     parts.append("")
 
     # ── 3. Grievance procedure ──────────────────────────────────────

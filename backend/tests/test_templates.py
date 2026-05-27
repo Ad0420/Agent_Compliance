@@ -48,23 +48,45 @@ async def _seed_org_with_chain(db_session, name: str) -> Organization:
     return org
 
 
-def _complete_wizard_answers(jurisdictions=None) -> dict:
-    """Return a valid wizard_answers blob for ``Organization.wizard_answers``."""
-    return {
-        "agent_type": "scribe",
-        "agent_type_other": None,
-        "jurisdictions": list(jurisdictions or ["us_federal"]),
-        "decision_volume": "10k_100k",
-        "channel": "in_app_webhook",
-        "privacy_officer": {
+def _complete_wizard_answers(
+    jurisdictions=None,
+    *,
+    jurisdictions_other=None,
+    privacy_officer=None,
+) -> dict:
+    """Return a valid wizard_answers blob for ``Organization.wizard_answers``.
+
+    Phase 5 redesign — only ``jurisdictions`` + ``privacy_officer`` are
+    required. Tests can pass ``privacy_officer=None`` to exercise the
+    "marker preserved when null" path.
+    """
+    if privacy_officer is None:
+        privacy_officer = {
             "name": "Alice Privacy",
             "email": "privacy@example.com",
-        },
+        }
+    blob: dict = {
+        "jurisdictions": list(jurisdictions or ["us_federal"]),
+        "privacy_officer": privacy_officer,
     }
+    if jurisdictions_other is not None:
+        blob["jurisdictions_other"] = list(jurisdictions_other)
+    return blob
 
 
-async def _complete_wizard(db_session, org: Organization, *, jurisdictions=None) -> None:
-    org.wizard_answers = _complete_wizard_answers(jurisdictions)
+async def _complete_wizard(
+    db_session,
+    org: Organization,
+    *,
+    jurisdictions=None,
+    jurisdictions_other=None,
+    privacy_officer=None,
+) -> None:
+    org.wizard_answers = _complete_wizard_answers(
+        jurisdictions,
+        jurisdictions_other=jurisdictions_other,
+        privacy_officer=privacy_officer,
+    )
     org.wizard_completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
     await db_session.commit()
     await db_session.refresh(org)
@@ -400,12 +422,12 @@ async def test_cross_org_isolation(async_client, org_and_key, db_session):
 
 
 @pytest.mark.asyncio
-async def test_ca_clause_present_when_california_selected(
+async def test_california_ab489_conditional(
     async_client, org_and_key, db_session
 ):
     org, raw_key, _ = org_and_key
     await _complete_wizard(
-        db_session, org, jurisdictions=["us_federal", "california"]
+        db_session, org, jurisdictions=["us_federal", "california_ab489"]
     )
     await async_client.post(
         "/v1/templates/generate",
@@ -417,7 +439,12 @@ async def test_ca_clause_present_when_california_selected(
     )
     assert resp.status_code == 200
     body_md = resp.json()["markdown_body"]
-    assert "California (AB 489)" in body_md
+    # Heading updated in the Phase 5 wizard redesign for clarity (we
+    # now have two California laws).
+    assert (
+        "California (AB 489) — clinical decision support disclosure"
+        in body_md
+    )
 
 
 @pytest.mark.asyncio
@@ -494,7 +521,9 @@ async def test_deselecting_jurisdiction_removes_clause_on_unattested(
 ):
     org, raw_key, _ = org_and_key
     await _complete_wizard(
-        db_session, org, jurisdictions=["us_federal", "california", "texas"]
+        db_session,
+        org,
+        jurisdictions=["us_federal", "california_ab489", "texas"],
     )
     await async_client.post(
         "/v1/templates/generate",
@@ -531,7 +560,7 @@ async def test_regenerate_preserves_attested_clauses(
 ):
     org, raw_key, _ = org_and_key
     await _complete_wizard(
-        db_session, org, jurisdictions=["us_federal", "california"]
+        db_session, org, jurisdictions=["us_federal", "california_ab489"]
     )
     await async_client.post(
         "/v1/templates/generate",
@@ -619,6 +648,280 @@ def test_templates_migration_reversible(monkeypatch):
         command.upgrade(cfg, "w5b8c9d0e1f2")
         command.downgrade(cfg, "w4a7b8c9d0e1")
         command.upgrade(cfg, "w5b8c9d0e1f2")
+
+
+# ── Phase 5 wizard redesign — new conditional clauses ───────────────
+
+
+@pytest.mark.asyncio
+async def test_ca_sb942_conditional_appears_when_selected(
+    async_client, org_and_key, db_session
+):
+    org, raw_key, _ = org_and_key
+    await _complete_wizard(
+        db_session,
+        org,
+        jurisdictions=["us_federal", "california_sb942"],
+    )
+    await async_client.post(
+        "/v1/templates/generate",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    resp = await async_client.get(
+        "/v1/templates/ai_care_disclosure",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    body_md = resp.json()["markdown_body"]
+    assert (
+        "California (SB 942) — AI consumer disclosure" in body_md
+    )
+    # AB 489 is a separate clause and must NOT leak in.
+    assert "California (AB 489)" not in body_md
+
+
+@pytest.mark.asyncio
+async def test_co_sb24205_conditional_appears_when_selected(
+    async_client, org_and_key, db_session
+):
+    org, raw_key, _ = org_and_key
+    await _complete_wizard(
+        db_session, org, jurisdictions=["us_federal", "colorado"]
+    )
+    await async_client.post(
+        "/v1/templates/generate",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    resp = await async_client.get(
+        "/v1/templates/ai_care_disclosure",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    body_md = resp.json()["markdown_body"]
+    assert "Colorado (SB 24-205)" in body_md
+
+
+@pytest.mark.asyncio
+async def test_eu_ai_act_conditional_appears_when_selected(
+    async_client, org_and_key, db_session
+):
+    org, raw_key, _ = org_and_key
+    await _complete_wizard(
+        db_session, org, jurisdictions=["us_federal", "eu"]
+    )
+    await async_client.post(
+        "/v1/templates/generate",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    resp = await async_client.get(
+        "/v1/templates/ai_care_disclosure",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    body_md = resp.json()["markdown_body"]
+    assert "European Union (AI Act)" in body_md
+
+
+@pytest.mark.asyncio
+async def test_new_york_placeholder_appears_when_selected(
+    async_client, org_and_key, db_session
+):
+    org, raw_key, _ = org_and_key
+    await _complete_wizard(
+        db_session, org, jurisdictions=["us_federal", "new_york"]
+    )
+    await async_client.post(
+        "/v1/templates/generate",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    resp = await async_client.get(
+        "/v1/templates/ai_care_disclosure",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    body_md = resp.json()["markdown_body"]
+    assert "New York — coordinate with counsel" in body_md
+    # NY placeholder IS the marker — no REPLACE marker inside the
+    # section.
+    assert "coordinate with counsel" in body_md.lower()
+
+
+@pytest.mark.asyncio
+async def test_other_jurisdictions_rendered_with_free_text(
+    async_client, org_and_key, db_session
+):
+    org, raw_key, _ = org_and_key
+    await _complete_wizard(
+        db_session,
+        org,
+        jurisdictions=["us_federal", "other"],
+        jurisdictions_other=["Florida", "Brazil"],
+    )
+    await async_client.post(
+        "/v1/templates/generate",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    resp = await async_client.get(
+        "/v1/templates/ai_care_disclosure",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    body_md = resp.json()["markdown_body"]
+    assert "Other jurisdictions — coordinate with counsel" in body_md
+    assert "Florida" in body_md
+    assert "Brazil" in body_md
+
+
+@pytest.mark.asyncio
+async def test_other_jurisdictions_with_empty_list_still_renders_section(
+    async_client, org_and_key, db_session
+):
+    """Soft contract — heading appears even when ``jurisdictions_other``
+    is empty so counsel notices the placeholder."""
+    org, raw_key, _ = org_and_key
+    await _complete_wizard(
+        db_session,
+        org,
+        jurisdictions=["us_federal", "other"],
+        jurisdictions_other=[],
+    )
+    await async_client.post(
+        "/v1/templates/generate",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    resp = await async_client.get(
+        "/v1/templates/ai_care_disclosure",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    body_md = resp.json()["markdown_body"]
+    assert "Other jurisdictions — coordinate with counsel" in body_md
+
+
+@pytest.mark.asyncio
+async def test_privacy_officer_substituted_in_hipaa_risk_analysis(
+    async_client, org_and_key, db_session
+):
+    org, raw_key, _ = org_and_key
+    await _complete_wizard(
+        db_session,
+        org,
+        privacy_officer={
+            "name": "Dr. Jane Officer",
+            "email": "jane.officer@example.com",
+        },
+    )
+    await async_client.post(
+        "/v1/templates/generate",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    resp = await async_client.get(
+        "/v1/templates/hipaa_risk_analysis",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    body_md = resp.json()["markdown_body"]
+    assert "Dr. Jane Officer (jane.officer@example.com)" in body_md
+    # The bare REPLACE marker for the PO block must be substituted out.
+    assert "<<REPLACE WITH PRIVACY OFFICER NAME + CONTACT>>" not in body_md
+
+
+@pytest.mark.asyncio
+async def test_privacy_officer_substituted_in_section_1557_ndp(
+    async_client, org_and_key, db_session
+):
+    org, raw_key, _ = org_and_key
+    await _complete_wizard(
+        db_session,
+        org,
+        privacy_officer={
+            "name": "Dr. Jane Officer",
+            "email": "jane.officer@example.com",
+        },
+    )
+    await async_client.post(
+        "/v1/templates/generate",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    resp = await async_client.get(
+        "/v1/templates/section_1557_ndp",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    body_md = resp.json()["markdown_body"]
+    assert "Dr. Jane Officer (jane.officer@example.com)" in body_md
+    assert (
+        "<<REPLACE WITH NONDISCRIMINATION COORDINATOR NAME + CONTACT>>"
+        not in body_md
+    )
+    # The advisory comment is rendered so counsel sees it can be edited.
+    assert "Pre-filled from your onboarding answers" in body_md
+
+
+@pytest.mark.asyncio
+async def test_privacy_officer_marker_preserved_when_null(
+    async_client, org_and_key, db_session
+):
+    """When the wizard answer is missing a privacy officer, the
+    REPLACE markers stay in place so counsel can fill them in."""
+    org, raw_key, _ = org_and_key
+    # Bypass the route validator (which requires po on completion) by
+    # writing directly — simulates a stale or partial JSON blob.
+    org.wizard_answers = {
+        "jurisdictions": ["us_federal"],
+        "privacy_officer": None,
+    }
+    org.wizard_completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    await db_session.commit()
+    await db_session.refresh(org)
+
+    await async_client.post(
+        "/v1/templates/generate",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    risk = await async_client.get(
+        "/v1/templates/hipaa_risk_analysis",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    ndp = await async_client.get(
+        "/v1/templates/section_1557_ndp",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert (
+        "<<REPLACE WITH PRIVACY OFFICER NAME + CONTACT>>"
+        in risk.json()["markdown_body"]
+    )
+    assert (
+        "<<REPLACE WITH NONDISCRIMINATION COORDINATOR NAME + CONTACT>>"
+        in ndp.json()["markdown_body"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_california_slug_treated_as_ab489(
+    async_client, org_and_key, db_session
+):
+    """A wizard_answers row written before the Phase 5 redesign carries
+    the bare ``california`` slug. Disclosure regeneration must still
+    emit the CA AB 489 clause for that org."""
+    org, raw_key, _ = org_and_key
+    # Write the legacy slug directly to bypass the schema rewrite.
+    org.wizard_answers = {
+        "jurisdictions": ["us_federal", "california"],
+        "privacy_officer": {
+            "name": "Alice Privacy",
+            "email": "privacy@example.com",
+        },
+    }
+    org.wizard_completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    await db_session.commit()
+    await db_session.refresh(org)
+
+    await async_client.post(
+        "/v1/templates/generate",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    resp = await async_client.get(
+        "/v1/templates/ai_care_disclosure",
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    body_md = resp.json()["markdown_body"]
+    assert (
+        "California (AB 489) — clinical decision support disclosure"
+        in body_md
+    )
 
 
 def _here_root() -> Path:

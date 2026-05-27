@@ -1,20 +1,28 @@
-"""Onboarding wizard schemas (Phase 1 PR 14, Stream F item F5).
+"""Onboarding wizard schemas — redesigned 2-question shape (Phase 5).
 
-Five canonical questions from ``policy-engine-mvp.md`` Appendix A:
+The original 5-question wizard (``policy-engine-mvp.md`` Appendix A) was
+trimmed in Phase 5 polish after user testing surfaced that only two of
+the five questions actually drove template output. The other three
+(``agent_type``, ``decision_volume``, ``channel``) were pretend-
+customisation that wasted operator time.
 
-  1. Agent type            — radio
-  2. Jurisdictions         — multi-select; US Federal always included
-  3. Decision volume       — radio (rough monthly bucket)
-  4. Channel               — radio (where human review happens)
-  5. HIPAA Privacy Officer — text (name + email)
+The current shape:
 
-The shape is locked to Appendix A. ``extra="forbid"`` on every model
-prevents wizard answers from being polluted with arbitrary keys — the
-JSON column is otherwise a free-form blob and we do not want the API to
-become an "anything goes" persistence sink.
+  1. Jurisdictions     — multi-select; US Federal always required
+  2. HIPAA Privacy Officer — name + email (substituted into HIPAA Risk
+                              Analysis + Section 1557 NDP templates)
 
-Generation (Risk Analysis / 1557 / BAA drafts) lands in Phase 5. This
-PR only persists answers.
+The ``wizard_answers`` column is a JSON blob, so no migration is needed
+to retire the old fields. Existing completed orgs that wrote
+``agent_type`` / ``decision_volume`` / ``channel`` keep those entries
+harmlessly (the model ignores them on load — see
+``_drop_legacy_fields`` below). New submissions only write the current
+shape.
+
+The legacy ``california`` slug is rewritten to ``california_ab489`` on
+load via a ``model_validator`` so AI Care Disclosure regeneration keeps
+emitting the CA AB 489 clause for orgs that completed the wizard before
+the Phase 5 jurisdiction expansion.
 """
 from __future__ import annotations
 
@@ -22,68 +30,51 @@ import re
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-
-# ── Q1: Agent type ────────────────────────────────────────────────────
-# Slugs map to Appendix A's option list:
-#   "scribe"        → "AI scribe / chart entry assistant"
-#   "receptionist"  → "AI receptionist / voice agent"
-#   "prior_auth"    → "AI prior-auth / claims agent"
-#   "triage"        → "AI triage / symptom checker"
-#   "other"         → "Other clinical AI" (free-text supplement)
-AgentType = Literal["scribe", "receptionist", "prior_auth", "triage", "other"]
-
-# ── Q3: Decision volume buckets (monthly) ────────────────────────────
-#   lt_10k     → "< 10,000      (Starter)"
-#   10k_100k   → "10K - 100K    (Growth)"
-#   100k_1m    → "100K - 1M     (Scale)"
-#   gt_1m      → "> 1M          (Enterprise)"
-DecisionVolume = Literal["lt_10k", "10k_100k", "100k_1m", "gt_1m"]
-
-# ── Q4: Channel for human review ─────────────────────────────────────
-#   in_app_webhook  → "In-app webhook (default)"
-#   slack           → "Slack (solo practitioners or dev/compliance team)"
-#   vera_dashboard  → "Vera dashboard (batch compliance oversight)"
-#   multiple        → "Multiple (combine — e.g. webhook for clinical,
-#                                dashboard for compliance)"
-ReviewChannel = Literal[
-    "in_app_webhook", "slack", "vera_dashboard", "multiple"
-]
 
 # ── Q2: Jurisdiction tokens ──────────────────────────────────────────
-# US Federal is implied / required per Appendix A ("can't deselect") so
-# the wire format always includes ``us_federal`` and we accept the
-# allow-listed optional add-ons. Extra tokens are rejected at validation
-# time — the frontend renders the same allow-list, and the server is the
-# enforcement boundary.
+# Expanded in Phase 5 polish from the original CA-only set to cover the
+# states + supranational regimes the AI Care Disclosure generator now
+# branches on.
 #
-# Phase 5 PR A — extended the allow-list to include the per-state slugs
-# the AI-Assisted Care Disclosure template generator branches on
-# (``california``, ``texas``, ``utah``). ``us_ca`` remains in the list
-# as a legacy alias so wizard answers persisted before Phase 5 keep
-# round-tripping. The template generator treats both ``california`` and
-# ``us_ca`` as "include the CA AB 489 clause"; ``other_state`` remains
-# the v2 placeholder.
+# Slug → conditional clause emitted in ``ai_care_disclosure.py``:
+#   us_federal         → (baseline — HIPAA + Section 1557, always)
+#   california_ab489   → CA AB 489 clinical decision support clause
+#   california_sb942   → CA SB 942 AI consumer disclosure clause
+#   texas              → TX TRAIGA healthcare AI clause
+#   utah               → UT AIPA generative AI clause
+#   colorado           → CO SB 24-205 consequential AI clause
+#   eu                 → EU AI Act Art. 50(1) high-risk AI clause
+#   new_york           → NY placeholder ("coordinate with counsel")
+#   other              → partner to ``jurisdictions_other`` free-text
+#
+# Legacy ``california`` / ``us_ca`` slugs are coerced to
+# ``california_ab489`` on load (see ``_normalise_jurisdictions`` below)
+# so orgs that completed the wizard before Phase 5 keep round-tripping.
 _JURISDICTION_ALLOWED = frozenset(
     {
         "us_federal",
-        "us_ca",  # legacy alias for california
-        "california",
+        "california_ab489",
+        "california_sb942",
         "texas",
         "utah",
-        "other_state",
+        "colorado",
+        "eu",
+        "new_york",
+        "other",
     }
 )
 
-# RFC-lightweight check for the "other_state" custom token so we don't
-# silently accept "us_xx" garbage. The frontend currently doesn't expose
-# per-state selection beyond CA — Appendix A defers "Other state-specific"
-# to v2 — so ``other_state`` is the single placeholder marker.
+# Legacy aliases — accepted on input, rewritten to the canonical slug
+# before storage / validation. ``us_ca`` was the original Phase 1 token;
+# ``california`` was the Phase 5 PR A token; both become
+# ``california_ab489`` now.
+_LEGACY_CALIFORNIA_SLUGS = frozenset({"california", "us_ca"})
 
 
 class PrivacyOfficer(BaseModel):
-    """Q5 — name + email. PII; never stored in localStorage on the client."""
+    """Q2 — name + email. PII; never stored in localStorage on the client."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -117,26 +108,54 @@ class PrivacyOfficer(BaseModel):
         return v
 
 
+# Subset of fields the model accepts. Anything else (including the
+# retired ``agent_type`` / ``decision_volume`` / ``channel`` keys from
+# the original 5-question shape) is silently dropped on load so a row
+# written before the Phase 5 redesign deserialises cleanly.
+_ALLOWED_INPUT_KEYS = frozenset(
+    {
+        "jurisdictions",
+        "jurisdictions_other",
+        "privacy_officer",
+    }
+)
+
+
 class WizardAnswers(BaseModel):
     """Full payload for a completed (or in-progress) wizard submission.
 
-    All fields are Optional individually so the frontend can persist
+    Both fields are Optional individually so the frontend can persist
     partial answers across reloads. On a ``completed=true`` submission
     the route layer enforces presence of every field (see
-    ``routes/wizard.py``).
+    ``routes/organizations._require_all_fields``).
     """
 
-    model_config = ConfigDict(extra="forbid")
-
-    agent_type: Optional[AgentType] = None
-    # Free-text supplement when ``agent_type == "other"``. 200-char limit
-    # mirrors what the frontend Textarea allows.
-    agent_type_other: Optional[str] = Field(default=None, max_length=200)
+    # ``extra="ignore"`` — was ``forbid`` on the original 5-question
+    # model. Loosened in Phase 5 polish so a wizard_answers row written
+    # before the redesign (carrying ``agent_type`` etc.) round-trips
+    # without raising. New submissions still come through the route
+    # layer, which uses ``Submission`` (below) with ``extra="forbid"``
+    # to reject pollution at the API boundary.
+    model_config = ConfigDict(extra="ignore")
 
     jurisdictions: Optional[list[str]] = Field(default=None)
-    decision_volume: Optional[DecisionVolume] = None
-    channel: Optional[ReviewChannel] = None
+    jurisdictions_other: Optional[list[str]] = Field(default=None)
     privacy_officer: Optional[PrivacyOfficer] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_legacy_fields(cls, data):
+        """Strip retired keys from the input before validation runs.
+
+        Legacy rows on the ``wizard_answers`` JSON column carry
+        ``agent_type`` / ``agent_type_other`` / ``decision_volume`` /
+        ``channel`` from the original 5-question shape. Drop them
+        silently so model construction succeeds without raising on
+        unexpected keys.
+        """
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if k in _ALLOWED_INPUT_KEYS}
+        return data
 
     @field_validator("jurisdictions")
     @classmethod
@@ -144,8 +163,8 @@ class WizardAnswers(BaseModel):
         if v is None:
             return v
         if not v:
-            # Appendix A: US Federal is required and cannot be deselected,
-            # so an empty list is never a valid submission.
+            # US Federal is required and cannot be deselected, so an
+            # empty list is never a valid submission.
             raise ValueError("jurisdictions must not be empty")
         seen: set[str] = set()
         cleaned: list[str] = []
@@ -153,6 +172,10 @@ class WizardAnswers(BaseModel):
             if not isinstance(token, str):
                 raise ValueError("jurisdictions entries must be strings")
             t = token.strip()
+            # Legacy slugs — coerce to canonical so AI Care Disclosure
+            # regen for older orgs still emits the CA AB 489 clause.
+            if t in _LEGACY_CALIFORNIA_SLUGS:
+                t = "california_ab489"
             if t not in _JURISDICTION_ALLOWED:
                 raise ValueError(
                     f"unknown jurisdiction token: {token!r}; allowed: "
@@ -163,18 +186,33 @@ class WizardAnswers(BaseModel):
             seen.add(t)
             cleaned.append(t)
         if "us_federal" not in seen:
-            # Appendix A: HIPAA + Section 1557 are always in scope, so the
+            # HIPAA + Section 1557 are always in scope, so the
             # token must always be present on a non-empty list.
             raise ValueError("jurisdictions must include 'us_federal'")
         return cleaned
 
-    @field_validator("agent_type_other")
+    @field_validator("jurisdictions_other")
     @classmethod
-    def _strip_other(cls, v: Optional[str]) -> Optional[str]:
+    def _validate_jurisdictions_other(
+        cls, v: Optional[list[str]]
+    ) -> Optional[list[str]]:
         if v is None:
             return v
-        v = v.strip()
-        return v or None
+        if len(v) > 10:
+            raise ValueError("jurisdictions_other accepts at most 10 entries")
+        cleaned: list[str] = []
+        for entry in v:
+            if not isinstance(entry, str):
+                raise ValueError("jurisdictions_other entries must be strings")
+            e = entry.strip()
+            if not e:
+                continue
+            if len(e) > 64:
+                raise ValueError(
+                    "jurisdictions_other entries must be 64 chars or fewer"
+                )
+            cleaned.append(e)
+        return cleaned
 
 
 class WizardAnswersSubmission(BaseModel):
@@ -184,12 +222,36 @@ class WizardAnswersSubmission(BaseModel):
     When true, every wizard field must be populated. When false, the
     server treats the payload as a partial save (any subset OK as long
     as each present field is individually valid).
+
+    Uses ``extra="forbid"`` on both the wrapper and the nested answers
+    so a client cannot pollute the answer blob at the API boundary.
+    The ``WizardAnswers`` model itself ignores extras to tolerate
+    legacy rows on read.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     answers: WizardAnswers
     completed: bool = False
+
+    @field_validator("answers", mode="before")
+    @classmethod
+    def _reject_unknown_answer_keys(cls, v):
+        """Forbid unknown keys at the API boundary.
+
+        ``WizardAnswers`` itself ignores extras to round-trip legacy
+        rows, but a fresh API submission with arbitrary keys is almost
+        certainly a client bug — reject it explicitly so the contract
+        stays tight.
+        """
+        if isinstance(v, dict):
+            unknown = [k for k in v.keys() if k not in _ALLOWED_INPUT_KEYS]
+            if unknown:
+                raise ValueError(
+                    f"unknown answer keys: {unknown}; allowed: "
+                    f"{sorted(_ALLOWED_INPUT_KEYS)}"
+                )
+        return v
 
 
 class WizardAnswersResponse(BaseModel):

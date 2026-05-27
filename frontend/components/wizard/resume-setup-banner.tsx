@@ -28,16 +28,12 @@ import { cn } from "@/lib/utils";
 /** Same predicate the hook uses for "first unanswered" — count answered fields. */
 function answeredCount(answers: WizardAnswers): number {
   let n = 0;
-  if (answers.agent_type) {
-    if (answers.agent_type !== "other") n += 1;
-    else if (answers.agent_type_other) n += 1;
-  }
   if (answers.jurisdictions && answers.jurisdictions.length > 0) n += 1;
-  if (answers.decision_volume) n += 1;
-  if (answers.channel) n += 1;
   if (answers.privacy_officer) n += 1;
   return n;
 }
+
+const TOTAL_QUESTIONS = 2;
 
 export function ResumeSetupBanner() {
   const wizard = useOnboardingWizard();
@@ -50,7 +46,7 @@ export function ResumeSetupBanner() {
   const answered = answeredCount(wizard.answers);
   const isComplete = wizard.completedAt !== null;
   const hasStartedWizard = answered > 0;
-  const isAllAnswered = answered === 5;
+  const isAllAnswered = answered === TOTAL_QUESTIONS;
 
   // Show only when: SDK has captured ≥1 action AND wizard is incomplete.
   // Per spec we suppress on brand-new orgs (zero actions) so the user's
@@ -100,7 +96,7 @@ export function ResumeSetupBanner() {
         }}
         // Keep the visible CTA copy short; the aria-label explains
         // exactly which step we'd land on for screen-reader users.
-        aria-label={`Continue setup — opens wizard at question ${nextStep + 1} of 5`}
+        aria-label={`Continue setup — opens wizard at question ${nextStep + 1} of ${TOTAL_QUESTIONS}`}
         className={cn(
           "shrink-0 text-[13px] font-medium text-[color:var(--ink)]",
           "hover:underline focus-visible:outline focus-visible:outline-2",
