@@ -60,28 +60,23 @@ const _mounted_wizard: React.ReactNode = (
 void _mounted_wizard;
 
 // ── Fixture: a fully-answered wizard payload ──────────────────────────
+// Phase 5 redesign — 2-question shape (jurisdictions + privacy_officer).
 
 const fullyAnswered: WizardAnswers = {
-  agent_type: "scribe",
-  agent_type_other: null,
   jurisdictions: ["us_federal"],
-  decision_volume: "10k_100k",
-  channel: "in_app_webhook",
+  jurisdictions_other: null,
   privacy_officer: {
     name: "Jane Counsel",
     email: "jane@hospital.example",
   },
 };
 
-// Partial fixture — only Q1 answered, used for the "partial save does
-// not trigger generate" test pin. Note that ``isStepValid`` correctly
-// reports step 1 (jurisdictions) is not advanceable yet.
+// Partial fixture — only jurisdictions answered, used for the
+// "partial save does not trigger generate" test pin. ``isStepValid``
+// reports step 1 (privacy_officer) is not advanceable yet.
 const partiallyAnswered: WizardAnswers = {
-  agent_type: "scribe",
-  agent_type_other: null,
-  jurisdictions: null,
-  decision_volume: null,
-  channel: null,
+  jurisdictions: ["us_federal"],
+  jurisdictions_other: null,
   privacy_officer: null,
 };
 
@@ -238,23 +233,22 @@ void _check_generate_failure_surfaces_inline_error;
 // generate on the success path of ``submit()``, which is only invoked
 // from the "Complete setup" button on the final step. Pin the
 // invariant that ``isStepValid`` rejects ``partiallyAnswered`` at
-// step 1 (jurisdictions) so the user CANNOT advance to step 4 and
-// fire ``submit`` without filling in every answer.
+// step 1 (privacy_officer) so the user CANNOT advance and fire
+// ``submit`` without filling in every answer.
 function _check_partial_save_does_not_trigger_generate(): void {
-  // Step 0 (agent_type) is satisfied by partiallyAnswered.
+  // Step 0 (jurisdictions) is satisfied by partiallyAnswered.
   if (!isStepValid(0, partiallyAnswered)) {
     throw new Error(
       "fixture invariant: partiallyAnswered should clear step 0",
     );
   }
-  // Step 1 (jurisdictions) is NOT — null jurisdictions list.
+  // Step 1 (privacy_officer) is NOT — null privacy_officer.
   if (isStepValid(1, partiallyAnswered)) {
     throw new Error(
       "partiallyAnswered must NOT clear step 1; otherwise submit() could fire on a partial wizard",
     );
   }
-  // ``firstUnansweredStep`` lands the resume on step 1, not the final
-  // step — so the "Complete setup" CTA never paints for a partial.
+  // ``firstUnansweredStep`` lands the resume on step 1 (privacy_officer).
   if (firstUnansweredStep(partiallyAnswered) !== 1) {
     throw new Error(
       `firstUnansweredStep(partial) must be 1, got ${firstUnansweredStep(partiallyAnswered)}`,
@@ -262,11 +256,17 @@ function _check_partial_save_does_not_trigger_generate(): void {
   }
   // Sanity: a fully-answered fixture clears every step.
   for (let i = 0; i < WIZARD_STEP_FIELDS.length; i += 1) {
-    if (!isStepValid(i as 0 | 1 | 2 | 3 | 4, fullyAnswered)) {
+    if (!isStepValid(i as 0 | 1, fullyAnswered)) {
       throw new Error(
         `fixture invariant: fullyAnswered should clear step ${i}`,
       );
     }
+  }
+  // Step count pin — Phase 5 wizard redesign trimmed from 5 to 2.
+  if (WIZARD_STEP_FIELDS.length !== 2) {
+    throw new Error(
+      `WIZARD_STEP_FIELDS must have length 2 after Phase 5 redesign, got ${WIZARD_STEP_FIELDS.length}`,
+    );
   }
 }
 void _check_partial_save_does_not_trigger_generate;

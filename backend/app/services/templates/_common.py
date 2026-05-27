@@ -43,13 +43,30 @@ def generated_note() -> str:
     )
 
 
-# California (CMIA add-on) was the wizard's original California slug
-# (``us_ca``) before Phase 5 expanded the per-state coverage. The
-# generator treats both as "include the CA AB 489 clause" so wizard
-# answers persisted before Phase 5 keep working without a backfill.
-CALIFORNIA_SLUGS = frozenset({"california", "us_ca"})
+# Per-jurisdiction slug sets that AI Care Disclosure (and any other
+# generator that branches on geography) intersects with the wizard's
+# ``jurisdictions`` answer.
+#
+# Each set carries the canonical Phase 5 slug + any legacy slug a
+# pre-Phase 5 wizard row might still carry on disk. The
+# ``WizardAnswers`` schema rewrites legacy slugs to canonical on load
+# (see ``schemas/wizard._validate_jurisdictions``), so in practice the
+# legacy aliases here are belt-and-suspenders for old rows that bypass
+# the schema (e.g. a raw DB read).
+CALIFORNIA_AB489_SLUGS = frozenset({"california_ab489", "california", "us_ca"})
+CALIFORNIA_SB942_SLUGS = frozenset({"california_sb942"})
 TEXAS_SLUGS = frozenset({"texas"})
 UTAH_SLUGS = frozenset({"utah"})
+COLORADO_SLUGS = frozenset({"colorado"})
+EU_SLUGS = frozenset({"eu"})
+NEW_YORK_SLUGS = frozenset({"new_york"})
+OTHER_SLUGS = frozenset({"other"})
+
+# Backwards-compat alias — pre-Phase 5 the CA slug set was named
+# ``CALIFORNIA_SLUGS`` (no AB 489 / SB 942 split). Keep the old name
+# pointing at the AB 489 set so any external caller (or stale import in
+# a half-merged branch) keeps working.
+CALIFORNIA_SLUGS = CALIFORNIA_AB489_SLUGS
 
 
 def has_jurisdiction(jurisdictions, *slugs) -> bool:

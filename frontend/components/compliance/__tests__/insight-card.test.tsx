@@ -143,13 +143,15 @@ void _check_high_severity_pill_uses_ink_red;
 const test_quoted_source_renders_in_paper_3_background = true as const;
 void test_quoted_source_renders_in_paper_3_background;
 
-// test_apply_button_is_disabled_with_tooltip — the brief mandates the
-// Apply button render disabled with the "Coming in v1.1" tooltip. Pin
-// the tooltip string exported by the component.
+// test_apply_button_removed_in_phase5_trust_audit — the Apply button
+// was removed in the Phase 5 polish trust audit. Surfacing a disabled
+// affordance with a "Coming in v1.1" tooltip violates the project
+// rule against version-numbered deferral copy. The export survives as
+// an empty string for backwards compatibility with this import.
 function _check_apply_tooltip_string(): void {
-  if (APPLY_TOOLTIP_TEXT !== "Coming in v1.1") {
+  if (APPLY_TOOLTIP_TEXT !== "") {
     throw new Error(
-      `Apply tooltip must remain "Coming in v1.1" — the brief pins this verbatim, got: ${APPLY_TOOLTIP_TEXT}`,
+      `APPLY_TOOLTIP_TEXT must be empty after Phase 5 trust audit removed the Apply button, got: ${APPLY_TOOLTIP_TEXT}`,
     );
   }
 }
