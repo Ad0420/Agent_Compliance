@@ -1002,3 +1002,173 @@ export function probeS3MirrorArn(
     body: JSON.stringify(input),
   });
 }
+
+// ── Phase 5 PR A — Counsel-attestable templates ──────────────────────────
+//
+// Backed by ``/v1/templates`` (Wave 1 PR A — see backend/app/routes/templates.py).
+// Five template keys; five endpoints. The status enum has three states:
+//
+//   * ``not_started``      — no DB row exists yet; the list endpoint
+//                            synthesises a stub so the UI always renders
+//                            exactly five cards.
+//   * ``in_progress``      — row exists, body generated or edited, but
+//                            ``attested_at`` is NULL.
+//   * ``counsel_attested`` — attestation triple is populated. Any PUT to
+//                            an attested row atomically clears the
+//                            triple (the backend never leaves the row in
+//                            a partial state).
+//
+// Error envelope follows the FastAPI convention:
+//   400 { detail: { code: "wizard_incomplete", detail: "..." } }
+//   400 { detail: { code: "counsel_attestation_required", detail: "..." } }
+//   404 detail: "Template not found"  (GET / PUT / attest before generate)
+//   422 { detail: { code: "unknown_template_key", detail: "..." } }
+//
+// The shared ``request`` helper unwraps ``detail`` into ``ApiError.detail``
+// regardless of whether the backend emitted a string or the nested
+// ``{code, detail}`` object; ``readTemplatesErrorCode`` below narrows to
+// the typed code surface.
+
+export const TEMPLATE_KEYS = [
+  "hipaa_risk_analysis",
+  "section_1557_ndp",
+  "ai_tool_inventory",
+  "workforce_training_outline",
+  "ai_care_disclosure",
+] as const;
+
+export type TemplateKey = (typeof TEMPLATE_KEYS)[number];
+
+export type TemplateStatus = "not_started" | "in_progress" | "counsel_attested";
+
+export interface GeneratedTemplateSummary {
+  template_key: TemplateKey;
+  status: TemplateStatus;
+  attested_at: string | null;
+  attested_by_name: string | null;
+  // Backend returns null for ``not_started`` stubs (no row to read
+  // ``updated_at`` from). The list always carries exactly five entries.
+  updated_at: string | null;
+}
+
+export interface GeneratedTemplateDetail {
+  template_key: TemplateKey;
+  markdown_body: string;
+  status: TemplateStatus;
+  generated_at: string;
+  updated_at: string;
+  attested_at: string | null;
+  attested_by_user_id: string | null;
+  attested_by_name: string | null;
+  content_hash_at_attestation: string | null;
+}
+
+export interface TemplateGenerateResponse {
+  generated: TemplateKey[];
+  skipped_attested: TemplateKey[];
+}
+
+export const TEMPLATES_ERROR_CODES = {
+  wizardIncomplete: "wizard_incomplete",
+  counselAttestationRequired: "counsel_attestation_required",
+  // 404s come back as plain ``detail: "Template not found"`` (no code).
+  // The constant below is the synthesised label the reader uses to
+  // branch on "row missing"; ``readTemplatesErrorCode`` infers it from
+  // status 404 so callers don't have to string-match the detail.
+  templateNotFound: "template_not_found",
+} as const;
+
+export type TemplatesErrorCode =
+  | (typeof TEMPLATES_ERROR_CODES)[keyof typeof TEMPLATES_ERROR_CODES]
+  | "unknown";
+
+/**
+ * Read the structured error code off an ApiError raised by any of the
+ * templates calls. Returns ``"unknown"`` when no documented code
+ * matches so the caller renders the generic fallback.
+ *
+ * Mirrors the shape of ``readInsightsErrorCode`` /
+ * ``readAuditPdfErrorCode``: tolerates both the flat ``{code, ...}``
+ * envelope and the nested ``{detail: {code, ...}}`` envelope. Also
+ * synthesises ``template_not_found`` on a 404 since the route layer
+ * returns a plain detail string for that case.
+ */
+export function readTemplatesErrorCode(err: unknown): TemplatesErrorCode {
+  if (!(err instanceof ApiError)) return "unknown";
+  if (err.status === 404) return TEMPLATES_ERROR_CODES.templateNotFound;
+  const detail = err.detail;
+  if (!detail || typeof detail !== "object") return "unknown";
+  let code: unknown = (detail as Record<string, unknown>).code;
+  if (typeof code !== "string") {
+    const nested = (detail as Record<string, unknown>).detail;
+    if (nested && typeof nested === "object") {
+      code = (nested as Record<string, unknown>).code;
+    }
+  }
+  if (code === TEMPLATES_ERROR_CODES.wizardIncomplete)
+    return TEMPLATES_ERROR_CODES.wizardIncomplete;
+  if (code === TEMPLATES_ERROR_CODES.counselAttestationRequired)
+    return TEMPLATES_ERROR_CODES.counselAttestationRequired;
+  return "unknown";
+}
+
+export function getTemplates(): Promise<GeneratedTemplateSummary[]> {
+  // The backend mounts the list route as ``GET /v1/templates/`` (router
+  // prefix ``/templates`` + path ``/``). Most peer routers register the
+  // list path as ``""`` so it lands without a trailing slash, but the
+  // templates router uses ``"/"``. Call with the trailing slash so we
+  // hit the route directly instead of relying on FastAPI's 307 redirect
+  // (which strips the Authorization header on the cross-origin
+  // dashboard→api hop the production deploy uses).
+  return request("/v1/templates/");
+}
+
+export function getTemplate(
+  key: TemplateKey,
+): Promise<GeneratedTemplateDetail> {
+  return request(`/v1/templates/${encodeURIComponent(key)}`);
+}
+
+export function putTemplate(
+  key: TemplateKey,
+  markdown_body: string,
+): Promise<GeneratedTemplateDetail> {
+  return request(`/v1/templates/${encodeURIComponent(key)}`, {
+    method: "PUT",
+    body: JSON.stringify({ markdown_body }),
+  });
+}
+
+/**
+ * Mark a template as counsel-attested. The backend requires
+ * ``counsel_attested: true`` in the payload — this wrapper hard-codes
+ * it so the UI surface (checkbox + reviewer name) is the only way to
+ * vary the attestation gesture. Sending ``false`` from the API call
+ * itself would be dead code.
+ */
+export function attestTemplate(
+  key: TemplateKey,
+  reviewer_name: string,
+): Promise<GeneratedTemplateDetail> {
+  return request(`/v1/templates/${encodeURIComponent(key)}/attest`, {
+    method: "POST",
+    body: JSON.stringify({
+      counsel_attested: true,
+      reviewer_name,
+    }),
+  });
+}
+
+/**
+ * Trigger generation of all five templates. Idempotent: missing rows
+ * are created, un-attested rows are refreshed, attested rows are
+ * skipped (returned in ``skipped_attested`` so the UI can surface
+ * "X templates left untouched"). Imported by the wizard completion
+ * handoff in PR B2 — keep the signature stable.
+ */
+export function generateTemplates(): Promise<TemplateGenerateResponse> {
+  return request("/v1/templates/generate", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
