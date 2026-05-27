@@ -42,8 +42,14 @@ Returned by :class:`ProofVerificationResult.reason`:
 * ``"signature_invalid"`` — KMS signature does not verify against the
   claimed key.
 * ``"signature_unverifiable_hmac"`` — proof uses an HMAC algorithm and
-  no shared secret was provided. NON-FATAL: callers should treat this
-  as a warning, not a hard fail (per brief).
+  no shared secret was provided. The verifier could NOT verify the
+  signature, so it MUST NOT claim ``ok=True``: this is a soft failure
+  with ``ok=False``. The CLI maps it to a non-zero exit code so an
+  operator running the acceptance walkthrough never sees a "valid"
+  result on a chain whose signature was silently skipped. Downstream
+  code may choose to treat ``ok=False, reason="signature_unverifiable_hmac"``
+  as recoverable (e.g. "ask the auditor for the HMAC secret") versus
+  the hard ``"signature_invalid"``.
 * ``"signature_algorithm_unsupported"`` — algorithm name doesn't map
   to a verifier this SDK build knows about. Fatal.
 * ``"missing_required_field"`` — proof payload is missing a field this
@@ -222,10 +228,12 @@ def verify_kms_signature_for_proof(
     * ``(True, "ok")`` — signature validates.
     * ``(False, "signature_invalid")`` — the bytes did not match.
     * ``(False, "signature_unverifiable_hmac")`` — algorithm is HMAC and
-      no ``hmac_secret`` was supplied. The caller MUST treat this as a
-      warning, not a hard fail (per the Wave 3C.2 brief: HMAC offline
-      verification is a non-fatal warning unless the customer can
-      supply the shared secret).
+      no ``hmac_secret`` was supplied. The verifier did NOT verify the
+      signature; the caller MUST surface a non-success outcome rather
+      than claim "ok". (Earlier Wave 3C.2 wording called this a
+      "non-fatal warning"; the Phase 4 acceptance walkthrough showed
+      that wording let tampered HMAC chains pass with ``ok=True``,
+      which is the bug this hotfix corrects.)
     * ``(False, "signature_algorithm_unsupported")`` — this SDK build
       doesn't know how to verify the named algorithm.
     * ``(False, "missing_required_field")`` — one of the required
@@ -260,7 +268,14 @@ def verify_kms_signature_for_proof(
 
     if algorithm in (ALGO_HMAC_SHA256, ALGO_KMS_HMAC_SHA256):
         if hmac_secret is None:
-            # Per brief: HMAC + no shared secret == non-fatal warning.
+            # HMAC + no shared secret: we cannot verify the signature.
+            # The Phase 4 acceptance walkthrough showed that surfacing
+            # this as "non-fatal warning" let tampered HMAC chains
+            # appear valid (the verifier never even computed the HMAC,
+            # so a flipped signature byte was indistinguishable from a
+            # missing secret). Both modes collapse to the same
+            # non-success reason here; the high-level
+            # ``verify_proof_payload`` returns ``ok=False``.
             return False, REASON_SIGNATURE_UNVERIFIABLE_HMAC
         try:
             expected = hmac.new(
@@ -313,10 +328,12 @@ class ProofVerificationResult:
     if-statements; ``reason`` carries the structured code for error
     messages and exit-code mapping in the CLI.
 
-    ``signature_warning`` is set ONLY when ``ok=True`` but the
-    signature could not be verified because the algorithm is HMAC and
-    no shared secret was available. This is the "unverified (no HMAC
-    secret)" non-fatal warning called out in the brief.
+    ``signature_warning`` is retained for **backwards compatibility**
+    with callers that branched on it pre-hotfix. It is now ALWAYS
+    ``False``: the "HMAC chain + no secret" condition is no longer a
+    silent warning on a successful result — it is a first-class failure
+    (``ok=False, reason="signature_unverifiable_hmac"``). New code
+    should branch on ``reason`` instead.
     """
 
     ok: bool
@@ -376,24 +393,35 @@ def verify_proof_payload(
         return ProofVerificationResult(ok=True, reason=REASON_OK)
 
     # 2. KMS signature
+    #
+    # SECURITY-HOTFIX (Phase 4 acceptance walkthrough): the prior
+    # implementation mapped ``signature_unverifiable_hmac`` (HMAC chain
+    # + no shared secret) to ``ok=True`` with a warning flag, on the
+    # theory that "we never actually verified, but it's a soft
+    # condition, so callers can choose". In practice that surfaced a
+    # tampered HMAC-signed proof as "ok=True, reason=ok": the verifier
+    # never even computed the HMAC, so a flipped ``kms_signature`` hex
+    # char was indistinguishable from a missing secret. Either way, the
+    # function MUST NOT claim ``ok=True`` when it did not actually
+    # verify the signature. The mapping below is the canonical fix —
+    # ``ok`` is True ONLY on a real verification.
     sig_ok, sig_reason = verify_kms_signature_for_proof(
         payload, hmac_secret=hmac_secret
     )
     if sig_ok:
         return ProofVerificationResult(ok=True, reason=REASON_OK)
-    if sig_reason == REASON_SIGNATURE_UNVERIFIABLE_HMAC:
-        # Per brief: non-fatal — surface as warning + ok=True.
-        return ProofVerificationResult(
-            ok=True,
-            reason=REASON_OK,
-            signature_warning=True,
-            failure_detail=(
-                "HMAC algorithm + no shared secret available; "
-                "signature could not be verified offline"
-            ),
-        )
+    # Pass the structured signature reason through to the caller. The
+    # CLI maps each reason to an exit code and stderr line; tests assert
+    # on the reason string.
+    failure_detail = (
+        "HMAC algorithm + no shared secret available; signature "
+        "could not be verified offline (set VERA_HMAC_SECRET to "
+        "the chain's shared secret to verify)."
+        if sig_reason == REASON_SIGNATURE_UNVERIFIABLE_HMAC
+        else "KMS signature did not validate"
+    )
     return ProofVerificationResult(
         ok=False,
         reason=sig_reason,
-        failure_detail="KMS signature did not validate",
+        failure_detail=failure_detail,
     )

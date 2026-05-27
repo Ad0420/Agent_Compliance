@@ -283,10 +283,19 @@ def test_verify_merkle_proof_bad_signature_returns_exit_1(
     assert "signature_invalid" in message
 
 
-def test_verify_merkle_proof_hmac_no_secret_is_warning(
+def test_verify_merkle_proof_hmac_no_secret_returns_signature_unverifiable_hmac(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Per brief: HMAC + no shared secret → exit 0 with warning line."""
+    """Phase 4 hotfix: HMAC + no shared secret → exit 1 with a clear
+    stderr line that tells the operator to set ``VERA_HMAC_SECRET``.
+
+    Pre-hotfix this returned ``exit 0`` with a "unverified (no HMAC
+    secret)" warning, which silently passed tampered HMAC-signed proofs
+    as valid (the verifier never actually checked the signature, so a
+    flipped ``kms_signature`` hex char was indistinguishable from a
+    missing secret). The new contract: ``ok=False, reason=
+    signature_unverifiable_hmac`` → exit 1.
+    """
     payload = _build_proof_payload()
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -299,8 +308,43 @@ def test_verify_merkle_proof_hmac_no_secret_is_warning(
         headers={"Authorization": "Bearer al_test_x"},
         hmac_secret=None,
     )
-    assert exit_code == 0
-    assert "unverified (no HMAC secret)" in message
+    assert exit_code == 1
+    # The structured reason MUST be in the message so an operator
+    # scripting against the CLI can branch on it.
+    assert "signature_unverifiable_hmac" in message
+    # The stderr line MUST tell the operator how to fix it.
+    assert "VERA_HMAC_SECRET" in message
+
+
+def test_verify_merkle_proof_hmac_tampered_signature_no_secret_is_unverifiable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Phase 4 bug in scenario form: tampered HMAC + no secret.
+
+    Pre-hotfix this returned ``exit 0`` because the verifier
+    short-circuited on ``hmac_secret_missing`` BEFORE recomputing the
+    HMAC, so the flipped signature byte was never noticed. Post-hotfix
+    we can't tell tamper apart from missing-secret here, but ``ok``
+    is now ``False`` either way — which is the security-correct
+    outcome (the verifier may NOT claim "valid" without verifying).
+    """
+    payload = _build_proof_payload()
+    # Flip one hex character in the signature.
+    sig = payload["kms_signature"]
+    payload["kms_signature"] = ("0" if sig[0] != "0" else "1") + sig[1:]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    _install_transport(monkeypatch, handler)
+    exit_code, message = verify_merkle_proof_for_record(
+        "rec_001",
+        api_url="https://api.test.vera",
+        headers={"Authorization": "Bearer al_test_x"},
+        hmac_secret=None,
+    )
+    assert exit_code == 1
+    assert "signature_unverifiable_hmac" in message
 
 
 def test_verify_merkle_proof_404_returns_exit_1(

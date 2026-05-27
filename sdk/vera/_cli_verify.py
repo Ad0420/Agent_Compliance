@@ -34,6 +34,7 @@ from .verify.proof_payload import (
     REASON_MERKLE_PATH_MISMATCH,
     REASON_SIGNATURE_ALGORITHM_UNSUPPORTED,
     REASON_SIGNATURE_INVALID,
+    REASON_SIGNATURE_UNVERIFIABLE_HMAC,
     verify_proof_payload,
 )
 
@@ -225,6 +226,21 @@ def verify_merkle_proof_for_record(
             reason_human = (
                 "Signature algorithm not supported by this SDK build."
             )
+        elif result.reason == REASON_SIGNATURE_UNVERIFIABLE_HMAC:
+            # Phase 4 acceptance-walkthrough hotfix: HMAC chain + no
+            # shared secret is a non-success outcome (the verifier never
+            # actually checked the signature). Surface a clear,
+            # actionable stderr line so the operator knows what to do.
+            # Exit code 1 (verification failed) is correct here:
+            # ``ok=False`` is the truth, and downstream callers can
+            # branch on the structured reason if they want different
+            # ergonomics in their own UX.
+            reason_human = (
+                "Signature not verified — set VERA_HMAC_SECRET to "
+                "verify HMAC-signed chains offline. Merkle path "
+                "validated, but the signature step was skipped because "
+                "no shared secret was supplied."
+            )
         else:
             reason_human = result.reason
         return 1, (
@@ -244,12 +260,6 @@ def verify_merkle_proof_for_record(
         f"   Merkle root: {root}",
         f"   KMS key: {kms_key} ({kms_algo})",
     ]
-    if result.signature_warning:
-        msg_lines.append(
-            "   WARNING unverified (no HMAC secret) — Merkle path "
-            "validates but KMS signature is over an HMAC key whose "
-            "shared secret was not supplied to this verifier."
-        )
     return 0, "\n".join(msg_lines)
 
 
@@ -289,11 +299,14 @@ def verify_merkle_proof_for_record(
     type=str,
     default=None,
     help=(
-        "Env var to read an HMAC shared secret from (UTF-8). Only "
-        "needed when the checkpoint was signed with HMAC and you want "
-        "to verify the signature offline. Without this, HMAC-signed "
-        "proofs print a 'unverified (no HMAC secret)' warning but "
-        "still exit 0 if the Merkle path validates."
+        "Env var to read an HMAC shared secret from (UTF-8). Required "
+        "when the checkpoint was signed with HMAC and you want to "
+        "verify the signature offline. Without it, HMAC-signed proofs "
+        "exit non-zero with reason=signature_unverifiable_hmac (the "
+        "Merkle path is still verified — only the signature step is "
+        "incomplete). Provide the secret out-of-band when handing off "
+        "an HMAC-signed bundle, OR migrate to asymmetric KMS keys "
+        "(production-mode), which embed the public key in the proof."
     ),
 )
 def verify_cmd(
