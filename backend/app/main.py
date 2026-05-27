@@ -97,7 +97,11 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    # PUT added in the Phase 3 CORS hotfix — the Wave 3D.3 S3 mirror
+    # endpoint ``PUT /v1/dashboard/s3-export-arn`` was being CORS-blocked
+    # from any browser because PUT was missing here. Found during Phase 3
+    # acceptance testing (Scenario 2). See ``docs/v1/phase3-acceptance-test-plan.md``.
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
 )
 app.add_middleware(RateLimitMiddleware)
