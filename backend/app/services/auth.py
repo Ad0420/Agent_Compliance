@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 import httpx
 import jwt
-from fastapi import Depends, HTTPException, Header, Security
+from fastapi import Depends, HTTPException, Header, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +20,39 @@ from .iam import IamTier, tier_from_claims
 
 logger = logging.getLogger(__name__)
 
-security = HTTPBearer()
+
+class HTTPBearer401(HTTPBearer):
+    """``HTTPBearer`` that raises 401 (not the FastAPI default 403) when
+    the Authorization header is missing or malformed.
+
+    The FastAPI default ``HTTPBearer(auto_error=True)`` raises HTTP 403
+    when no Authorization header is presented. That's semantically wrong:
+    401 means "no credentials presented" (RFC 7235), 403 means
+    "authenticated but forbidden". This codebase reserves 403 for the
+    latter (e.g. customer key lacks `write` permission, staff session
+    attempting a write, BAA expired).
+
+    The 401 response also carries ``WWW-Authenticate: Bearer`` per
+    RFC 6750 §3 — required by spec for Bearer-token APIs and consumed
+    by OpenAPI / Swagger UI tooling.
+    """
+
+    async def __call__(  # type: ignore[override]
+        self, request: Request
+    ) -> Optional[HTTPAuthorizationCredentials]:
+        try:
+            return await super().__call__(request)
+        except HTTPException as exc:
+            if exc.status_code == status.HTTP_403_FORBIDDEN:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=exc.detail,
+                    headers={"WWW-Authenticate": "Bearer"},
+                ) from exc
+            raise
+
+
+security = HTTPBearer401()
 
 # ── Clerk JWT verification ────────────────────────────────────────────────────
 # In-process JWKS cache. Keyed by `kid` → loaded RSA public key. Refreshed when

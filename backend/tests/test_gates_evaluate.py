@@ -109,7 +109,7 @@ def test_gate_evaluate_request_rejects_oversized_metadata():
 
 @pytest.mark.asyncio
 async def test_evaluate_without_auth_header_is_unauthorized(async_client):
-    """Missing Authorization header → 401/403 from HTTPBearer."""
+    """Missing Authorization header → 401 from ``HTTPBearer401``."""
     response = await async_client.post(
         "/v1/gates/evaluate",
         json={
@@ -119,9 +119,10 @@ async def test_evaluate_without_auth_header_is_unauthorized(async_client):
             "authorized_by": "dr_smith",
         },
     )
-    # FastAPI's HTTPBearer returns 403 when no credentials are provided;
-    # other auth dependencies return 401. Either is "unauthenticated".
-    assert response.status_code in (401, 403)
+    # ``HTTPBearer401`` (services.auth) overrides FastAPI's default 403 on
+    # missing Authorization with the semantically correct 401.
+    assert response.status_code == 401
+    assert response.headers.get("WWW-Authenticate") == "Bearer"
 
 
 @pytest.mark.asyncio
