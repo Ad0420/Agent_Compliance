@@ -53,7 +53,7 @@ import {
 interface AuditPdfModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  tenant_id: string;
+  customer_id: string;
   customer_display_name: string;
 }
 
@@ -130,7 +130,7 @@ export function defaultDateRange(): { from: string; to: string } {
 export function AuditPdfModal({
   open,
   onOpenChange,
-  tenant_id,
+  customer_id,
   customer_display_name,
 }: AuditPdfModalProps) {
   const [sections, setSections] = React.useState<Set<AuditPdfSectionKey>>(
@@ -184,7 +184,7 @@ export function AuditPdfModal({
       const orderedSections = AUDIT_PDF_SECTION_KEYS.filter((k) =>
         sections.has(k),
       );
-      await generateAuditPdf(tenant_id, {
+      await generateAuditPdf(customer_id, {
         date_from: dateFrom,
         date_to: dateTo,
         sections: orderedSections,
@@ -204,13 +204,23 @@ export function AuditPdfModal({
     dateFrom,
     dateTo,
     branding,
-    tenant_id,
+    customer_id,
     onOpenChange,
   ]);
 
   return (
     <Dialog open={open} onOpenChange={submitting ? undefined : onOpenChange}>
-      <DialogContent className="max-w-lg" data-testid="audit-pdf-modal">
+      {/* Per-modal Vera-token override on the shared shadcn `DialogContent`
+          primitive. The primitive's default `bg-background` resolves to the
+          dark shadcn token because Radix portals mount the content to
+          `document.body` (outside the `.dashboard` scope that reassigns
+          `--background` to `--paper`). Patching the primitive would regress
+          the legitimately-dark `/api-keys` dialog, so we override here at
+          the call site instead. See dashboard-design-system.md §Pattern C. */}
+      <DialogContent
+        className="max-w-lg bg-[color:var(--paper)] border-[color:var(--ink-4)] text-[color:var(--ink)]"
+        data-testid="audit-pdf-modal"
+      >
         <DialogHeader>
           <DialogTitle>Generate audit PDF</DialogTitle>
           <DialogDescription>
