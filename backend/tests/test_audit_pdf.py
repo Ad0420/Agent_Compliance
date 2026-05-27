@@ -926,3 +926,230 @@ async def test_scope_page_checkpoint_pending_text_when_no_checkpoint_in_range(
     assert resp.status_code == 200, resp.text
     text = _extract_text(resp.content)
     assert "Checkpoint pending" in text
+
+
+# ╔══════════════════════════════════════════════════════════════════════╗
+# ║ Hotfix — PDF table layout (Coverage Matrix + Audit Controls)         ║
+# ║                                                                       ║
+# ║ Bug 1: Coverage Matrix header cells were plain strings with no       ║
+# ║   colWidths, so labels collided ("Vera coverageCapture").            ║
+# ║ Bug 2: Audit Controls right column was a plain str → ReportLab       ║
+# ║   doesn't word-wrap plain strs in Table cells, so sentences clipped  ║
+# ║   at the page edge ("via SHA-", "all reco", "staff_a", "configu").   ║
+# ║ Fix:    Wrap header + body cells in Paragraph + pass explicit        ║
+# ║   colWidths so ReportLab reflows the text inside each cell.          ║
+# ╚══════════════════════════════════════════════════════════════════════╝
+
+
+@pytest.mark.asyncio
+async def test_scope_coverage_matrix_uses_explicit_column_widths(
+    async_client, org_and_key, db_session
+):
+    """Coverage Matrix header labels render as distinct tokens, not merged.
+
+    The pre-fix rendering produced concatenated runs like
+    ``Vera coverageCapture`` because adjacent narrow cells had no
+    word-wrap and butted up against each other. Asserting that each
+    label appears AND the concatenated form does not appear is the
+    most stable cross-pypdf-version check available — the column
+    widths themselves are not exposed in the extracted text stream.
+    """
+    org, raw_key, _ = org_and_key
+    customer = await _seed_customer(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+        display_name="Cleveland Clinic",
+    )
+    await _seed_active_baa(db_session, org_id=org.id, customer_id=customer.id)
+    # Seed at least one captured agent so the matrix renders the
+    # full header row (the no-data branch skips the table entirely).
+    await _seed_actions_and_approvals(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+        action_count=3,
+        approval_count=1,
+        action_class="scribe",
+    )
+
+    today = date.today()
+    resp = await async_client.post(
+        f"/v1/audits/{customer.id}",
+        json={
+            "date_from": (today - timedelta(days=30)).isoformat(),
+            "date_to": today.isoformat(),
+            "sections": ["scope"],
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200, resp.text
+    text = _extract_text(resp.content)
+
+    # pypdf inserts newlines wherever a Paragraph cell wraps a label
+    # onto a second visual line (e.g. "Vera\ncoverage" when the cell
+    # is narrower than the label). The fix specifically *wants* that
+    # wrapping — what we want to assert is that the label is no
+    # longer fused into the next column. Collapsing whitespace gives
+    # us a stable substring to check against without coupling the
+    # test to ReportLab's wrap point heuristics.
+    collapsed = " ".join(text.split())
+
+    for label in (
+        "Agent type",
+        "Detected",
+        "Vera coverage",
+        "Capture",
+        "HITL gates",
+        "PDF included",
+        "Posture included",
+    ):
+        assert label in collapsed, (
+            f"expected header label {label!r} in collapsed PDF text"
+        )
+
+    # The pre-fix bug: adjacent header labels merged into one token
+    # because the cells were too narrow and the strings did not wrap.
+    # These exact concatenations were visible in the user-reported
+    # screenshot. The collapsed form still contains a single space
+    # between cell tokens — only the *fused* pre-fix runs are absent.
+    assert "Vera coverageCapture" not in collapsed
+    assert "PDF includePosture included" not in collapsed
+    # And the raw extracted text (no collapsing) also must not contain
+    # the fused runs — they would only appear if cells overflowed
+    # horizontally into one another.
+    assert "Vera coverageCapture" not in text
+    assert "PDF includePosture included" not in text
+
+
+@pytest.mark.asyncio
+async def test_audit_controls_right_column_does_not_truncate(
+    async_client, org_and_key, db_session
+):
+    """Every Audit Controls row renders its full text — no mid-word clip.
+
+    The pre-fix rendering put a plain ``str`` into the right-column
+    cell. ReportLab does not word-wrap plain strings inside ``Table``
+    cells, so the long Implementation sentences ran off the right
+    margin and clipped mid-word: "via SHA-" instead of "via SHA-256",
+    "all reco" instead of "all records sealed", and so on.
+
+    Wrapping the value in a ``Paragraph`` plus pinning ``colWidths``
+    on the Table is the fix.
+    """
+    org, raw_key, _ = org_and_key
+    customer = await _seed_customer(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+        display_name="Cleveland Clinic",
+    )
+    await _seed_active_baa(db_session, org_id=org.id, customer_id=customer.id)
+
+    today = date.today()
+    resp = await async_client.post(
+        f"/v1/audits/{customer.id}",
+        json={
+            "date_from": (today - timedelta(days=30)).isoformat(),
+            "date_to": today.isoformat(),
+            "sections": ["audit_controls"],
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    assert resp.status_code == 200, resp.text
+    text = _extract_text(resp.content)
+
+    # The "tell" tokens from the user screenshot — these were the
+    # *truncation suffixes* that disappeared before the fix. After the
+    # fix, the full continuation must be visible.
+    #
+    # pypdf occasionally inserts a newline at the wrap point, so we
+    # collapse whitespace before substring-checking. We don't lower-
+    # case because the casing in the source is what we expect to
+    # render — any case fold would mask a font-substitution regression.
+    collapsed = " ".join(text.split())
+
+    # Row 1 — "Activity recording": the SHA-256 suffix must survive.
+    assert (
+        "predecessor via SHA-256" in collapsed
+    ), "Activity recording row truncated before SHA-256"
+
+    # Row 2 — "Tamper evidence": the "Merkle root of all records sealed"
+    # phrase used to clip at "all reco".
+    assert (
+        "Merkle root of all records sealed in the interval" in collapsed
+    ), "Tamper evidence row truncated before 'records sealed'"
+
+    # Row 3 — "Activity examination": "staff_audit_log" used to clip at
+    # "staff_a".
+    assert (
+        "staff_audit_log" in collapsed
+    ), "Activity examination row truncated before 'staff_audit_log'"
+
+    # Row 4 — "Authentication of activity origin": "the chain hash
+    # binds those fields cryptographically" used to clip at "the chain
+    # hash binds ".
+    assert (
+        "the chain hash binds those fields cryptographically" in collapsed
+    ), "Authentication row truncated before 'cryptographically'"
+
+    # Row 5 — "Retention": "when configured" used to clip at "when
+    # configu".
+    assert (
+        "when configured" in collapsed
+    ), "Retention row truncated before 'configured'"
+
+
+@pytest.mark.asyncio
+async def test_scope_coverage_matrix_escapes_paragraph_markup(
+    async_client, org_and_key, db_session
+):
+    """An ``agent_type`` with ``&`` / ``<`` does not crash the renderer.
+
+    The hotfix wraps ``agent_type`` in a ``Paragraph`` flowable to get
+    word-wrap. ``Paragraph`` parses a tiny HTML-ish subset (``<b>``,
+    ``<font>``, ``&amp;`` …) so unescaped metacharacters in the cell
+    value raise ``ValueError`` and 500 the endpoint.
+
+    ``action_class`` (which auto-discovery promotes into
+    ``CustomerAgent.agent_type``) is only ``Optional[str]`` at the
+    schema layer with no character-class restriction. A malicious or
+    sloppy SDK caller posting ``"hr&admissions"`` is a regression
+    surface this test guards against.
+    """
+    org, raw_key, _ = org_and_key
+    customer = await _seed_customer(
+        db_session,
+        org_id=org.id,
+        tenant_id="cleveland_clinic",
+        display_name="Cleveland Clinic",
+    )
+    await _seed_active_baa(db_session, org_id=org.id, customer_id=customer.id)
+    # Seed a CustomerAgent row with metacharacters in agent_type. We
+    # bypass the auto-discovery path and insert directly — the ORM
+    # validator lower+strips but does NOT restrict the character class,
+    # which is exactly the surface we want to test.
+    await _seed_customer_agent(
+        db_session,
+        customer_id=customer.id,
+        agent_type="hr&<admissions>",
+    )
+
+    today = date.today()
+    resp = await async_client.post(
+        f"/v1/audits/{customer.id}",
+        json={
+            "date_from": (today - timedelta(days=30)).isoformat(),
+            "date_to": today.isoformat(),
+            "sections": ["scope"],
+        },
+        headers={"Authorization": f"Bearer {raw_key}"},
+    )
+    # The render must succeed (not 500). The escaped agent_type label
+    # should appear in the extracted text — pypdf decodes the encoded
+    # entities back to their literal characters, so we assert on the
+    # plain form.
+    assert resp.status_code == 200, resp.text
+    text = _extract_text(resp.content)
+    collapsed = " ".join(text.split())
+    assert "hr&<admissions>" in collapsed
