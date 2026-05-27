@@ -13,6 +13,8 @@ from .models import Base
 from .routes import (
     actions_router,
     agents_router,
+    audits_router,
+    audit_pdf_history_router,
     verification_router,
     organizations_router,
     checkpoints_router,
@@ -30,6 +32,7 @@ from .routes import (
     kms_router,
     records_router,
     dashboard_chain_integrity_router,
+    compliance_router,
 )
 from .routes.dashboard_demo import router as dashboard_demo_router
 from .routes.dashboard_api_keys import router as dashboard_api_keys_router
@@ -170,6 +173,15 @@ async def health_check():
 # Register all routers
 app.include_router(actions_router, prefix="/v1")
 app.include_router(agents_router, prefix="/v1")
+# Phase 4 Wave 1 A1 — HIPAA AI Audit Trail PDF generator.
+# POST /v1/audits/{customer_id} returns application/pdf bytes.
+app.include_router(audits_router, prefix="/v1")
+# Phase 4 Wave 2 C4: list + regenerate endpoints for the Customer
+# detail page's "Generated audit PDFs" history table. Mounted under
+# /v1/customers/{customer_id}/audit-pdfs* — same URL family as the
+# rest of the customer-scoped reads, distinct from the POST-only
+# /v1/audits route above.
+app.include_router(audit_pdf_history_router, prefix="/v1")
 app.include_router(checkpoints_router, prefix="/v1")
 # Phase 3 Wave 3B.1 — GET /v1/checkpoints/{date} for auditor diff workflow.
 # Separate from the /v1/verify/checkpoints router above (different prefix
@@ -226,6 +238,12 @@ app.include_router(dashboard_s3_mirror_router)
 # ``require_permission_with_context`` so the same endpoint serves the SDK
 # health-check use case AND the dashboard tile.
 app.include_router(dashboard_chain_integrity_router, prefix="/v1")
+# Phase 4 Wave 1 PR B1 — Compliance Posture endpoint. The router defines its
+# own ``/compliance`` prefix; auth is dual-mode (customer admin OR Vera
+# staff via X-Org-Id) via ``require_permission_with_context``. Staff calls
+# write a ``staff_audit_log`` row (resource_type='compliance_posture'); the
+# response carries no PHI so ``redacted=False``.
+app.include_router(compliance_router, prefix="/v1")
 # Clerk webhooks — signature-verified via Svix, no bearer auth. Mounted at
 # /v1 so the public path is /v1/clerk/webhooks (matches the env.example doc).
 app.include_router(clerk_webhooks_router, prefix="/v1")

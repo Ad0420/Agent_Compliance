@@ -150,7 +150,9 @@ export function getOrganizationBaaStatus(): Promise<OrganizationBaaStatus> {
 // ── Compliance dashboard helpers (Phase 4b F2) ──────────────────────────────
 // Thin typed wrappers around `/v1/dashboard/compliance/*` + the existing
 // `/v1/dashboard/{approvals,violations}` mirror routes. Used by the
-// compliance reviewer landing page at `app/compliance/page.tsx`.
+// compliance reviewer landing page at `app/compliance-reviewer-legacy/page.tsx`
+// (formerly `/compliance`; moved in Phase 4 Wave 2 PR C1 when the new
+// asymmetric Compliance Posture page took the canonical URL).
 
 export interface ComplianceSummary {
   window_days: number;

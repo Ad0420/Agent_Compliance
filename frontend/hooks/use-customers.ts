@@ -6,6 +6,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import {
+  getAuditPdfHistory,
   getCustomer,
   getCustomerAgents,
   getCustomerChainSummary,
@@ -13,6 +14,8 @@ import {
   getCustomers,
   patchCustomer,
   uploadCustomerBaa,
+  type AuditPdfHistoryQueryParams,
+  type AuditPdfHistoryResponse,
   type CustomerPatchInput,
 } from "@/lib/api-client";
 import type {
@@ -127,6 +130,27 @@ export function useCustomerChainSummary(
     // Verify button to force a fresh round-trip when they want to see
     // the latest checkpoint immediately.
     staleTime: 60_000,
+  });
+}
+
+// Phase 4 Wave 2 C4 — Generated audit PDFs history table.
+//
+// ``customer_id`` is the Customer's **primary key** (UUID), not the
+// tenant_id slug. The list endpoint is paginated (limit/offset) and the
+// history is append-only, so the data is highly cacheable: a stale read
+// only misses a freshly-generated PDF. We use a short staleTime so the
+// table updates promptly after the Generate modal completes, but no
+// refetchInterval — no polling.
+export function useAuditPdfHistory(
+  customer_id: string,
+  params?: AuditPdfHistoryQueryParams,
+  enabled = true,
+) {
+  return useQuery<AuditPdfHistoryResponse>({
+    queryKey: ["customers", "audit-pdf-history", customer_id, params],
+    queryFn: () => getAuditPdfHistory(customer_id, params),
+    enabled: !!customer_id && enabled,
+    staleTime: 5_000,
   });
 }
 
