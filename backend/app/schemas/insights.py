@@ -1,6 +1,6 @@
 """Response schemas for ``POST /v1/compliance/insights`` (Phase 4 Wave 2 PR B2).
 
-The AI Insights endpoint runs a synchronous Haiku-class Claude call
+The AI Insights endpoint runs a synchronous OpenAI Responses-API call
 over the live posture snapshot for the requesting org and returns 3-5
 recommendation cards. The endpoint contract is:
 
