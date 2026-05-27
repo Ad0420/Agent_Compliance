@@ -44,6 +44,8 @@ import {
   EmptyTemplateState,
   TemplateEditor,
 } from "@/components/compliance/templates/template-editor";
+import { SetupCta } from "@/components/home/setup-cta";
+import { useOnboardingWizard } from "@/hooks/use-onboarding-wizard";
 
 const VALID_KEYS = new Set<string>(TEMPLATE_KEYS);
 
@@ -67,6 +69,7 @@ export default function TemplatesPage() {
 
 function TemplatesListView() {
   const queryClient = useQueryClient();
+  const wizard = useOnboardingWizard();
   const list = useQuery({
     queryKey: ["templates"],
     queryFn: getTemplates,
@@ -102,6 +105,25 @@ function TemplatesListView() {
     regenerate.error !== null
       ? readTemplatesErrorCode(regenerate.error)
       : "unknown";
+
+  // Phase 5 follow-up — proactive onboarding CTA.
+  //
+  // When the list has loaded and every template row is in
+  // ``not_started`` (i.e. nothing has ever been generated for this
+  // org) AND the wizard is incomplete, render a banner above the
+  // card grid so the operator sees the onboarding gate WITHOUT
+  // having to click "Regenerate" first and parse the resulting
+  // error. The "Regenerate" path still works for the rare case
+  // where the wizard is already complete but generation never ran.
+  const allTemplatesNotStarted = Boolean(
+    list.data &&
+      list.data.length > 0 &&
+      list.data.every((row) => row.status === "not_started"),
+  );
+  const showProactiveSetupCta =
+    !wizard.isLoading &&
+    wizard.completedAt === null &&
+    allTemplatesNotStarted;
 
   return (
     <>
@@ -158,14 +180,33 @@ function TemplatesListView() {
         <div
           role="alert"
           data-testid="templates-regenerate-error"
-          className="rounded-[10px] border border-[color:var(--brick)]/40 bg-[color:var(--brick-bg)] px-4 py-3 text-[14px] text-[color:var(--ink)]"
+          className="flex flex-col gap-3 rounded-[10px] border border-[color:var(--brick)]/40 bg-[color:var(--brick-bg)] px-4 py-3 text-[14px] text-[color:var(--ink)] sm:flex-row sm:items-center sm:justify-between"
         >
-          {regenerateErrorCode === TEMPLATES_ERROR_CODES.wizardIncomplete
-            ? "Finish the onboarding wizard before generating templates."
-            : regenerate.error instanceof ApiError
-              ? regenerate.error.message
-              : "Could not regenerate templates. Try again."}
+          <span>
+            {regenerateErrorCode === TEMPLATES_ERROR_CODES.wizardIncomplete
+              ? "Finish the onboarding wizard before generating templates."
+              : regenerate.error instanceof ApiError
+                ? regenerate.error.message
+                : "Could not regenerate templates. Try again."}
+          </span>
+          {regenerateErrorCode === TEMPLATES_ERROR_CODES.wizardIncomplete && (
+            <button
+              type="button"
+              data-testid="templates-start-onboarding-button"
+              onClick={() => wizard.open()}
+              className="shrink-0 rounded-[10px] border border-[color:var(--ink-4)] bg-[color:var(--paper)] px-3 py-2 text-[13px] font-medium text-[color:var(--ink)] hover:bg-[color:var(--paper-2)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--ink)]"
+            >
+              Start onboarding
+            </button>
+          )}
         </div>
+      )}
+
+      {showProactiveSetupCta && (
+        <SetupCta
+          onStart={() => wizard.open()}
+          testId="templates-proactive-setup-cta"
+        />
       )}
 
       {list.isLoading && (
