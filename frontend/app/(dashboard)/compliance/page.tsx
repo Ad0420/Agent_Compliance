@@ -23,10 +23,10 @@
  *     org-wide coverage roll-up computed client-side (no dedicated
  *     org-level endpoint in v1).
  *
- * Bottom of the page reserves a slot for ``<ComplianceInsightsSurface
- * />`` (Phase 4 Wave 2 PR C2) — the AI Insights surface lands in a
- * parallel PR. We render an empty named ``[data-testid="ai-insights-
- * slot"]`` div so C2 can target it without conflict.
+ * The bottom of the page renders ``<ComplianceInsightsSurface />``
+ * (Phase 4 Wave 2 PR C2) — the AI Insights surface holds its own
+ * mutation against ``POST /v1/compliance/insights``; the page just
+ * mounts it without further wiring.
  */
 
 import * as React from "react";
@@ -40,6 +40,7 @@ import {
 } from "@/components/compliance/composite-headline";
 import { MeasuredDimensionCard } from "@/components/compliance/measured-dimension-card";
 import { AwaitingDataRow } from "@/components/compliance/awaiting-data-row";
+import { ComplianceInsightsSurface } from "@/components/compliance/insights-surface";
 import { useCompliancePosture } from "@/hooks/use-compliance-posture";
 import { useOrgCoverage } from "@/hooks/use-org-coverage";
 
@@ -162,11 +163,13 @@ export default function CompliancePage() {
       )}
 
       {/*
-        C2 will render <ComplianceInsightsSurface /> here. The slot is
-        a named target so the parallel C2 PR can drop into it without
-        re-laying out the page.
+        AI Insights surface — Phase 4 Wave 2 PR C2 component, wired in
+        post-merge via the C2↔C1 integration follow-up. The component
+        owns its own ``useMutation`` against ``POST /v1/compliance/insights``
+        and renders all five states (initial / loading / loaded / error /
+        empty) internally — see ``frontend/components/compliance/insights-surface.tsx``.
       */}
-      <div data-testid="ai-insights-slot" />
+      <ComplianceInsightsSurface />
 
       {/* Footer — generated_at timestamp. */}
       {posture.data && (
