@@ -207,7 +207,7 @@ function CustomerHeader({ customer }: { customer: Customer }) {
       <AuditPdfModal
         open={auditModalOpen}
         onOpenChange={setAuditModalOpen}
-        tenant_id={customer.tenant_id}
+        customer_id={customer.id}
         customer_display_name={customerDisplayName}
       />
     </header>

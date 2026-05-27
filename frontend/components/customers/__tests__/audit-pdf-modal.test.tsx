@@ -292,7 +292,7 @@ const _mounted_modal: React.ReactNode = (
   <AuditPdfModal
     open={true}
     onOpenChange={() => undefined}
-    tenant_id="cleveland_clinic"
+    customer_id="00000000-0000-0000-0000-000000000000"
     customer_display_name="Cleveland Clinic"
   />
 );

@@ -53,7 +53,7 @@ import {
 interface AuditPdfModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  tenant_id: string;
+  customer_id: string;
   customer_display_name: string;
 }
 
@@ -130,7 +130,7 @@ export function defaultDateRange(): { from: string; to: string } {
 export function AuditPdfModal({
   open,
   onOpenChange,
-  tenant_id,
+  customer_id,
   customer_display_name,
 }: AuditPdfModalProps) {
   const [sections, setSections] = React.useState<Set<AuditPdfSectionKey>>(
@@ -184,7 +184,7 @@ export function AuditPdfModal({
       const orderedSections = AUDIT_PDF_SECTION_KEYS.filter((k) =>
         sections.has(k),
       );
-      await generateAuditPdf(tenant_id, {
+      await generateAuditPdf(customer_id, {
         date_from: dateFrom,
         date_to: dateTo,
         sections: orderedSections,
@@ -204,7 +204,7 @@ export function AuditPdfModal({
     dateFrom,
     dateTo,
     branding,
-    tenant_id,
+    customer_id,
     onOpenChange,
   ]);
 
