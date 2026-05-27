@@ -10,7 +10,7 @@ Coverage map:
         unless manually retired
     6.  Manual retirement: ``retired_at`` set → ``is_active`` flips False
     7.  ``GET /v1/kms/keys`` returns history (200)
-    8.  ``GET /v1/kms/keys`` 401/403 with no auth
+    8.  ``GET /v1/kms/keys`` 401 with no auth
     9.  ``GET /v1/kms/keys?active_only=true`` filters retired rows
     10. Verify checkpoint signed with current key passes via history
     11a. ``verify_with_history`` returns False for an unknown key_id
@@ -279,17 +279,17 @@ async def test_kms_keys_endpoint_returns_history(
     assert body["total"] >= 2
 
 
-# ── 8. GET /v1/kms/keys 401/403 without auth ───────────────
+# ── 8. GET /v1/kms/keys 401 without auth ───────────────
 
 
 @pytest.mark.asyncio
 async def test_kms_keys_endpoint_unauthenticated(async_client):
-    """No bearer → 401/403. Starlette's HTTPBearer returns 403 when the
-    Authorization header is missing entirely; the gate would return
-    401 for a present-but-invalid token. Accept either to keep the
-    test stable across FastAPI's evolving default behaviour."""
+    """No bearer → 401. ``HTTPBearer401`` (services.auth) overrides
+    FastAPI's default 403-on-missing-header with the semantically correct
+    401 + ``WWW-Authenticate: Bearer``."""
     resp = await async_client.get("/v1/kms/keys")
-    assert resp.status_code in (401, 403)
+    assert resp.status_code == 401
+    assert resp.headers.get("WWW-Authenticate") == "Bearer"
 
 
 # ── 9. active_only=true filters retired keys ───────────────

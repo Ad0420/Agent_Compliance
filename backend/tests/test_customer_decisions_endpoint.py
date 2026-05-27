@@ -385,8 +385,9 @@ async def test_decisions_requires_auth(async_client, org_and_key, db_session):
     await _make_customer(db_session, org_id=org.id, tenant_id="acme")
 
     resp = await async_client.get("/v1/customers/acme/decisions")
-    # No auth header → 401 (require_permission rejects missing bearer).
-    assert resp.status_code in (401, 403), resp.text
+    # No auth header → 401 via ``HTTPBearer401`` (services.auth).
+    assert resp.status_code == 401, resp.text
+    assert resp.headers.get("WWW-Authenticate") == "Bearer"
 
 
 @pytest.mark.asyncio

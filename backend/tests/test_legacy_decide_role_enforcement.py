@@ -23,7 +23,7 @@ What's tested:
 * 403: gated approval + unknown reviewer_role string (fail-closed).
 * 400: gated approval + omitted reviewer_role → ``reviewer_role_required``.
 * 404: nonexistent approval id.
-* 4xx: no auth header.
+* 401: no auth header.
 * 409: second decide caller after resolution (A6.5 atomicity preserved).
 """
 
@@ -424,12 +424,13 @@ async def test_decide_unknown_approval_returns_404(async_client, org_and_key):
 async def test_decide_no_auth_header_is_rejected(
     async_client, org_and_key, db_session
 ):
-    """4xx: missing Authorization header is rejected BEFORE the role check.
+    """401: missing Authorization header is rejected BEFORE the role check.
 
-    FastAPI's ``HTTPBearer`` returns 403 (not 401) for missing schemes —
-    the project's auth layer keeps that contract. The contract this test
-    pins is that an unauthenticated caller never gets to the
-    role-enforcement branch.
+    ``HTTPBearer401`` (services.auth) returns 401 + ``WWW-Authenticate:
+    Bearer`` for missing schemes (semantically correct per RFC 7235 /
+    RFC 6750). The contract this test pins is that an unauthenticated
+    caller never gets to the role-enforcement branch (which would 403
+    with a ``reviewer_credentials_insufficient`` envelope).
     """
     org, _, _ = org_and_key
     approval = await _seed_gated_approval(db_session, org.id)
@@ -442,12 +443,12 @@ async def test_decide_no_auth_header_is_rejected(
             "reviewer_role": "dea_authorized",
         },
     )
-    assert response.status_code in (401, 403), response.text
-    # If 403, the body must NOT be the W1.1 role-check envelope — that
+    assert response.status_code == 401, response.text
+    assert response.headers.get("WWW-Authenticate") == "Bearer"
+    # Defensive: body MUST NOT carry the W1.1 role-check envelope — that
     # would indicate the auth dep let the call through to the service.
-    if response.status_code == 403:
-        body = response.json()
-        assert body.get("code") != "reviewer_credentials_insufficient", body
+    body = response.json()
+    assert body.get("code") != "reviewer_credentials_insufficient", body
 
     # Approval untouched.
     refreshed = await db_session.get(Approval, approval.id)

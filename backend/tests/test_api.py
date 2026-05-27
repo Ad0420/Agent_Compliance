@@ -291,7 +291,10 @@ async def test_get_current_organization(async_client, org_and_key):
 @pytest.mark.asyncio
 async def test_401_for_missing_key(async_client):
     resp = await async_client.get("/v1/actions")
-    assert resp.status_code == 403  # HTTPBearer returns 403 for missing token
+    # ``HTTPBearer401`` (services.auth) overrides FastAPI's default 403 on
+    # missing Authorization with the semantically correct 401 + WWW-Authenticate.
+    assert resp.status_code == 401
+    assert resp.headers.get("WWW-Authenticate") == "Bearer"
 
 
 @pytest.mark.asyncio

@@ -73,3 +73,69 @@ async def test_permission_checking(db_session, org_and_key):
         db_session, org.id, "admin-key", ["read", "write", "admin"]
     )
     assert "admin" in api_key2.permissions
+
+
+# ── HTTPBearer401: missing/malformed Authorization → 401 (not 403) ──────────
+#
+# Phase 4 acceptance Scenario 7 surfaced FastAPI's default ``HTTPBearer``
+# raising HTTP 403 when no Authorization header is presented. That's
+# semantically wrong (401 = no credentials, 403 = forbidden-after-auth).
+# ``HTTPBearer401`` in ``app/services/auth.py`` overrides the default
+# and adds ``WWW-Authenticate: Bearer`` per RFC 6750 §3. These tests
+# pin that contract.
+
+
+_RANDOM_AUDIT_UUID = "11111111-2222-3333-4444-555555555555"
+_AUDIT_BODY = {
+    "date_from": "2026-05-01",
+    "date_to": "2026-05-27",
+    "sections": ["cover"],
+    "branding": "customer",
+}
+
+
+@pytest.mark.asyncio
+async def test_missing_authorization_header_returns_401(async_client):
+    """No Authorization header → 401 + WWW-Authenticate: Bearer."""
+    resp = await async_client.post(
+        f"/v1/audits/{_RANDOM_AUDIT_UUID}",
+        json=_AUDIT_BODY,
+    )
+    assert resp.status_code == 401, resp.text
+    assert resp.json() == {"detail": "Not authenticated"}
+    assert resp.headers.get("WWW-Authenticate") == "Bearer"
+
+
+@pytest.mark.asyncio
+async def test_malformed_authorization_header_returns_401(async_client):
+    """Authorization with a non-Bearer scheme → 401 (was 403 with the
+    stock ``HTTPBearer``). The override flips the status code; the
+    detail body stays whatever FastAPI's HTTPBearer produces (currently
+    ``{"detail": "Invalid authentication credentials"}``)."""
+    resp = await async_client.post(
+        f"/v1/audits/{_RANDOM_AUDIT_UUID}",
+        headers={"Authorization": "NotBearer xyz"},
+        json=_AUDIT_BODY,
+    )
+    assert resp.status_code == 401, resp.text
+    assert resp.headers.get("WWW-Authenticate") == "Bearer"
+
+
+@pytest.mark.asyncio
+async def test_invalid_bearer_token_returns_401(async_client):
+    """Authorization: Bearer <garbage> still resolves to 401 via the
+    application-layer credential check (``require_permission``). This
+    path runs AFTER ``HTTPBearer401`` extracts the credential, so the
+    override shouldn't have changed behaviour — pin it as a regression
+    guard so we notice if the detail message ever shifts."""
+    resp = await async_client.post(
+        f"/v1/audits/{_RANDOM_AUDIT_UUID}",
+        headers={"Authorization": "Bearer al_test_garbage_does_not_resolve"},
+        json=_AUDIT_BODY,
+    )
+    assert resp.status_code == 401, resp.text
+    body = resp.json()
+    # The legacy API-key branch returns this detail; Clerk-JWT branch
+    # would return "Invalid or expired session". The token above starts
+    # with ``al_`` so we hit the API-key branch.
+    assert body.get("detail") == "Invalid or revoked API key"
