@@ -392,31 +392,35 @@ export interface CustomerQueryParams {
   offset?: number;
 }
 
-// Onboarding wizard (Phase 1 PR 14, Stream F item F5).
+// Onboarding wizard — 2-question redesign (Phase 5 polish).
 // Shapes mirror backend/app/schemas/wizard.py. Slugs are stable on the
 // wire — UI labels live in components/wizard/questions.ts.
-
-export type WizardAgentType =
-  | "scribe"
-  | "receptionist"
-  | "prior_auth"
-  | "triage"
-  | "other";
-
-export type WizardDecisionVolume =
-  | "lt_10k"
-  | "10k_100k"
-  | "100k_1m"
-  | "gt_1m";
-
-export type WizardReviewChannel =
-  | "in_app_webhook"
-  | "slack"
-  | "vera_dashboard"
-  | "multiple";
+//
+// The original 5-question wizard was trimmed to 2 questions
+// (jurisdictions + privacy_officer) after user testing surfaced that
+// the other three answers never drove product behaviour. The retired
+// types (WizardAgentType, WizardDecisionVolume, WizardReviewChannel)
+// no longer exist on the wire — a frontend caller still referencing
+// them will fail tsc, which is what we want.
 
 // Allow-listed jurisdiction tokens (server enforces the same set).
-export type WizardJurisdiction = "us_federal" | "us_ca" | "other_state";
+// Each slug maps to a conditional clause in the AI Care Disclosure
+// generator. Pre-Phase 5 the only options were ``us_federal`` /
+// ``us_ca`` / ``other_state``; the redesign expanded the geography
+// coverage and renamed ``us_ca`` → ``california_ab489`` so we can
+// represent both California laws (AB 489 + SB 942) explicitly. The
+// backend accepts the legacy ``us_ca`` / ``california`` slugs and
+// rewrites them to ``california_ab489`` on load.
+export type WizardJurisdiction =
+  | "us_federal"
+  | "california_ab489"
+  | "california_sb942"
+  | "texas"
+  | "utah"
+  | "colorado"
+  | "eu"
+  | "new_york"
+  | "other";
 
 export interface WizardPrivacyOfficer {
   name: string;
@@ -424,11 +428,13 @@ export interface WizardPrivacyOfficer {
 }
 
 export interface WizardAnswers {
-  agent_type: WizardAgentType | null;
-  agent_type_other: string | null;
   jurisdictions: WizardJurisdiction[] | null;
-  decision_volume: WizardDecisionVolume | null;
-  channel: WizardReviewChannel | null;
+  /**
+   * Free-text descriptions of jurisdictions the user picked under
+   * "Other". Soft contract — the disclosure renders a placeholder
+   * section regardless of whether this list is populated.
+   */
+  jurisdictions_other: string[] | null;
   privacy_officer: WizardPrivacyOfficer | null;
 }
 

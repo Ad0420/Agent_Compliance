@@ -1,10 +1,14 @@
 "use client";
 
 /**
- * useOnboardingWizard — Phase 1 PR 14 (Stream F item F5).
+ * useOnboardingWizard — 2-question redesign (Phase 5 polish).
  *
- * Drives the 5-question onboarding modal. Shape mirrors backend
+ * Drives the onboarding modal. Shape mirrors backend
  * `app/schemas/wizard.py`.
+ *
+ * The original 5-question wizard was trimmed to 2 questions
+ * (jurisdictions + privacy_officer) after user testing surfaced that
+ * the other three answers never drove product behaviour.
  *
  * State machine:
  *
@@ -22,30 +26,21 @@
  *   - Server (Organization.wizard_answers / wizard_completed_at) — the
  *     source of truth across devices, browsers, and incognito tabs.
  *   - localStorage `vera.wizard.draft.<orgId>` — the in-flight non-PII
- *     answers (Q1-Q4). Lets the operator reload mid-wizard on the same
- *     device without losing progress.
- *   - React state — every answer, including Q5 (HIPAA Privacy Officer).
+ *     answers (jurisdictions + jurisdictions_other). Lets the operator
+ *     reload mid-wizard on the same device without losing progress.
+ *   - React state — every answer, including the Privacy Officer (PII).
  *
- * PRIVACY: Q5 (`privacy_officer`) is PII (name + email). It is held
- * in React state ONLY and is NEVER serialised to localStorage. The
- * draft on disk omits the key entirely so a stolen device backup can't
- * leak the Privacy Officer's contact info. The hook re-prompts for Q5
- * on every resume.
+ * PRIVACY: the Privacy Officer (`privacy_officer`) is PII (name +
+ * email). It is held in React state ONLY and is NEVER serialised to
+ * localStorage. The draft on disk omits the key entirely so a stolen
+ * device backup can't leak the Privacy Officer's contact info. The
+ * hook re-prompts for the Privacy Officer on every resume.
  *
  * RE-OPEN AFTER COMPLETION: `open()` does not block when
  * `completedAt !== null` — an admin can re-open the wizard from any
- * surface to edit answers (e.g. they hired a new Privacy Officer).
- * Submitting again is a partial-update on the JSON column; the server
- * does NOT bump `wizard_completed_at` on re-submit, so the first-
- * completion timestamp is preserved for audit. The Home resume banner
- * suppresses itself once `completedAt` is set so re-edits must go
- * through an intentional surface (PR 13's customer detail CTA).
- *
- * The wizard does NOT use TanStack Query mutations because we want
- * fine-grained control over partial saves vs completion. We hand-roll
- * the POST so the UI can stay responsive while a slow network round-
- * trips, and so the "Complete setup" button shows an inline error
- * (rather than a toast) on failure.
+ * surface to edit answers. Submitting again is a partial-update on
+ * the JSON column; the server does NOT bump `wizard_completed_at` on
+ * re-submit, so the first-completion timestamp is preserved for audit.
  */
 
 import * as React from "react";
@@ -64,11 +59,8 @@ import type {
   WizardAnswers,
   WizardAnswersResponse,
   WizardAnswersSubmission,
-  WizardAgentType,
-  WizardDecisionVolume,
   WizardJurisdiction,
   WizardPrivacyOfficer,
-  WizardReviewChannel,
 } from "@/lib/api-types";
 import { TOTAL_STEPS } from "@/components/wizard/questions";
 
@@ -77,27 +69,8 @@ import { TOTAL_STEPS } from "@/components/wizard/questions";
  *
  * On successful wizard submission with ``completed=true`` we kick off
  * ``POST /v1/templates/generate`` (idempotent on the backend), then
- * route the operator to the Templates page (B1) so they can review +
- * counsel-attest each of the five generated templates.
- *
- * Failure modes:
- *  - If ``generateTemplates`` rejects we keep the wizard close — the
- *    wizard's own POST already succeeded and the operator can re-run
- *    generation from the Compliance > Templates menu. We surface the
- *    failure via ``generateError`` (rendered in the wizard footer if
- *    still open, also sent through a sonner toast for the redirected
- *    case).
- *
- * Why the toast lives in the hook (not the wizard component):
- *  - The wizard component unmounts the moment ``isOpen`` flips false,
- *    so a hook-local toast survives the modal close + navigation. The
- *    sonner Toaster is mounted in ``app/providers.tsx`` once at the
- *    root.
- *
- * Strict-mode safety: we do NOT auto-fire generate inside ``submit``'s
- * synchronous body — it runs after the POST resolves and we read its
- * return value before navigating, so a re-render during the await
- * window can't double-trigger.
+ * route the operator to the Templates page so they can review +
+ * counsel-attest each generated template.
  */
 export const TEMPLATES_GENERATED_TOAST = (count: number): string =>
   `${count} templates generated. Review with counsel before sign-off.`;
@@ -109,13 +82,10 @@ export const TEMPLATES_REDIRECT_PATH =
   "/compliance/templates?generated=true";
 
 // Step index → wizard field. Keep in sync with the modal step order.
-export type WizardStep = 0 | 1 | 2 | 3 | 4;
+export type WizardStep = 0 | 1;
 
 export const WIZARD_STEP_FIELDS: ReadonlyArray<keyof WizardAnswers> = [
-  "agent_type",
   "jurisdictions",
-  "decision_volume",
-  "channel",
   "privacy_officer",
 ];
 
@@ -131,20 +101,14 @@ function draftStorageKey(orgId: string | null | undefined): string | null {
  * EXCLUDES `privacy_officer` by construction so PII never touches disk.
  */
 interface DraftAnswers {
-  agent_type: WizardAgentType | null;
-  agent_type_other: string | null;
   jurisdictions: WizardJurisdiction[] | null;
-  decision_volume: WizardDecisionVolume | null;
-  channel: WizardReviewChannel | null;
+  jurisdictions_other: string[] | null;
 }
 
 function emptyAnswers(): WizardAnswers {
   return {
-    agent_type: null,
-    agent_type_other: null,
     jurisdictions: null,
-    decision_volume: null,
-    channel: null,
+    jurisdictions_other: null,
     privacy_officer: null,
   };
 }
@@ -158,11 +122,8 @@ function readDraft(orgId: string | null | undefined): DraftAnswers | null {
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<DraftAnswers>;
     return {
-      agent_type: parsed.agent_type ?? null,
-      agent_type_other: parsed.agent_type_other ?? null,
       jurisdictions: parsed.jurisdictions ?? null,
-      decision_volume: parsed.decision_volume ?? null,
-      channel: parsed.channel ?? null,
+      jurisdictions_other: parsed.jurisdictions_other ?? null,
     };
   } catch {
     return null;
@@ -206,9 +167,6 @@ export function firstUnansweredStep(answers: WizardAnswers): WizardStep {
     if (Array.isArray(v) && v.length === 0) {
       return i as WizardStep;
     }
-    if (field === "agent_type" && answers.agent_type === "other" && !answers.agent_type_other) {
-      return i as WizardStep;
-    }
   }
   return (TOTAL_STEPS - 1) as WizardStep;
 }
@@ -221,21 +179,13 @@ export function firstUnansweredStep(answers: WizardAnswers): WizardStep {
 export function isStepValid(step: WizardStep, answers: WizardAnswers): boolean {
   switch (step) {
     case 0: {
-      if (!answers.agent_type) return false;
-      if (answers.agent_type === "other") {
-        return Boolean(answers.agent_type_other && answers.agent_type_other.trim());
-      }
-      return true;
-    }
-    case 1: {
+      // Jurisdictions — non-empty list including ``us_federal``.
+      // ``jurisdictions_other`` validation is NOT required (soft
+      // contract — disclosure renders the section regardless).
       const j = answers.jurisdictions;
       return Array.isArray(j) && j.length > 0 && j.includes("us_federal");
     }
-    case 2:
-      return Boolean(answers.decision_volume);
-    case 3:
-      return Boolean(answers.channel);
-    case 4: {
+    case 1: {
       const po = answers.privacy_officer;
       if (!po) return false;
       const nameOk = Boolean(po.name && po.name.trim().length > 0);
@@ -260,10 +210,7 @@ export interface UseOnboardingWizardReturn {
   /**
    * Inline error from the post-completion ``POST /v1/templates/generate``
    * call. Non-null when the wizard saved cleanly but template
-   * generation failed — the wizard still closes; this is surfaced via
-   * the same inline-alert slot as ``submitError`` for the brief window
-   * before navigation and via a sonner toast for the after-redirect
-   * case.
+   * generation failed.
    */
   generateError: string | null;
   /** Network status. */
@@ -276,11 +223,8 @@ export interface UseOnboardingWizardReturn {
   goToStep: (step: WizardStep) => void;
   next: () => void;
   back: () => void;
-  setAgentType: (next: WizardAgentType) => void;
-  setAgentTypeOther: (next: string) => void;
   toggleJurisdiction: (j: WizardJurisdiction) => void;
-  setDecisionVolume: (next: WizardDecisionVolume) => void;
-  setChannel: (next: WizardReviewChannel) => void;
+  setJurisdictionsOther: (next: string[]) => void;
   setPrivacyOfficer: (next: WizardPrivacyOfficer) => void;
   /**
    * POST with completed=true. On success closes the modal AND fires
@@ -290,11 +234,6 @@ export interface UseOnboardingWizardReturn {
    */
   submit: () => Promise<void>;
 }
-
-// Singleton context so any tree can call `open()` (e.g. the resume
-// banner on Home and the "Complete setup" CTA on the customer detail
-// page from PR 13). Reading state is also context-driven, which keeps
-// the wizard a single shared instance across the dashboard surface.
 
 const OnboardingWizardContext =
   React.createContext<UseOnboardingWizardReturn | null>(null);
@@ -319,29 +258,20 @@ export function OnboardingWizardProvider({
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [submitError, setSubmitError] = React.useState<string | null>(null);
   const [generateError, setGenerateError] = React.useState<string | null>(null);
-  // Track whether we've successfully hydrated from server at least once
-  // for the current org. Prevents the resume-step from landing on 0
-  // before the GET completes.
   const [hydratedOrgId, setHydratedOrgId] = React.useState<string | null>(null);
 
   // ── Persist non-PII draft to localStorage on every answers change.
   React.useEffect(() => {
     if (!orgId) return;
     const draft: DraftAnswers = {
-      agent_type: answers.agent_type,
-      agent_type_other: answers.agent_type_other,
       jurisdictions: answers.jurisdictions,
-      decision_volume: answers.decision_volume,
-      channel: answers.channel,
+      jurisdictions_other: answers.jurisdictions_other,
     };
     // Only write if at least one field is populated — avoids touching
     // localStorage just to write a row of nulls for every org load.
     const anyAnswered =
-      draft.agent_type !== null ||
-      draft.agent_type_other !== null ||
       (draft.jurisdictions && draft.jurisdictions.length > 0) ||
-      draft.decision_volume !== null ||
-      draft.channel !== null;
+      (draft.jurisdictions_other && draft.jurisdictions_other.length > 0);
     if (anyAnswered) {
       writeDraft(orgId, draft);
     }
@@ -364,17 +294,13 @@ export function OnboardingWizardProvider({
         const server = res.answers ?? emptyAnswers();
         const draft = readDraft(orgId);
         // Server wins on each field; fall back to localStorage draft for
-        // non-PII fields the server doesn't have yet. Q5 always comes
-        // from server (no localStorage source).
+        // non-PII fields the server doesn't have yet. PrivacyOfficer
+        // always comes from server (no localStorage source).
         const merged: WizardAnswers = {
-          agent_type: server.agent_type ?? draft?.agent_type ?? null,
-          agent_type_other:
-            server.agent_type_other ?? draft?.agent_type_other ?? null,
           jurisdictions:
             server.jurisdictions ?? draft?.jurisdictions ?? null,
-          decision_volume:
-            server.decision_volume ?? draft?.decision_volume ?? null,
-          channel: server.channel ?? draft?.channel ?? null,
+          jurisdictions_other:
+            server.jurisdictions_other ?? draft?.jurisdictions_other ?? null,
           privacy_officer: server.privacy_officer ?? null,
         };
         setAnswers(merged);
@@ -382,8 +308,7 @@ export function OnboardingWizardProvider({
         setHydratedOrgId(orgId);
       })
       .catch(() => {
-        // 401/403 etc. — leave defaults. The provider mounts above
-        // ProtectedRoute too, so for signed-out routes we never get here.
+        // 401/403 etc. — leave defaults.
       })
       .finally(() => {
         if (!cancelled) setIsLoading(false);
@@ -422,19 +347,6 @@ export function OnboardingWizardProvider({
     setCurrentStep((s) => Math.max(0, s - 1) as WizardStep);
   }, []);
 
-  const setAgentType = React.useCallback((next: WizardAgentType) => {
-    setAnswers((prev) => ({
-      ...prev,
-      agent_type: next,
-      // If the operator backtracks away from "other", clear the supplement.
-      agent_type_other: next === "other" ? prev.agent_type_other : null,
-    }));
-  }, []);
-
-  const setAgentTypeOther = React.useCallback((next: string) => {
-    setAnswers((prev) => ({ ...prev, agent_type_other: next }));
-  }, []);
-
   const toggleJurisdiction = React.useCallback((j: WizardJurisdiction) => {
     setAnswers((prev) => {
       // us_federal is required and cannot be toggled off.
@@ -448,16 +360,20 @@ export function OnboardingWizardProvider({
       const nextList = has
         ? current.filter((x) => x !== j)
         : [...current, j];
-      return { ...prev, jurisdictions: nextList };
+      // If the user deselected ``other``, clear the free-text list too
+      // so a stale draft doesn't keep PII-adjacent content around.
+      const nextOther =
+        j === "other" && has ? null : prev.jurisdictions_other;
+      return {
+        ...prev,
+        jurisdictions: nextList,
+        jurisdictions_other: nextOther,
+      };
     });
   }, []);
 
-  const setDecisionVolume = React.useCallback((next: WizardDecisionVolume) => {
-    setAnswers((prev) => ({ ...prev, decision_volume: next }));
-  }, []);
-
-  const setChannel = React.useCallback((next: WizardReviewChannel) => {
-    setAnswers((prev) => ({ ...prev, channel: next }));
+  const setJurisdictionsOther = React.useCallback((next: string[]) => {
+    setAnswers((prev) => ({ ...prev, jurisdictions_other: next }));
   }, []);
 
   const setPrivacyOfficer = React.useCallback(
@@ -481,37 +397,17 @@ export function OnboardingWizardProvider({
       if (res.answers) setAnswers(res.answers);
       // Wipe the on-disk draft once the answers live on the server.
       clearDraft(orgId);
-      // Invalidate the dashboard surfaces that read the wizard state so
-      // the resume banner disappears immediately.
       queryClient.invalidateQueries({ queryKey: ["wizard-answers"] });
       queryClient.invalidateQueries({ queryKey: ["organization"] });
 
       // ── Phase 5 PR B2 — Post-completion handoff ─────────────────
-      //
-      // Now that the wizard has saved cleanly we kick off template
-      // generation and route the operator to the Templates page so
-      // they can review + counsel-attest each of the five generated
-      // documents. The backend is idempotent on re-submission so
-      // re-running the wizard after a previous completion is safe.
-      //
-      // Failure of the generate step must NOT block the wizard from
-      // closing — the wizard's POST already succeeded. We surface
-      // the failure via ``generateError`` and a toast (so the
-      // operator sees it even after navigation, if it lands).
       try {
         const generated = await generateTemplates();
-        // Clear the on-screen modal first so the navigation lands on
-        // a clean surface, then fire the toast (sonner mounts at the
-        // root so it survives the page transition) and push.
         setIsOpen(false);
         const count = generated.generated.length + generated.skipped_attested.length;
         toast.success(TEMPLATES_GENERATED_TOAST(count));
         router.push(TEMPLATES_REDIRECT_PATH);
       } catch (genErr) {
-        // Wizard close still happens — the operator gets the inline
-        // error in the modal footer (if still focused) and a toast
-        // backup (in case they've already clicked away). Both point
-        // them at the manual recovery path.
         const message =
           genErr instanceof ApiError && genErr.message
             ? `${TEMPLATES_GENERATE_FAILED_MESSAGE} (${genErr.message})`
@@ -551,11 +447,8 @@ export function OnboardingWizardProvider({
     goToStep,
     next,
     back,
-    setAgentType,
-    setAgentTypeOther,
     toggleJurisdiction,
-    setDecisionVolume,
-    setChannel,
+    setJurisdictionsOther,
     setPrivacyOfficer,
     submit,
   };

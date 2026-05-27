@@ -1,4 +1,10 @@
-"""Tests for the 5-question onboarding wizard (Phase 1 PR 14, Stream F item F5).
+"""Tests for the 2-question onboarding wizard (Phase 5 redesign).
+
+The wizard was trimmed from 5 questions to 2 (``jurisdictions`` +
+``privacy_officer``) after user testing showed the other three answers
+didn't drive product behaviour. The legacy fields are no longer
+accepted at the API boundary, but stored ``wizard_answers`` rows that
+still carry them deserialise cleanly (the model drops unknown keys).
 
 Covers:
   - GET returns null/null for an org that has never opened the wizard.
@@ -8,10 +14,10 @@ Covers:
   - Idempotency: re-submitting completed=true does NOT bump
     ``wizard_completed_at`` after the first completion.
   - Multi-tenancy: org A cannot read/write org B's wizard answers.
-  - ``extra="forbid"`` rejects pollution of the answer blob.
+  - ``extra="forbid"`` at the API boundary rejects pollution of the
+    answer blob.
   - Validation: jurisdictions must include ``us_federal``; unknown
-    tokens rejected; invalid email rejected; ``agent_type=other``
-    without ``agent_type_other`` rejected on completion.
+    tokens rejected; invalid email rejected.
   - Auth: a ``read`` key cannot POST; ``admin`` key can.
 """
 from __future__ import annotations
@@ -54,10 +60,7 @@ async def read_only_key(db_session, org_and_key):
 def _complete_payload() -> dict:
     return {
         "answers": {
-            "agent_type": "scribe",
-            "jurisdictions": ["us_federal", "us_ca"],
-            "decision_volume": "10k_100k",
-            "channel": "in_app_webhook",
+            "jurisdictions": ["us_federal", "california_ab489"],
             "privacy_officer": {
                 "name": "Dr. Jane Doe",
                 "email": "jane@example.org",
@@ -90,13 +93,12 @@ async def test_partial_save_round_trips(async_client, org_and_key):
     _, raw_key, _ = org_and_key
     headers = {"Authorization": f"Bearer {raw_key}"}
 
-    # Save only Q1 + Q2.
+    # Save only Q1.
     resp = await async_client.post(
         "/v1/organizations/me/wizard-answers",
         headers=headers,
         json={
             "answers": {
-                "agent_type": "receptionist",
                 "jurisdictions": ["us_federal"],
             },
             "completed": False,
@@ -105,9 +107,8 @@ async def test_partial_save_round_trips(async_client, org_and_key):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["completed_at"] is None
-    assert body["answers"]["agent_type"] == "receptionist"
     assert body["answers"]["jurisdictions"] == ["us_federal"]
-    assert body["answers"]["channel"] is None
+    assert body["answers"]["privacy_officer"] is None
 
     # GET shows the same partial state.
     get_resp = await async_client.get(
@@ -115,7 +116,7 @@ async def test_partial_save_round_trips(async_client, org_and_key):
     )
     assert get_resp.status_code == 200
     assert get_resp.json()["completed_at"] is None
-    assert get_resp.json()["answers"]["agent_type"] == "receptionist"
+    assert get_resp.json()["answers"]["jurisdictions"] == ["us_federal"]
 
 
 @pytest.mark.asyncio
@@ -131,7 +132,10 @@ async def test_completed_stamps_timestamp(async_client, org_and_key):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["completed_at"] is not None
-    assert body["answers"]["agent_type"] == "scribe"
+    assert body["answers"]["jurisdictions"] == [
+        "us_federal",
+        "california_ab489",
+    ]
     assert body["answers"]["privacy_officer"]["email"] == "jane@example.org"
 
 
@@ -145,7 +149,6 @@ async def test_completed_missing_fields_400(async_client, org_and_key):
         headers=headers,
         json={
             "answers": {
-                "agent_type": "scribe",
                 "jurisdictions": ["us_federal"],
             },
             "completed": True,
@@ -157,31 +160,32 @@ async def test_completed_missing_fields_400(async_client, org_and_key):
     # to the top level, so ``code`` lives at the root.
     assert body.get("code") == "wizard_incomplete"
     missing = body.get("missing_fields", [])
-    assert "decision_volume" in missing
-    assert "channel" in missing
     assert "privacy_officer" in missing
 
 
 @pytest.mark.asyncio
-async def test_completed_other_requires_other_text(async_client, org_and_key):
+async def test_completed_missing_jurisdictions_400(async_client, org_and_key):
     _, raw_key, _ = org_and_key
     headers = {"Authorization": f"Bearer {raw_key}"}
 
-    payload = _complete_payload()
-    payload["answers"]["agent_type"] = "other"
-    # No agent_type_other provided.
     resp = await async_client.post(
-        "/v1/organizations/me/wizard-answers", headers=headers, json=payload
+        "/v1/organizations/me/wizard-answers",
+        headers=headers,
+        json={
+            "answers": {
+                "privacy_officer": {
+                    "name": "Dr. Jane Doe",
+                    "email": "jane@example.org",
+                },
+            },
+            "completed": True,
+        },
     )
-    assert resp.status_code == 400
-    assert "agent_type_other" in resp.json().get("missing_fields", [])
-
-    # Adding the supplement makes it valid.
-    payload["answers"]["agent_type_other"] = "AI clinical-trial recruiter"
-    resp = await async_client.post(
-        "/v1/organizations/me/wizard-answers", headers=headers, json=payload
-    )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body.get("code") == "wizard_incomplete"
+    missing = body.get("missing_fields", [])
+    assert "jurisdictions" in missing
 
 
 @pytest.mark.asyncio
@@ -220,7 +224,7 @@ async def test_idempotent_completion_does_not_bump_timestamp(
     "jurisdictions,expect_field",
     [
         ([], "jurisdictions"),  # empty list rejected
-        (["us_ca"], "us_federal"),  # missing us_federal
+        (["california_ab489"], "us_federal"),  # missing us_federal
         (["us_federal", "ZZZ"], "unknown jurisdiction"),  # unknown token
     ],
 )
@@ -235,6 +239,26 @@ async def test_jurisdiction_validation(
     )
     assert resp.status_code == 422
     assert expect_field in resp.text
+
+
+@pytest.mark.asyncio
+async def test_legacy_california_slug_accepted_and_rewritten(async_client, org_and_key):
+    """Backwards compatibility: the pre-Phase 5 ``california`` slug is
+    accepted on input and rewritten to ``california_ab489``."""
+    _, raw_key, _ = org_and_key
+    resp = await async_client.post(
+        "/v1/organizations/me/wizard-answers",
+        headers={"Authorization": f"Bearer {raw_key}"},
+        json={
+            "answers": {"jurisdictions": ["us_federal", "california"]},
+            "completed": False,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["answers"]["jurisdictions"] == [
+        "us_federal",
+        "california_ab489",
+    ]
 
 
 @pytest.mark.asyncio
@@ -261,12 +285,37 @@ async def test_extra_fields_forbidden(async_client, org_and_key):
         "/v1/organizations/me/wizard-answers",
         headers={"Authorization": f"Bearer {raw_key}"},
         json={
-            "answers": {"agent_type": "scribe", "secret_admin_flag": True},
+            "answers": {
+                "jurisdictions": ["us_federal"],
+                "secret_admin_flag": True,
+            },
             "completed": False,
         },
     )
     assert resp.status_code == 422
-    assert "secret_admin_flag" in resp.text or "extra" in resp.text.lower()
+    assert (
+        "secret_admin_flag" in resp.text or "unknown answer" in resp.text.lower()
+    )
+
+
+@pytest.mark.asyncio
+async def test_retired_fields_rejected_at_api_boundary(async_client, org_and_key):
+    """The Phase 5 redesign retired ``agent_type`` / ``decision_volume``
+    / ``channel``. Submitting them via the API is now a 422 — the model
+    only ignores them on READ (for legacy rows on the JSON column)."""
+    _, raw_key, _ = org_and_key
+    resp = await async_client.post(
+        "/v1/organizations/me/wizard-answers",
+        headers={"Authorization": f"Bearer {raw_key}"},
+        json={
+            "answers": {
+                "jurisdictions": ["us_federal"],
+                "agent_type": "scribe",
+            },
+            "completed": False,
+        },
+    )
+    assert resp.status_code == 422
 
 
 # ── Multi-tenancy + RBAC ──────────────────────────────────────────
@@ -311,6 +360,6 @@ async def test_read_key_cannot_write(async_client, org_and_key, read_only_key):
     write = await async_client.post(
         "/v1/organizations/me/wizard-answers",
         headers={"Authorization": f"Bearer {raw_read_key}"},
-        json={"answers": {"agent_type": "scribe"}, "completed": False},
+        json={"answers": {"jurisdictions": ["us_federal"]}, "completed": False},
     )
     assert write.status_code == 403

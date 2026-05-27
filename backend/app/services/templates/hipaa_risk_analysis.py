@@ -18,13 +18,35 @@ from __future__ import annotations
 from ._common import REPLACE_MARKER, generated_note
 
 
+# Marker for the Privacy Officer block. When ``wizard_answers.privacy_officer``
+# is populated we substitute this marker with ``{name} ({email})``; when
+# null we leave it in place so counsel can fill it in.
+_PRIVACY_OFFICER_MARKER = "<<REPLACE WITH PRIVACY OFFICER NAME + CONTACT>>"
+
+
+def _privacy_officer_text(wizard_answers) -> str:
+    po = getattr(wizard_answers, "privacy_officer", None)
+    if po is None:
+        return _PRIVACY_OFFICER_MARKER
+    name = getattr(po, "name", None)
+    email = getattr(po, "email", None)
+    if not name or not email:
+        return _PRIVACY_OFFICER_MARKER
+    return (
+        "<!-- Pre-filled from your onboarding answers (Privacy Officer). "
+        "If your designated HIPAA Privacy Officer differs, replace inline. -->\n"
+        f"{name} ({email})"
+    )
+
+
 def generate_hipaa_risk_analysis(wizard_answers, org) -> str:
     """Render the HIPAA Risk Analysis Markdown skeleton.
 
     The generator does NOT pre-fill clinical content — that's the
     org's responsibility. We do pre-fill the org name in the
     Scope section so the document reads as belonging to the right
-    legal entity.
+    legal entity, and the Privacy Officer block from the wizard's
+    onboarding answer when available.
     """
     org_name = (org.name or "Customer organization").strip() or "Customer organization"
 
@@ -40,6 +62,21 @@ def generate_hipaa_risk_analysis(wizard_answers, org) -> str:
         f"`{REPLACE_MARKER}` marker with the actual practice for "
         f"**{org_name}** before counsel sign-off."
     )
+    parts.append("")
+
+    # ── 0. HIPAA Privacy Officer ─────────────────────────────────────
+    # Pre-filled from the wizard's Privacy Officer answer when present.
+    # The marker stays in place when no Privacy Officer is recorded so
+    # counsel can fill it in during attestation.
+    parts.append("## 0. HIPAA Privacy Officer")
+    parts.append("")
+    parts.append(
+        "The Privacy Officer is responsible for the development and "
+        "implementation of the privacy policies and procedures of the "
+        "organization, as required by 45 CFR § 164.530(a)(1)."
+    )
+    parts.append("")
+    parts.append(_privacy_officer_text(wizard_answers))
     parts.append("")
 
     # ── 1. Scope ─────────────────────────────────────────────────────
