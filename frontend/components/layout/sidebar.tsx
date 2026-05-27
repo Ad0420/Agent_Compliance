@@ -17,6 +17,13 @@ import { Home, ShieldCheck, Settings, Scale, Key, Users, Inbox } from "lucide-re
 // breadcrumb honest, but reviewers hit it dozens of times a day so we
 // surface a dedicated nav entry alongside Compliance (the section header)
 // rather than burying it one click deep.
+//
+// Phase 4 Wave 2 PR C1 — ``/compliance`` is now the asymmetric Compliance
+// Posture page (six universal dimensions: measured cards + collapsed
+// awaiting-data row). The pre-Phase-4 Clerk-only reviewer page was moved
+// to ``/compliance-reviewer-legacy`` so saved-view URLs keep resolving;
+// it intentionally has no sidebar entry now that posture is the
+// canonical Compliance landing.
 const NAV_ITEMS = [
   { href: "/home", label: "Home", icon: Home },
   { href: "/customers", label: "Customers", icon: Users },

@@ -597,6 +597,81 @@ export function updateAlertEmail(alert_email: string | null): Promise<Organizati
   });
 }
 
+// ── Phase 4 Wave 2 C1 — Compliance posture ───────────────────────────────
+//
+// Backed by ``GET /v1/compliance/posture`` (Wave 1 B1). Returns six
+// universal-dimension scores split into ``measured`` (cleared the
+// low-volume threshold) and ``not_yet_eligible`` (under threshold). The
+// dashboard's Compliance page renders the asymmetric layout: composite
+// headline + measured cards + collapsed awaiting-data row.
+//
+// Mirror the backend contract in ``backend/app/schemas/posture.py``.
+// Field names are pinned so a tsc drift trips before runtime.
+
+export const COMPLIANCE_DIMENSION_NAMES = [
+  "artifact_freshness",
+  "hitl_completion",
+  "reviewer_integrity",
+  "notice_delivery_rate",
+  "chain_integrity",
+  "workflow_timeliness",
+] as const;
+
+export type ComplianceDimensionName = (typeof COMPLIANCE_DIMENSION_NAMES)[number];
+
+export interface MeasuredDimension {
+  name: ComplianceDimensionName;
+  score: number; // 0..100
+  raw_count: number;
+  measured_fact_line: string;
+}
+
+export interface NotYetEligibleDimension {
+  name: ComplianceDimensionName;
+  threshold: number;
+  current: number;
+  needed: number;
+  reason: string;
+}
+
+export interface CompliancePostureResponse {
+  composite_headline: string;
+  measured: MeasuredDimension[];
+  not_yet_eligible: NotYetEligibleDimension[];
+  computed_at: string; // ISO 8601
+  window_days: number;
+}
+
+export function getCompliancePosture(
+  windowDays: number = 30,
+): Promise<CompliancePostureResponse> {
+  return request(
+    `/v1/compliance/posture${buildQuery({ window_days: windowDays })}`,
+  );
+}
+
+/**
+ * Org-wide coverage roll-up consumed by the Compliance page's coverage
+ * section. Computed client-side from per-customer
+ * ``GET /v1/customers/{tenant_id}/agents`` rows (no dedicated org-wide
+ * endpoint in v1). ``covered`` = agents whose ``coverage`` is
+ * ``"covered"``; ``detected`` is the total count across all customers.
+ *
+ * ``items`` powers the per-agent_type chip strip below the headline.
+ * The ``status`` is collapsed to a binary for the dot colour ("covered"
+ * stays olive; "partial" + "none" both render as paper-3 muted).
+ */
+export interface CoverageAgentChip {
+  agent_type: string;
+  status: "covered" | "uncovered";
+}
+
+export interface Coverage {
+  covered: number;
+  detected: number;
+  items: CoverageAgentChip[];
+}
+
 // Onboarding wizard (Phase 1 PR 14, Stream F item F5).
 // Five-question modal sequence persisted on the Organization row.
 // GET is `read`, POST is `admin` — see backend organizations route.
