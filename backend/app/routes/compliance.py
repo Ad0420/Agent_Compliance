@@ -8,7 +8,7 @@ Mounts:
     rate, chain integrity, workflow timeliness).
 
   * ``POST /v1/compliance/insights`` — Phase 4 Wave 2 PR B2.
-    Synchronous Haiku-backed call returning 3-5 recommendation cards
+    Synchronous OpenAI-backed call returning 3-5 recommendation cards
     over the live posture snapshot. No persistence — each call
     regenerates.
 
@@ -104,9 +104,10 @@ async def post_compliance_insights(
 ) -> InsightsResponse:
     """Generate 3-5 AI recommendation cards for the active org.
 
-    Synchronous Haiku-class Claude call over the live posture snapshot.
-    No request body — the org scope comes from the auth context, the
-    window defaults to 30 days (matching ``GET /v1/compliance/posture``).
+    Synchronous OpenAI Responses-API call over the live posture
+    snapshot. No request body — the org scope comes from the auth
+    context, the window defaults to 30 days (matching
+    ``GET /v1/compliance/posture``).
 
     Same auth shape as the posture endpoint: customer admin OR Vera
     staff via X-Org-Id. Staff calls write a single
@@ -116,14 +117,14 @@ async def post_compliance_insights(
     per org. Exceeding returns 429 with ``Retry-After: 60``.
 
     Timeout: ``settings.insights_timeout_seconds`` (default 15s) on the
-    Haiku call. Returns 504 with ``error.code == "insights_timeout"``
-    on hard timeout — operational failure modes downstream of Haiku
-    (bad JSON, hallucinated quotes, etc.) are swallowed and surface
-    as fallback cards rather than 5xx-ing the request.
+    OpenAI call. Returns 504 with ``error.code == "insights_timeout"``
+    on hard timeout — operational failure modes downstream of the
+    model (bad JSON, hallucinated quotes, etc.) are swallowed and
+    surface as fallback cards rather than 5xx-ing the request.
     """
     org_id = ctx.org_id
 
-    # Rate limit BEFORE running the Haiku call. Cheaper to refuse
+    # Rate limit BEFORE running the OpenAI call. Cheaper to refuse
     # early; keeps cost predictable when a misconfigured client retries
     # on a tight loop.
     decision = await check_rate_limit(
@@ -149,7 +150,7 @@ async def post_compliance_insights(
     try:
         result = await generate_insights(session, org_id)
     except InsightsTimeoutError as exc:
-        # 504 Gateway Timeout — the upstream we depended on (Haiku)
+        # 504 Gateway Timeout — the upstream we depended on (OpenAI)
         # did not return within the configured budget. Per the brief,
         # error.code is exactly ``insights_timeout`` so the dashboard
         # can show a specific retry affordance.

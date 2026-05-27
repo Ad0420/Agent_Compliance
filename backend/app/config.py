@@ -139,17 +139,18 @@ class Settings(BaseSettings):
     # contained, long enough that the typical hot-path stays cached.
     membership_freshness_seconds: int = 300
 
-    # ── Anthropic / AI Insights (Phase 4 Wave 2 PR B2) ─────────────────
-    # API key for the Anthropic SDK. Empty in development unless the
+    # ── OpenAI / AI Insights (Phase 4 Wave 2 PR B2) ────────────────────
+    # API key for the OpenAI SDK. Empty in development unless the
     # operator opts in; ``POST /v1/compliance/insights`` returns the
     # fallback "Insufficient signal" cards when this is unset rather
     # than 500-ing the request — the endpoint is degraded but still
     # serves the dashboard's contract (3-5 cards + disclaimer).
-    anthropic_api_key: str = ""
-    # Haiku-class model the insights endpoint calls. Tunable so a future
-    # Sonnet/Opus upgrade is a config bump, not a code change.
-    anthropic_insights_model: str = "claude-haiku-4-5"
-    # Hard timeout (seconds) on the Haiku call. Brief says 15s; we
+    openai_api_key: str = ""
+    # Model the insights endpoint calls via the OpenAI Responses API.
+    # Tunable so a future model bump is a config change, not a code
+    # change.
+    openai_insights_model: str = "gpt-5.4-mini"
+    # Hard timeout (seconds) on the OpenAI call. Brief says 15s; we
     # surface 504 with ``error.code == "insights_timeout"`` past this.
     insights_timeout_seconds: float = 15.0
     # Per-org rate limit on ``POST /v1/compliance/insights``. 10

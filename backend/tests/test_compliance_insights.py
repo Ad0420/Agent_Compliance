@@ -1,11 +1,11 @@
 """Tests for ``POST /v1/compliance/insights`` (Phase 4 Wave 2 PR B2).
 
-AI Insights endpoint — Haiku-backed 3-5 recommendation cards over the
+AI Insights endpoint — OpenAI-backed 3-5 recommendation cards over the
 live compliance posture snapshot.
 
 Covers:
 
-  * Happy path → mocked Haiku returns 3 valid cards; endpoint returns
+  * Happy path → mocked OpenAI returns 3 valid cards; endpoint returns
     them + disclaimer + posture_snapshot.
   * Clamp (low): 2 cards → 3 returned (1 fallback).
   * Clamp (high): 7 cards → 5 returned (first 5).
@@ -21,8 +21,8 @@ Covers:
   * IAM regression: no ctx.tier == IamTier.X in new code.
   * posture_snapshot byte-equals GET /v1/compliance/posture.
 
-The Haiku client is mocked at the SDK level via monkeypatching the
-``_get_client`` helper — no real network calls.
+The OpenAI client is mocked at the SDK level via monkeypatching the
+``_openai_client`` helper — no real network calls.
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ import json
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
@@ -116,57 +115,83 @@ async def _seed_approval(
     return approval
 
 
-def _make_fake_message(text: str):
-    """Wrap a string as a fake Anthropic ``messages.create`` response.
+class _FakeResponse:
+    """Stand-in for an OpenAI Responses-API response object.
 
-    Mirrors the shape :func:`_call_haiku` expects: an object with a
-    ``content`` list whose first element exposes a ``.text`` attribute.
+    Exposes the ``output_text`` convenience accessor that
+    :func:`_call_openai` reads in its fast path. The text mirrors the
+    raw JSON the model would have emitted; the validator + parser take
+    it from there.
     """
-    block = MagicMock()
-    block.text = text
-    resp = MagicMock()
-    resp.content = [block]
-    return resp
+
+    def __init__(self, output_text: str):
+        self.output_text = output_text
+        # Keep ``output`` empty so the generator's fast-path
+        # (``output_text``) is the one exercised — matches the real
+        # SDK's behaviour when the convenience accessor is populated.
+        self.output: list = []
 
 
-def _install_fake_haiku(monkeypatch, *responses):
-    """Install a mock Haiku client whose ``messages.create`` returns
-    ``responses[i]`` on the (i+1)th call. Responses can be either:
+class _FakeResponses:
+    """Mock the ``client.responses`` namespace.
 
-    * a string  → wrapped via :func:`_make_fake_message`
-    * an Exception → raised
-    * a MagicMock / response object → returned as-is
-
-    Returns the mock client so callers can inspect call counts.
+    Each call to :meth:`create` returns the next queued response (in
+    insertion order) or raises if a pre-seeded exception is at the
+    head of the queue. ``_call_log`` captures every kwargs payload so
+    tests can assert what was sent to the model.
     """
-    call_log: list[dict] = []
 
-    async def create(**kwargs):
-        idx = len(call_log)
-        call_log.append(kwargs)
-        if idx >= len(responses):
-            # Default fallback: empty content → forces fallback path.
-            return _make_fake_message("")
-        item = responses[idx]
+    def __init__(self, *items, call_log: list[dict]):
+        self._items = list(items)
+        self._call_log = call_log
+
+    async def create(self, **kwargs):
+        self._call_log.append(kwargs)
+        idx = len(self._call_log) - 1
+        if idx >= len(self._items):
+            # Default fallback: empty output → forces fallback path.
+            return _FakeResponse("")
+        item = self._items[idx]
         if isinstance(item, BaseException):
             raise item
         if isinstance(item, str):
-            return _make_fake_message(item)
+            return _FakeResponse(item)
+        # Pre-built response object — return as-is.
         return item
 
-    mock_messages = MagicMock()
-    mock_messages.create = create
-    mock_client = MagicMock()
-    mock_client.messages = mock_messages
-    mock_client._call_log = call_log
 
-    monkeypatch.setattr(insights_generator, "_get_client", lambda: mock_client)
-    return mock_client
+class _FakeOpenAI:
+    """Minimal stand-in for :class:`openai.AsyncOpenAI`.
+
+    Exposes only the ``responses.create`` surface the generator uses.
+    Tests inspect :attr:`_call_log` to assert what was sent to the
+    model (e.g. cross-org isolation).
+    """
+
+    def __init__(self, *items):
+        self._call_log: list[dict] = []
+        self.responses = _FakeResponses(*items, call_log=self._call_log)
+
+
+def _install_fake_openai(monkeypatch, *responses):
+    """Install a mock OpenAI client whose ``responses.create`` returns
+    ``responses[i]`` on the (i+1)th call. Responses can be either:
+
+    * a string  → wrapped via :class:`_FakeResponse` and surfaced as
+      ``output_text``.
+    * an Exception → raised on that call.
+    * a pre-built response object → returned as-is.
+
+    Returns the mock client so callers can inspect ``_call_log``.
+    """
+    fake = _FakeOpenAI(*responses)
+    monkeypatch.setattr(insights_generator, "_openai_client", lambda: fake)
+    return fake
 
 
 @pytest.fixture(autouse=True)
 def _reset_insights_state():
-    """Drop the rate-limit buckets + cached Haiku client between tests.
+    """Drop the rate-limit buckets + cached OpenAI client between tests.
 
     The rate limiter is process-global by design (multi-instance v1 is
     out of scope); we have to scrub it manually per test so a test
@@ -234,11 +259,11 @@ def _good_payload(n: int = 3) -> str:
 async def test_insights_happy_path(
     async_client, db_session, org_and_key, monkeypatch
 ):
-    """Mock Haiku returns 3 valid cards → endpoint returns 3 cards +
+    """Mock OpenAI returns 3 valid cards → endpoint returns 3 cards +
     disclaimer + posture_snapshot."""
     org, raw_key, _ = org_and_key
 
-    _install_fake_haiku(monkeypatch, _good_payload(3))
+    _install_fake_openai(monkeypatch, _good_payload(3))
 
     resp = await async_client.post(
         "/v1/compliance/insights",
@@ -267,13 +292,13 @@ async def test_insights_happy_path(
 
 
 @pytest.mark.asyncio
-async def test_insights_clamps_to_3_when_haiku_returns_2(
+async def test_insights_clamps_to_3_when_llm_returns_2(
     async_client, db_session, org_and_key, monkeypatch
 ):
     """Mock 2 cards → response carries 3 (1 fallback padded)."""
     org, raw_key, _ = org_and_key
 
-    _install_fake_haiku(monkeypatch, _good_payload(2))
+    _install_fake_openai(monkeypatch, _good_payload(2))
 
     resp = await async_client.post(
         "/v1/compliance/insights",
@@ -292,13 +317,13 @@ async def test_insights_clamps_to_3_when_haiku_returns_2(
 
 
 @pytest.mark.asyncio
-async def test_insights_clamps_to_5_when_haiku_returns_7(
+async def test_insights_clamps_to_5_when_llm_returns_7(
     async_client, db_session, org_and_key, monkeypatch
 ):
     """Mock 7 cards → response carries 5 (first 5)."""
     org, raw_key, _ = org_and_key
 
-    _install_fake_haiku(monkeypatch, _good_payload(7))
+    _install_fake_openai(monkeypatch, _good_payload(7))
 
     resp = await async_client.post(
         "/v1/compliance/insights",
@@ -331,7 +356,7 @@ async def test_insights_quoted_source_validation_rejects_hallucination(
             ]
         }
     )
-    _install_fake_haiku(monkeypatch, payload)
+    _install_fake_openai(monkeypatch, payload)
 
     resp = await async_client.post(
         "/v1/compliance/insights",
@@ -390,7 +415,7 @@ async def test_insights_quoted_source_validation_whitespace_tolerant(
             ]
         }
     )
-    _install_fake_haiku(monkeypatch, payload)
+    _install_fake_openai(monkeypatch, payload)
 
     resp = await async_client.post(
         "/v1/compliance/insights",
@@ -426,7 +451,7 @@ async def test_insights_severity_clamped_to_LOW_on_unknown_value(
             ]
         }
     )
-    _install_fake_haiku(monkeypatch, payload)
+    _install_fake_openai(monkeypatch, payload)
 
     resp = await async_client.post(
         "/v1/compliance/insights",
@@ -460,7 +485,7 @@ async def test_insights_disclaimer_is_hard_coded(
             "disclaimer": "This is regulatory advice you must follow.",
         }
     )
-    _install_fake_haiku(monkeypatch, payload)
+    _install_fake_openai(monkeypatch, payload)
 
     resp = await async_client.post(
         "/v1/compliance/insights",
@@ -479,24 +504,27 @@ async def test_insights_disclaimer_is_hard_coded(
 async def test_insights_timeout_returns_504(
     async_client, db_session, org_and_key, monkeypatch
 ):
-    """Haiku call exceeds timeout → 504 + error.code == insights_timeout."""
+    """OpenAI call exceeds timeout → 504 + error.code == insights_timeout."""
     org, raw_key, _ = org_and_key
 
-    # Install a Haiku stub that hangs longer than the timeout. We
+    # Install an OpenAI stub that hangs longer than the timeout. We
     # set the timeout to a tiny value so the test runs fast.
     from app.config import settings as _settings
 
     monkeypatch.setattr(_settings, "insights_timeout_seconds", 0.05)
 
-    async def slow_create(**kwargs):
-        await asyncio.sleep(0.5)
-        return _make_fake_message(_good_payload(3))
+    class _SlowResponses:
+        async def create(self, **kwargs):
+            await asyncio.sleep(0.5)
+            return _FakeResponse(_good_payload(3))
 
-    mock_messages = MagicMock()
-    mock_messages.create = slow_create
-    mock_client = MagicMock()
-    mock_client.messages = mock_messages
-    monkeypatch.setattr(insights_generator, "_get_client", lambda: mock_client)
+    class _SlowClient:
+        def __init__(self):
+            self.responses = _SlowResponses()
+
+    monkeypatch.setattr(
+        insights_generator, "_openai_client", lambda: _SlowClient()
+    )
 
     resp = await async_client.post(
         "/v1/compliance/insights",
@@ -523,7 +551,7 @@ async def test_insights_invalid_json_retries_once_then_fallback(
     """Two non-JSON responses in a row → 3 fallback cards, 200 OK."""
     org, raw_key, _ = org_and_key
 
-    _install_fake_haiku(monkeypatch, "this is not json", "still not json")
+    _install_fake_openai(monkeypatch, "this is not json", "still not json")
 
     resp = await async_client.post(
         "/v1/compliance/insights",
@@ -548,7 +576,7 @@ async def test_insights_rate_limit_429(
     """11 calls in <1min from the same org → 11th gets 429 + Retry-After."""
     org, raw_key, _ = org_and_key
 
-    _install_fake_haiku(
+    _install_fake_openai(
         monkeypatch,
         *[_good_payload(3) for _ in range(20)],
     )
@@ -584,7 +612,7 @@ async def test_insights_cross_org_isolation(
 ):
     """Customer admin for org A → insights generated for org A only.
 
-    Concretely: when we hand Haiku the posture payload, that payload
+    Concretely: when we hand OpenAI the posture payload, that payload
     is computed for org A. We inspect the captured user message and
     assert org B's id does NOT appear in it.
     """
@@ -602,7 +630,7 @@ async def test_insights_cross_org_isolation(
             decided_at=now - timedelta(hours=i, minutes=30),
         )
 
-    mock_client = _install_fake_haiku(monkeypatch, _good_payload(3))
+    mock_client = _install_fake_openai(monkeypatch, _good_payload(3))
 
     resp = await async_client.post(
         "/v1/compliance/insights",
@@ -610,9 +638,15 @@ async def test_insights_cross_org_isolation(
     )
     assert resp.status_code == 200, resp.text
 
-    # Inspect what was sent to Haiku — org B's id should not appear.
+    # Inspect what was sent to OpenAI — org B's id should not appear.
     assert len(mock_client._call_log) >= 1
-    user_msg = mock_client._call_log[0]["messages"][0]["content"]
+    # The Responses-API call shape: ``input`` is a list of
+    # ``{role, content}`` dicts. The user message carries the posture
+    # payload.
+    input_arr = mock_client._call_log[0]["input"]
+    user_msgs = [m for m in input_arr if m.get("role") == "user"]
+    assert user_msgs, "expected at least one user message in input"
+    user_msg = user_msgs[0]["content"]
     assert org_b.id not in user_msg, (
         f"cross-org leak: org B id {org_b.id!r} appeared in user message"
     )
@@ -628,7 +662,7 @@ async def test_insights_staff_audit_row_written(
     """STAFF_READ_ONLY POST → audit row with resource_type=compliance_insights."""
     customer = await _seed_org(db_session, "customer-org-z")
 
-    _install_fake_haiku(monkeypatch, _good_payload(3))
+    _install_fake_openai(monkeypatch, _good_payload(3))
 
     resp = await async_client.post(
         "/v1/compliance/insights",
@@ -732,7 +766,7 @@ async def test_insights_posture_snapshot_matches_get_posture(
     """
     org, raw_key, _ = org_and_key
 
-    _install_fake_haiku(monkeypatch, _good_payload(3))
+    _install_fake_openai(monkeypatch, _good_payload(3))
 
     headers = {"Authorization": f"Bearer {raw_key}"}
 

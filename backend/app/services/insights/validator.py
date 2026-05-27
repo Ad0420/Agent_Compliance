@@ -2,7 +2,7 @@
 
 Why a separate module
 ---------------------
-The Haiku call is one of three places model output can go wrong:
+The OpenAI call is one of three places model output can go wrong:
 
   1. Bad JSON  → caller retries once, then falls through to
      :func:`fallback_insights`.
@@ -79,7 +79,7 @@ def clamp_severity(value: Any) -> InsightSeverity:
 
     Case-insensitive on entry; off-spec values (e.g. "CRITICAL",
     "warn", 7, None) all clamp to ``LOW``. The brief is explicit:
-    "Map any other value Haiku might emit to LOW."
+    "Map any other value the model might emit to LOW."
     """
     if isinstance(value, str):
         up = value.strip().upper()
@@ -207,7 +207,7 @@ def parse_and_validate(
     a fallback) before count-clamping in the route layer.
 
     Accepts either ``{"insights": [...]}`` or a bare ``[...]`` —
-    Haiku occasionally drops the wrapper key on short replies.
+    The model occasionally drops the wrapper key on short replies.
     """
     text = raw_text.strip()
     # Strip ```json fences the model sometimes wraps output in despite
@@ -239,7 +239,7 @@ def parse_and_validate(
 def fallback_insights() -> list[Insight]:
     """Return MIN_INSIGHTS canned fallback cards.
 
-    Used when the Haiku call fails outright (timeout, two JSON parse
+    Used when the OpenAI call fails outright (timeout, two JSON parse
     failures, SDK exception). The cards are minimally varied so the
     dashboard doesn't render three identical tiles.
     """

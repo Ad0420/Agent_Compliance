@@ -49,7 +49,7 @@ INSIGHTS_RETRY_REMINDER = (
 
 
 def build_user_message(posture_dict: dict[str, Any]) -> str:
-    """Build the user-message payload for the Haiku call.
+    """Build the user-message payload for the OpenAI call.
 
     The model gets the raw posture JSON plus a one-line frame.
     Keeping the framing minimal — the system prompt already carries
