@@ -29,10 +29,16 @@ pypdf>=4.0
 # Phase 4 Wave 2 PR A3 — SVG → ReportLab Drawing conversion for the
 # white-label PDF cover. Customers upload an SVG logo, the cover renderer
 # converts it to a Platypus flowable. ``svglib`` is the canonical bridge
-# for this in the ReportLab ecosystem and pulls in ``lxml`` + ``cssselect2``
-# automatically. Pinned to the 1.x line — 2.x would be a breaking surface
-# change for us.
-svglib>=1.5,<2
+# for this in the ReportLab ecosystem.
+#
+# Pinned ``<1.6`` because 1.6.0 added a hard dependency on
+# ``rlpycairo`` (and transitively ``pycairo``), which requires the
+# system ``libcairo2-dev`` headers to compile. The CI runner image
+# doesn't ship libcairo and the wheel build fails with
+# ``Dependency "cairo" not found``. 1.5.x exposes the same
+# ``svg2rlg`` API we use and pulls only ``lxml`` + ``cssselect2`` +
+# ``tinycss2`` (pure-Python or pre-built wheels).
+svglib>=1.5,<1.6
 # Pillow gives us header-only PNG validation in the branding-upload
 # endpoint without paying the cost of a full pixel decode. The audit-PDF
 # generator also uses Pillow indirectly through ReportLab's ImageReader,
