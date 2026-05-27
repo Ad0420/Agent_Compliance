@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
-import { Home, ShieldCheck, Settings, Scale, Key, Users, Inbox } from "lucide-react";
+import { Home, ShieldCheck, Settings, Scale, Key, Users, Inbox, FileText } from "lucide-react";
 
 // PR 12 (Phase 1 Stream F item F6) introduces /home as the real landing
 // page and adds /customers as the multi-tenant first-class nav entry per
@@ -24,10 +24,17 @@ import { Home, ShieldCheck, Settings, Scale, Key, Users, Inbox } from "lucide-re
 // to ``/compliance-reviewer-legacy`` so saved-view URLs keep resolving;
 // it intentionally has no sidebar entry now that posture is the
 // canonical Compliance landing.
+// Phase 5 PR B1 adds /compliance/templates as a sibling shortcut alongside
+// the existing /compliance/reviews entry. Templates are counsel-attestable
+// policy artefacts; surfacing them next to the rest of the Compliance
+// section keeps the IA flat and discoverable without nesting one click
+// deeper. The active-state logic above already handles the
+// /compliance vs /compliance/* most-specific-match shadowing.
 const NAV_ITEMS = [
   { href: "/home", label: "Home", icon: Home },
   { href: "/customers", label: "Customers", icon: Users },
   { href: "/compliance", label: "Compliance", icon: Scale },
+  { href: "/compliance/templates", label: "Templates", icon: FileText },
   { href: "/compliance/reviews", label: "Reviews", icon: Inbox },
   { href: "/api-keys", label: "API Keys", icon: Key },
   { href: "/settings", label: "Settings", icon: Settings },
