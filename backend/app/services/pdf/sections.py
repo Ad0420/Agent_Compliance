@@ -187,6 +187,62 @@ def _table_style_default() -> TableStyle:
     )
 
 
+# Cached ParagraphStyle objects for table cells. ReportLab is fine with
+# style reuse across cells of the same kind, and building these once at
+# import time saves a per-render allocation for every cell in every
+# table. The styles inherit ``BodyText`` defaults (margins, alignment)
+# from the sample stylesheet but pin the font + size so the on-page
+# rendering matches the rest of the document.
+_BASE_STYLES = getSampleStyleSheet()
+
+
+def _table_cell_style(*, bold: bool = False, size: int = 10) -> ParagraphStyle:
+    """Paragraph style for table cells with word-wrap enabled.
+
+    Wrapping in a ``Paragraph`` (instead of passing a raw ``str`` to
+    the cell) is what unlocks ReportLab's word-wrap inside ``Table``
+    cells. Plain strings render on a single line and clip at the cell
+    edge — see the hotfix for the Coverage Matrix header collisions
+    and the Audit Controls right-column truncation.
+    """
+    return ParagraphStyle(
+        name=f"VeraCell_{'bold' if bold else 'body'}_{size}",
+        parent=_BASE_STYLES["BodyText"],
+        fontName="Helvetica-Bold" if bold else "Helvetica",
+        fontSize=size,
+        leading=size + 2,
+        spaceBefore=0,
+        spaceAfter=0,
+        textColor=colors.HexColor("#1a1a1a") if bold else colors.HexColor("#2a2a2a"),
+    )
+
+
+_TABLE_HEADER_CELL_STYLE = _table_cell_style(bold=True, size=9)
+_TABLE_BODY_CELL_STYLE = _table_cell_style(bold=False, size=9)
+_TABLE_BODY_CELL_STYLE_10 = _table_cell_style(bold=False, size=10)
+
+
+def _escape_markup(value: str) -> str:
+    """Escape ReportLab Paragraph markup metacharacters.
+
+    Paragraph treats ``<``, ``>``, and ``&`` as the start of intra-
+    paragraph markup (``<b>`` / ``<font>`` / ``&amp;``). When a
+    user-controlled string (e.g. ``agent_type`` auto-discovered from
+    an SDK caller's ``action_class``, or ``gate_name`` from an
+    Approval row) contains any of those characters, Paragraph's
+    parser raises ``ValueError`` and 500s the audit PDF endpoint.
+
+    Escape unconditionally; the cell content is plain text and never
+    relies on inline markup. ``&`` is escaped first so we don't
+    double-escape the ampersands we just emitted.
+    """
+    return (
+        value.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
 # ── Section 1: Cover ─────────────────────────────────────────
 #
 # Phase 4 Wave 2 PR A3 — white-label cover. Three branches:
@@ -523,7 +579,14 @@ def render_scope(story: list, ctx: PdfContext) -> None:
             )
         )
     else:
-        header = [
+        # Wrap every header label in a Paragraph so multi-word labels
+        # ("Vera coverage", "PDF included", "Posture included") can
+        # wrap to two lines inside their cell instead of butting up
+        # against the next column when the column is narrower than the
+        # rendered label width. This was Bug 1 in the hotfix brief:
+        # plain strings render on a single line and visually collide
+        # ("Vera coverageCapture", "PDF includePosture included").
+        header_labels = [
             "Agent type",
             "Detected",
             "Vera coverage",
@@ -532,33 +595,61 @@ def render_scope(story: list, ctx: PdfContext) -> None:
             "PDF included",
             "Posture included",
         ]
+        header: list[object] = [
+            Paragraph(label, _TABLE_HEADER_CELL_STYLE)
+            for label in header_labels
+        ]
         rows: list[list[object]] = [header]
-        # Use Paragraphs in the HITL-gates column so long lists wrap
-        # inside the cell rather than overflow horizontally.
+        # Wrap the agent_type label and HITL-gates list in Paragraphs
+        # so long agent names ("prior_auth_v2") and comma-separated
+        # gate lists ("new_diagnosis, controlled_substance") reflow
+        # onto multiple lines inside their cell instead of overflowing.
+        # The check-mark columns stay as plain strings — single-glyph
+        # cells don't need wrap behaviour.
         for row in ctx.coverage_matrix:
-            gates_text = ", ".join(row["hitl_gates"]) if row["hitl_gates"] else ""
+            # Both ``agent_type`` and the elements of ``hitl_gates``
+            # originate from SDK callers (``ActionRecordCreate.action_class``
+            # and ``Approval.context["gate_name"]`` respectively). They
+            # are stored verbatim modulo the ORM's lower+strip normaliser
+            # — they are NOT restricted to ``[a-z0-9_]``. A caller posting
+            # ``"hr&admissions"`` or ``"<scribe>"`` would otherwise crash
+            # the Paragraph parser. Escape before wrapping.
+            agent_type_label = _escape_markup(row["agent_type"])
+            gates_text = (
+                ", ".join(_escape_markup(g) for g in row["hitl_gates"])
+                if row["hitl_gates"]
+                else ""
+            )
             rows.append(
                 [
-                    row["agent_type"],
+                    Paragraph(agent_type_label, _TABLE_BODY_CELL_STYLE),
                     _check(row["detected"]),
                     _check(row["covered"]),
                     _check(row["captured_count"] > 0),
-                    Paragraph(gates_text, s["body"]) if gates_text else "",
+                    Paragraph(gates_text, _TABLE_BODY_CELL_STYLE) if gates_text else "",
                     _check(row["pdf_included"]),
                     _check(row["posture_included"]),
                 ]
             )
+        # Explicit column widths in points (1pt = 1/72in). Budget for
+        # the seven columns sums to 500pt, fitting inside the 504pt
+        # content area (8.5in page − 2×0.75in margins). ReportLab
+        # shrink-to-fits on overflow, but explicit widths are what
+        # let the header Paragraphs wrap predictably onto two lines.
+        # Single-glyph check-mark columns (Detected / Capture) need
+        # ~60pt to keep their 8-char headers on one line at 9pt bold.
         table = Table(
             rows,
             colWidths=[
-                1.1 * inch,  # agent type
-                0.6 * inch,  # detected
-                0.8 * inch,  # vera coverage
-                0.6 * inch,  # capture
-                1.6 * inch,  # HITL gates (wraps)
-                0.7 * inch,  # PDF included
-                0.8 * inch,  # posture included
+                88,  # Agent type — fits "prior_auth_v2" + padding
+                60,  # Detected — fits "Detected" on one line at 9pt
+                72,  # Vera coverage — wraps to 2 lines
+                60,  # Capture — fits "Capture" on one line
+                86,  # HITL gates — wraps comma-separated lists
+                62,  # PDF included — wraps to 2 lines
+                72,  # Posture included — wraps to 2 lines
             ],
+            repeatRows=1,
         )
         table.setStyle(_table_style_default())
         story.append(table)
@@ -670,42 +761,63 @@ def render_audit_controls(story: list, ctx: PdfContext) -> None:
         )
     )
 
-    rows = [
-        ["Requirement", "Vera Implementation"],
-        [
+    # Wrap every cell in a Paragraph so the right column reflows onto
+    # multiple lines instead of clipping at the page edge. This was
+    # Bug 2 in the hotfix brief: ReportLab does not word-wrap plain
+    # ``str`` cells, so long sentences ran off the right margin and
+    # truncated mid-word ("SHA-", "all reco", "staff_a", "when configu").
+    requirement_rows: list[tuple[str, str]] = [
+        (
             "Activity recording",
             "Every AI-driven decision is committed as an "
             "ActionRecord row chained to its predecessor via "
             "SHA-256. The previous_hash + record_hash columns "
             "form an append-only chain.",
-        ],
-        [
+        ),
+        (
             "Tamper evidence",
             "Periodic Checkpoints seal the chain head with a "
             "KMS-issued signature and a Merkle root of all "
             "records sealed in the interval.",
-        ],
-        [
+        ),
+        (
             "Activity examination",
             "Customer admins read the chain via the dashboard "
             "and SDK; Vera staff reads write a row to "
             "staff_audit_log so the Customer sees who looked at "
             "what.",
-        ],
-        [
+        ),
+        (
             "Authentication of activity origin",
             "ActionRecord.authorized_by + delegation_chain "
             "capture the upstream caller; the chain hash binds "
             "those fields cryptographically.",
-        ],
-        [
+        ),
+        (
             "Retention",
             "Customer-owned S3 mirror with Object Lock "
             "(COMPLIANCE mode, 7-year retention) when configured "
             "via the Off-Vera mirror onboarding flow.",
-        ],
+        ),
     ]
-    table = Table(rows, colWidths=[1.7 * inch, 4.3 * inch])
+    rows: list[list[object]] = [
+        [
+            Paragraph("Requirement", _TABLE_HEADER_CELL_STYLE),
+            Paragraph("Vera Implementation", _TABLE_HEADER_CELL_STYLE),
+        ]
+    ]
+    for label, body in requirement_rows:
+        rows.append(
+            [
+                Paragraph(label, _TABLE_BODY_CELL_STYLE_10),
+                Paragraph(body, _TABLE_BODY_CELL_STYLE_10),
+            ]
+        )
+    # Explicit column widths in points. 140 + 328 = 468pt fits inside
+    # the 504pt content area; the wider right column gives the
+    # implementation text room to wrap onto 3–4 lines per row instead
+    # of overflowing.
+    table = Table(rows, colWidths=[140, 328], repeatRows=1)
     table.setStyle(_table_style_default())
     story.append(table)
 
