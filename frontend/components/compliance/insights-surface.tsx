@@ -3,8 +3,8 @@
 /**
  * ComplianceInsightsSurface — Phase 4 Wave 2 PR C2.
  *
- * Drops into the Compliance page's ``data-testid="ai-insights-slot"``
- * div (C1). Five visible states:
+ * Mounted at the bottom of the Compliance page (C1). Five visible
+ * states:
  *
  *   1. Initial — "Show insights" button.
  *   2. Loading — spinner + "Generating insights…".
@@ -17,9 +17,7 @@
  *
  * Self-contained: the surface holds its own ``useMutation`` against
  * ``generateComplianceInsights`` so any page that drops it in gets the
- * full lifecycle without further wiring. This PR builds the standalone
- * component and tests; an integrator PR swaps C1's slot div for
- * ``<ComplianceInsightsSurface />`` once both PRs merge.
+ * full lifecycle without further wiring.
  */
 
 import * as React from "react";
