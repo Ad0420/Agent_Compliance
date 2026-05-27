@@ -35,7 +35,9 @@ import { StatusDot } from "@/components/ui/status-indicator";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Loading } from "@/components/ui/loading";
 import { ChainIntegrityTile } from "@/components/home/chain-integrity-tile";
+import { SetupCta } from "@/components/home/setup-cta";
 import { ResumeSetupBanner } from "@/components/wizard/resume-setup-banner";
+import { useOnboardingWizard } from "@/hooks/use-onboarding-wizard";
 import { formatRelativeTime } from "@/lib/utils";
 import type { ActionRecord } from "@/lib/api-types";
 
@@ -77,6 +79,7 @@ export default function HomePage() {
   const { data: chain, isLoading: chainLoading } = useChainVerification();
   const { data: integrity, isLoading: integrityLoading } = useChainIntegrity();
   const { data: actionsData, isLoading: actionsLoading } = useActions({ limit: RECENT_ACTIVITY_LIMIT });
+  const wizard = useOnboardingWizard();
 
   const actions = actionsData?.records ?? [];
   const latestAction = actions[0];
@@ -91,6 +94,29 @@ export default function HomePage() {
     chain !== undefined &&
     chain.records_checked === 0 &&
     !hasAnyActivity;
+
+  // Cold sign-up launch surface — Phase 5 follow-up.
+  //
+  // Renders ONLY when the org has zero recorded actions AND the
+  // onboarding wizard has never completed. The existing
+  // ``ResumeSetupBanner`` covers the "SDK firing but wizard
+  // incomplete" case (its own gates require ``actions > 0`` AND a
+  // partially-started wizard), so this CTA does NOT conflict — both
+  // can be in scope but in practice exactly one renders for any
+  // given org state.
+  //
+  // Both gates matter: a brand-new sign-up with zero activity should
+  // see this card so they have an entry point to the wizard (which
+  // is otherwise mounted in the layout but invisible). An org that
+  // has already completed setup but hasn't deployed the SDK yet
+  // should NOT see it again.
+  const totalActions =
+    actionsData?.total ?? actionsData?.records?.length ?? 0;
+  const showSetupCta =
+    !actionsLoading &&
+    !wizard.isLoading &&
+    totalActions === 0 &&
+    wizard.completedAt === null;
 
   return (
     <div className="mx-auto max-w-5xl space-y-12 py-2">
@@ -117,6 +143,18 @@ export default function HomePage() {
             : "No activity recorded yet."}
         </p>
       </header>
+
+      {/* ───────────────── Cold sign-up CTA ─────────────────
+          Phase 5 follow-up. Primary launch surface for the 5-question
+          onboarding wizard when the org has zero activity AND the
+          wizard has never completed. Renders ABOVE the empty-state
+          StatusDot and ABOVE "Needs your attention" so a fresh
+          sign-up's first scroll lands on the next action they should
+          take. Sibling of ResumeSetupBanner (which handles the
+          SDK-firing-but-wizard-incomplete case). */}
+      {showSetupCta && (
+        <SetupCta onStart={() => wizard.open()} testId="home-setup-cta" />
+      )}
 
       {isFullyEmpty ? (
         <section aria-label="Status">
