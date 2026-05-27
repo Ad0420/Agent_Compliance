@@ -40,6 +40,7 @@ import {
   CoverageMatrixFull,
 } from "@/components/dashboard/coverage-matrix";
 import { BaaUploadWidget } from "@/components/dashboard/baa-upload";
+import { AuditPdfHistory } from "@/components/customers/audit-pdf-history";
 import { AuditPdfModal } from "@/components/customers/audit-pdf-modal";
 import { DecisionsTab } from "@/components/customers/decisions-tab";
 import { VerificationPanel } from "@/components/customers/verification-panel";
@@ -493,6 +494,11 @@ function PopulatedSections({ customer }: { customer: Customer }) {
 
           {/* BAA management — show current state + allow re-upload. */}
           <BaaManagement customer={customer} />
+
+          {/* Wave 2 C4 — Generated audit PDFs history.
+              The Generate button itself lives in the page header
+              (C3-scaffold), so this section's empty state has no CTA. */}
+          <AuditPdfHistory customer_id={customer.id} />
         </TabsContent>
 
         <TabsContent value="decisions" className="pt-4">
