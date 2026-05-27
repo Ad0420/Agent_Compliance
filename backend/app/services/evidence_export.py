@@ -559,9 +559,21 @@ async def build_evidence_bundle_tar_gz(
             }
         )
 
+    # ``vera_version`` / ``exported_at`` / ``checkpoint_count`` /
+    # ``record_count`` are the four keys the SDK's offline verifier
+    # (``sdk/vera/verify/offline.py``, Wave 3C.1) requires to even open
+    # the bundle. They were missing in the original Wave 3D.2 exporter
+    # output, so ``vera verify --offline`` against any dashboard-
+    # produced bundle failed at the manifest gate. Found during Phase 3
+    # Scenario 4 acceptance testing — this is the headline regulator-
+    # ready gate. Keep the existing dashboard-only keys too — the SDK
+    # ignores unknowns.
+    _generated_at = _format_iso_ms(_naive_utc_now())
     manifest = {
         "schema_version": SCHEMA_VERSION,
-        "generated_at": _format_iso_ms(_naive_utc_now()),
+        "vera_version": str(SCHEMA_VERSION),
+        "generated_at": _generated_at,
+        "exported_at": _generated_at,
         "tenant_id": customer.tenant_id,
         "customer_display_name": customer.display_name,
         "org_id": customer.org_id,
@@ -571,7 +583,9 @@ async def build_evidence_bundle_tar_gz(
             "end": (end - timedelta(microseconds=1)).date().isoformat(),
         },
         "checkpoints": manifest_checkpoints,
+        "checkpoint_count": len(manifest_checkpoints),
         "records": manifest_records,
+        "record_count": len(manifest_records),
         "warnings": sorted(warnings),
     }
     manifest_body = json.dumps(
