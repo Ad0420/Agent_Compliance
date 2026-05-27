@@ -88,6 +88,14 @@ REV_PREV = "t0o2p3q4r5s6"
 REV_NEW = "w4t7u8v9w0x1"
 MIGRATION_FILE = "w4t7u8v9w0x1_add_org_logo_and_accent_color.py"
 
+# Default SVG body used by ``_make_svg_bytes`` when the caller passes no
+# explicit body. Held at module scope (rather than inline in the
+# f-string) because Python 3.11 disallows backslashes inside f-string
+# expression parts: embedding the escaped ``\"`` quotes directly in the
+# ``{body or "..."}`` expression triggers ``SyntaxError`` at import time
+# on 3.11, even though 3.12+ accepts it. See PEP 701.
+_DEFAULT_SVG_BODY = '<rect x="10" y="10" width="80" height="80" fill="#3366cc"/>'
+
 
 # ── Fixture helpers ─────────────────────────────────────────
 
@@ -119,7 +127,7 @@ def _make_svg_bytes(extra_attrs: str = "", body: str = "") -> bytes:
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         f'<svg xmlns="http://www.w3.org/2000/svg" '
         f'viewBox="0 0 100 100" width="100" height="100" {extra_attrs}>\n'
-        f'  {body or "<rect x=\"10\" y=\"10\" width=\"80\" height=\"80\" fill=\"#3366cc\"/>"}\n'
+        f'  {body or _DEFAULT_SVG_BODY}\n'
         f"</svg>\n"
     )
     return svg.encode("utf-8")
