@@ -55,11 +55,11 @@ import { toast } from "sonner";
 
 import { useAuth } from "@/hooks/use-auth";
 import {
+  ApiError,
+  generateTemplates,
   getWizardAnswers,
   submitWizardAnswers,
-  ApiError,
 } from "@/lib/api-client";
-import { generateTemplates } from "@/lib/templates-api";
 import type {
   WizardAnswers,
   WizardAnswersResponse,

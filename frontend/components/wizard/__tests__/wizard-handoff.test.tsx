@@ -37,10 +37,10 @@ import {
   type UseOnboardingWizardReturn,
 } from "@/hooks/use-onboarding-wizard";
 import {
+  ApiError,
   generateTemplates,
   type TemplateGenerateResponse,
-} from "@/lib/templates-api";
-import { ApiError } from "@/lib/api-client";
+} from "@/lib/api-client";
 import type {
   WizardAnswers,
   WizardAnswersResponse,
@@ -94,38 +94,38 @@ export const test_wizard_success_response: WizardAnswersResponse = {
 
 export const test_generate_success_response: TemplateGenerateResponse = {
   generated: [
-    "phi_redaction_policy",
-    "incident_response_plan",
-    "human_review_workflow",
-    "model_card",
-    "data_use_attestation",
+    "hipaa_risk_analysis",
+    "section_1557_ndp",
+    "ai_tool_inventory",
+    "workforce_training_outline",
+    "ai_care_disclosure",
   ],
   skipped_attested: [],
 };
 
 // Re-run after a previous completion: 4 of 5 already counsel-attested.
 export const test_generate_idempotent_response: TemplateGenerateResponse = {
-  generated: ["model_card"],
+  generated: ["ai_tool_inventory"],
   skipped_attested: [
-    "phi_redaction_policy",
-    "incident_response_plan",
-    "human_review_workflow",
-    "data_use_attestation",
+    "hipaa_risk_analysis",
+    "section_1557_ndp",
+    "workforce_training_outline",
+    "ai_care_disclosure",
   ],
 };
 
 // ── Pure-logic runtime self-checks ────────────────────────────────────
 
 // test_submit_success_calls_generate_templates — the hook exports
-// ``generateTemplates`` from ``@/lib/templates-api`` and binds it
+// ``generateTemplates`` from ``@/lib/api-client`` and binds it
 // inside ``submit``. We can't render the hook here (no test runtime),
 // but we CAN pin the contract surface a render test will reach for.
 function _check_submit_success_calls_generate_templates(): void {
   // The hook imports ``generateTemplates`` and the export must be a
-  // function. A rename in templates-api would break this pin AND tsc.
+  // function. A rename in api-client would break this pin AND tsc.
   if (typeof generateTemplates !== "function") {
     throw new Error(
-      "generateTemplates must be an exported function on @/lib/templates-api",
+      "generateTemplates must be an exported function on @/lib/api-client",
     );
   }
   // The response shape must carry the two keys the hook reads
