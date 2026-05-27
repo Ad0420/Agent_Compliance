@@ -49,13 +49,16 @@
  */
 
 import * as React from "react";
+import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import { useAuth } from "@/hooks/use-auth";
 import {
+  ApiError,
+  generateTemplates,
   getWizardAnswers,
   submitWizardAnswers,
-  ApiError,
 } from "@/lib/api-client";
 import type {
   WizardAnswers,
@@ -68,6 +71,42 @@ import type {
   WizardReviewChannel,
 } from "@/lib/api-types";
 import { TOTAL_STEPS } from "@/components/wizard/questions";
+
+/**
+ * Post-completion handoff — Phase 5 PR B2.
+ *
+ * On successful wizard submission with ``completed=true`` we kick off
+ * ``POST /v1/templates/generate`` (idempotent on the backend), then
+ * route the operator to the Templates page (B1) so they can review +
+ * counsel-attest each of the five generated templates.
+ *
+ * Failure modes:
+ *  - If ``generateTemplates`` rejects we keep the wizard close — the
+ *    wizard's own POST already succeeded and the operator can re-run
+ *    generation from the Compliance > Templates menu. We surface the
+ *    failure via ``generateError`` (rendered in the wizard footer if
+ *    still open, also sent through a sonner toast for the redirected
+ *    case).
+ *
+ * Why the toast lives in the hook (not the wizard component):
+ *  - The wizard component unmounts the moment ``isOpen`` flips false,
+ *    so a hook-local toast survives the modal close + navigation. The
+ *    sonner Toaster is mounted in ``app/providers.tsx`` once at the
+ *    root.
+ *
+ * Strict-mode safety: we do NOT auto-fire generate inside ``submit``'s
+ * synchronous body — it runs after the POST resolves and we read its
+ * return value before navigating, so a re-render during the await
+ * window can't double-trigger.
+ */
+export const TEMPLATES_GENERATED_TOAST = (count: number): string =>
+  `${count} templates generated. Review with counsel before sign-off.`;
+
+export const TEMPLATES_GENERATE_FAILED_MESSAGE =
+  "Couldn't generate templates automatically. Open Templates from the Compliance menu to generate manually.";
+
+export const TEMPLATES_REDIRECT_PATH =
+  "/compliance/templates?generated=true";
 
 // Step index → wizard field. Keep in sync with the modal step order.
 export type WizardStep = 0 | 1 | 2 | 3 | 4;
@@ -218,6 +257,15 @@ export interface UseOnboardingWizardReturn {
   completedAt: string | null;
   /** Inline submit error from the most recent POST attempt. */
   submitError: string | null;
+  /**
+   * Inline error from the post-completion ``POST /v1/templates/generate``
+   * call. Non-null when the wizard saved cleanly but template
+   * generation failed — the wizard still closes; this is surfaced via
+   * the same inline-alert slot as ``submitError`` for the brief window
+   * before navigation and via a sonner toast for the after-redirect
+   * case.
+   */
+  generateError: string | null;
   /** Network status. */
   isLoading: boolean;
   isSubmitting: boolean;
@@ -234,7 +282,12 @@ export interface UseOnboardingWizardReturn {
   setDecisionVolume: (next: WizardDecisionVolume) => void;
   setChannel: (next: WizardReviewChannel) => void;
   setPrivacyOfficer: (next: WizardPrivacyOfficer) => void;
-  /** POST with completed=true. Closes the modal on success. */
+  /**
+   * POST with completed=true. On success closes the modal AND fires
+   * the post-completion handoff: ``generateTemplates()`` →
+   * ``router.push(TEMPLATES_REDIRECT_PATH)``. A failure of the
+   * generate step does NOT block the close — see ``generateError``.
+   */
   submit: () => Promise<void>;
 }
 
@@ -255,6 +308,7 @@ export function OnboardingWizardProvider({
 }: OnboardingWizardProviderProps) {
   const { organization, isSignedIn } = useAuth();
   const queryClient = useQueryClient();
+  const router = useRouter();
   const orgId = organization?.id ?? null;
 
   const [isOpen, setIsOpen] = React.useState(false);
@@ -264,6 +318,7 @@ export function OnboardingWizardProvider({
   const [isLoading, setIsLoading] = React.useState(false);
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [submitError, setSubmitError] = React.useState<string | null>(null);
+  const [generateError, setGenerateError] = React.useState<string | null>(null);
   // Track whether we've successfully hydrated from server at least once
   // for the current org. Prevents the resume-step from landing on 0
   // before the GET completes.
@@ -348,6 +403,7 @@ export function OnboardingWizardProvider({
   const close = React.useCallback(() => {
     setIsOpen(false);
     setSubmitError(null);
+    setGenerateError(null);
   }, []);
 
   const goToStep = React.useCallback((step: WizardStep) => {
@@ -414,6 +470,7 @@ export function OnboardingWizardProvider({
   const submit = React.useCallback(async () => {
     setIsSubmitting(true);
     setSubmitError(null);
+    setGenerateError(null);
     try {
       const body: WizardAnswersSubmission = {
         answers,
@@ -428,7 +485,41 @@ export function OnboardingWizardProvider({
       // the resume banner disappears immediately.
       queryClient.invalidateQueries({ queryKey: ["wizard-answers"] });
       queryClient.invalidateQueries({ queryKey: ["organization"] });
-      setIsOpen(false);
+
+      // ── Phase 5 PR B2 — Post-completion handoff ─────────────────
+      //
+      // Now that the wizard has saved cleanly we kick off template
+      // generation and route the operator to the Templates page so
+      // they can review + counsel-attest each of the five generated
+      // documents. The backend is idempotent on re-submission so
+      // re-running the wizard after a previous completion is safe.
+      //
+      // Failure of the generate step must NOT block the wizard from
+      // closing — the wizard's POST already succeeded. We surface
+      // the failure via ``generateError`` and a toast (so the
+      // operator sees it even after navigation, if it lands).
+      try {
+        const generated = await generateTemplates();
+        // Clear the on-screen modal first so the navigation lands on
+        // a clean surface, then fire the toast (sonner mounts at the
+        // root so it survives the page transition) and push.
+        setIsOpen(false);
+        const count = generated.generated.length + generated.skipped_attested.length;
+        toast.success(TEMPLATES_GENERATED_TOAST(count));
+        router.push(TEMPLATES_REDIRECT_PATH);
+      } catch (genErr) {
+        // Wizard close still happens — the operator gets the inline
+        // error in the modal footer (if still focused) and a toast
+        // backup (in case they've already clicked away). Both point
+        // them at the manual recovery path.
+        const message =
+          genErr instanceof ApiError && genErr.message
+            ? `${TEMPLATES_GENERATE_FAILED_MESSAGE} (${genErr.message})`
+            : TEMPLATES_GENERATE_FAILED_MESSAGE;
+        setGenerateError(message);
+        toast.error(TEMPLATES_GENERATE_FAILED_MESSAGE);
+        setIsOpen(false);
+      }
     } catch (err) {
       if (err instanceof ApiError) {
         setSubmitError(err.message || "Couldn't save your answers.");
@@ -438,7 +529,7 @@ export function OnboardingWizardProvider({
     } finally {
       setIsSubmitting(false);
     }
-  }, [answers, orgId, queryClient]);
+  }, [answers, orgId, queryClient, router]);
 
   const canAdvance = React.useMemo(
     () => isStepValid(currentStep, answers),
@@ -451,6 +542,7 @@ export function OnboardingWizardProvider({
     answers,
     completedAt,
     submitError,
+    generateError,
     isLoading,
     isSubmitting,
     canAdvance,

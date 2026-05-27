@@ -33,6 +33,7 @@ from .routes import (
     records_router,
     dashboard_chain_integrity_router,
     compliance_router,
+    templates_router,
 )
 from .routes.dashboard_demo import router as dashboard_demo_router
 from .routes.dashboard_api_keys import router as dashboard_api_keys_router
@@ -244,6 +245,10 @@ app.include_router(dashboard_chain_integrity_router, prefix="/v1")
 # write a ``staff_audit_log`` row (resource_type='compliance_posture'); the
 # response carries no PHI so ``redacted=False``.
 app.include_router(compliance_router, prefix="/v1")
+# Phase 5 PR A — counsel-attestable Markdown templates. CRUD + attest
+# endpoints under /v1/templates. All endpoints require ``write``
+# permission; org_id is sourced from the auth context (never the body).
+app.include_router(templates_router, prefix="/v1")
 # Clerk webhooks — signature-verified via Svix, no bearer auth. Mounted at
 # /v1 so the public path is /v1/clerk/webhooks (matches the env.example doc).
 app.include_router(clerk_webhooks_router, prefix="/v1")

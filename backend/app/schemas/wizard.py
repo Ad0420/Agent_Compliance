@@ -57,8 +57,23 @@ ReviewChannel = Literal[
 # allow-listed optional add-ons. Extra tokens are rejected at validation
 # time — the frontend renders the same allow-list, and the server is the
 # enforcement boundary.
+#
+# Phase 5 PR A — extended the allow-list to include the per-state slugs
+# the AI-Assisted Care Disclosure template generator branches on
+# (``california``, ``texas``, ``utah``). ``us_ca`` remains in the list
+# as a legacy alias so wizard answers persisted before Phase 5 keep
+# round-tripping. The template generator treats both ``california`` and
+# ``us_ca`` as "include the CA AB 489 clause"; ``other_state`` remains
+# the v2 placeholder.
 _JURISDICTION_ALLOWED = frozenset(
-    {"us_federal", "us_ca", "other_state"}
+    {
+        "us_federal",
+        "us_ca",  # legacy alias for california
+        "california",
+        "texas",
+        "utah",
+        "other_state",
+    }
 )
 
 # RFC-lightweight check for the "other_state" custom token so we don't

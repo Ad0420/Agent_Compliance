@@ -87,6 +87,21 @@ export function OnboardingWizard() {
               {wizard.submitError}
             </p>
           ) : null}
+          {/* Phase 5 PR B2 — surface a failure of the post-completion
+              POST /v1/templates/generate handoff inline. The wizard
+              itself saved cleanly; the modal still closes shortly
+              after this paints (the submit flow flips ``isOpen=false``
+              on the generate error path too). A sonner toast backs
+              this up for the case where the operator has already
+              clicked through to the dashboard before noticing. */}
+          {wizard.generateError ? (
+            <p
+              role="alert"
+              className="mt-4 text-[13px] text-[color:var(--brick)]"
+            >
+              {wizard.generateError}
+            </p>
+          ) : null}
         </div>
         <WizardFooter />
       </DialogContent>
