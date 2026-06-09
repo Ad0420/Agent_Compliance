@@ -1,7 +1,10 @@
+import os
 import sys
 import httpx
 
-API_KEY = "al_live_jVFRycQFZAQyfzeSo0ML_XQhXq1EiideBqc0f3bNEJg"
+# Local seed helper. Supply a real key via the VERA_API_KEY env var, e.g.
+#   VERA_API_KEY=al_live_xxx python backend/seed.py
+API_KEY = os.environ.get("VERA_API_KEY", "al_live_replace_me")
 
 client = httpx.Client(
     base_url="http://localhost:8000",

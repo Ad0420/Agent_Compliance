@@ -32,7 +32,7 @@ All `/api/*` endpoints **except** `POST /api/auth/login` and
 POST /api/auth/login
 Content-Type: application/json
 
-{ "passkey": "qwertyuiop24072004" }
+{ "passkey": "demo-passkey-change-me" }
 ```
 
 ```http
