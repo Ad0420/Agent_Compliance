@@ -92,7 +92,7 @@ make up
 Then in the browser:
 
 1. Sign in with the passkey from `.env.local`. The default is
-   `qwertyuiop24072004`.
+   `demo-passkey-change-me`.
 2. Pick a fixture transcript from the dropdown, or paste a custom one. The
    fixtures live in `simulator/customers/scribemd/fixtures/encounters.py`
    and cover routine, high-risk, and adversarial cases.

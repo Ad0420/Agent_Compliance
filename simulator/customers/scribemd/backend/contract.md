@@ -32,7 +32,7 @@ require the session cookie. The SSE stream included.
 POST /api/auth/login
 Content-Type: application/json
 
-{ "passkey": "qwertyuiop24072004" }
+{ "passkey": "demo-passkey-change-me" }
 ```
 
 ```http

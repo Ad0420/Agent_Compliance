@@ -20,7 +20,7 @@ class Settings:
     # Auth
     passkey: str = field(
         default_factory=lambda: os.environ.get(
-            "TRIAGEGUARD_PASSKEY", "qwertyuiop24072004"
+            "TRIAGEGUARD_PASSKEY", "demo-passkey-change-me"
         )
     )
     signed_in_as: str = field(
