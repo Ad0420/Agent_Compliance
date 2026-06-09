@@ -26,7 +26,7 @@ pip install -e sdk
 pip install -e simulator
 
 # env vars (or set them inline)
-export SCRIBEMD_PASSKEY=qwertyuiop24072004
+export SCRIBEMD_PASSKEY=demo-passkey-change-me
 export VERA_API_URL=https://api.usevera.xyz
 export VERA_API_KEY_SCRIBEMD=al_live_...    # from `bootstrap_orgs.py`
 export OPENAI_API_KEY=sk-...
@@ -42,7 +42,7 @@ to allow that origin by default.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SCRIBEMD_PASSKEY` | `qwertyuiop24072004` | Single passkey shared by every demo session. |
+| `SCRIBEMD_PASSKEY` | `demo-passkey-change-me` | Single passkey shared by every demo session. |
 | `SCRIBEMD_USER_LABEL` | `Dr. Adams` | What `/api/auth/me` returns once signed in. |
 | `SCRIBEMD_DB_URL` | `sqlite+aiosqlite:///./scribemd_backend.db` | Operational-state DB. |
 | `SCRIBEMD_APPROVAL_TIMEOUT_SECONDS` | `300` | Soft cap on physician HITL wait. After this, the workflow auto-rejects so it doesn't block forever. |

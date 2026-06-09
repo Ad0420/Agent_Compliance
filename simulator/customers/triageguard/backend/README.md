@@ -27,7 +27,7 @@ pip install -e sdk
 pip install -e simulator
 
 # env vars (or set them inline)
-export TRIAGEGUARD_PASSKEY=qwertyuiop24072004
+export TRIAGEGUARD_PASSKEY=demo-passkey-change-me
 export VERA_API_URL=https://api.usevera.xyz
 export VERA_API_KEY_TRIAGEGUARD=al_live_...    # from `bootstrap_orgs.py`
 export OPENAI_API_KEY=sk-...
@@ -43,7 +43,7 @@ configured to allow that origin by default.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `TRIAGEGUARD_PASSKEY` | `qwertyuiop24072004` | Single passkey shared by every demo session. |
+| `TRIAGEGUARD_PASSKEY` | `demo-passkey-change-me` | Single passkey shared by every demo session. |
 | `TRIAGEGUARD_USER_LABEL` | `Nurse Rivera, RN` | What `/api/auth/me` returns once signed in. |
 | `TRIAGEGUARD_DB_URL` | `sqlite+aiosqlite:///./triageguard_backend.db` | Operational-state DB. |
 | `TRIAGEGUARD_REVIEW_TIMEOUT_SECONDS` | `300` | Soft cap on nurse HITL wait. After this, the workflow auto-escalates so it doesn't block forever. |

@@ -97,7 +97,7 @@ make up
 Then in the browser:
 
 1. Sign in with the passkey from `.env.local`. The default is
-   `qwertyuiop24072004`. The session lands as `triageguard_session` and
+   `demo-passkey-change-me`. The session lands as `triageguard_session` and
    `GET /api/auth/me` returns the persona ("Nurse Rivera, RN").
 2. Pick a fixture symptom set from the dropdown, or paste a custom one. The
    fixtures live in `simulator/customers/triageguard/fixtures/symptoms.py`
