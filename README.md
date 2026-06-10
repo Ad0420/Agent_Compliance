@@ -556,40 +556,26 @@ Before deploying to real users:
 ## Testing
 
 ```bash
-# Backend — 88 tests
-cd backend && python -m pytest tests/ -v
+# Backend (~1,290 tests; needs the local SDK for cross-stack tests)
+cd backend && pip install -r requirements.txt && pip install -e ../sdk && python -m pytest tests/ -v
 
-# SDK — 6 tests
-cd sdk && python -m pytest tests/ -v
+# SDK (~1,160 tests)
+cd sdk && pip install -e ".[dev]" && python -m pytest tests/ -v
 
-# Frontend — build check (no test suite yet)
-cd frontend && npm run build
+# Frontend
+cd frontend && npm run lint && npm run build
 ```
 
-**94 total tests, all passing.** Tests use an in-memory SQLite database, no external services required.
-
-### What's tested
-
-| Area | Tests | What's Covered |
-|------|-------|----------------|
-| API endpoints | 22 | CRUD for actions, agents, orgs, API keys, verification, checkpoints, auth errors |
-| Authentication | 5 | Key generation, correct/wrong key, revocation, permission checking |
-| Hash chain | 4 | Single insert, sequential chaining, batch insert, full chain verification |
-| Hardening | 46 | Immutability triggers, tamper detection, concurrency, cross-org isolation, checkpoint tampering, permission matrix, input validation, batch atomicity, API key expiry, data_subject_id filter, agent auto-registration, actions filtering, pagination |
-| Hashing | 11 | Canonical JSON (sorting, null filtering, determinism), hash computation, record verification |
-| Register endpoint | 13 | Happy path, response shape, no-auth required, key immediately usable, admin permissions, chain init, name stripping, independent orgs, all validation edge cases |
-| SDK decorators | 6 | Success/failure recording, no-client fallback, input capture, default client |
+The backend suite covers API endpoints, auth/RBAC, hash-chain integrity, immutability triggers, tamper detection, cross-org isolation, the policy engine, HITL approvals, exports, rate limiting, and webhooks. The SDK suite covers the sync/async clients, decorators, error mapping, redaction, and the LangChain / OpenAI / CrewAI / Anthropic integrations. Backend tests use an in-memory SQLite database; no external services are required. Alembic migrations are exercised against PostgreSQL 16 in CI.
 
 ### What's NOT tested
 
 | Gap | Impact |
 |-----|--------|
-| AWS KMS (`AWSKMS` class) | Requires real AWS credentials |
-| S3 WORM store (`S3WORMStore`) | WORM guarantee unverified |
-| OpenAI / CrewAI / LangChain integrations | No mocked or integration tests |
-| Rate limiting middleware | Tested manually only |
-| Alembic migrations on PostgreSQL | Migration verified on SQLite only |
-| Frontend | No unit, integration, or E2E tests |
+| AWS KMS (`AWSKMS` class) | Requires real AWS credentials — not exercised in CI |
+| S3 WORM store (`S3WORMStore`) | WORM behavior unverified against a real Object Lock bucket |
+| Backend suite in CI | Runs locally; not yet wired into a GitHub Actions workflow |
+| Frontend | Lint, type-check, and build run in CI; component test coverage is partial |
 
 ---
 
@@ -597,118 +583,27 @@ cd frontend && npm run build
 
 ```
 .
-├── .gitignore                       Ignores __pycache__, *.db, node_modules, .next, .env files
-├── docker-compose.yml               Dev: PostgreSQL 16 + API with hot-reload
-├── docker-compose.prod.yml          Prod: Gunicorn, 4 workers, DB port closed
-├── README.md                        This file
-│
-├── backend/
-│   ├── requirements.txt             Python dependencies
-│   ├── setup_local.py               Bootstrap: creates DB, org, API key
-│   ├── Dockerfile                   Python 3.12-slim container
-│   ├── alembic.ini                  Migration configuration
-│   ├── .env.example                 Template for all required environment variables
-│   ├── alembic/
-│   │   ├── env.py                   Migration env (async URL conversion)
-│   │   └── versions/               3 migrations: initial schema, data_subject_id + expires_at, FK cascade constraints
-│   ├── migrations/
-│   │   └── init.sql                 PostgreSQL schema (tables + triggers)
+├── backend/                  FastAPI app
 │   ├── app/
-│   │   ├── main.py                  FastAPI app, lifespan, CORS, middleware
-│   │   ├── config.py                Pydantic Settings (all env vars)
-│   │   ├── database.py              Async SQLAlchemy engine + session factory
-│   │   ├── models/
-│   │   │   ├── organization.py      Multi-tenant org
-│   │   │   ├── api_key.py           SHA-256 hashed API keys with RBAC
-│   │   │   ├── agent.py             Registered AI agents
-│   │   │   ├── chain_state.py       Per-org chain head (sequence + hash)
-│   │   │   ├── action_record.py     30+ field audit record (the core entity)
-│   │   │   └── checkpoint.py        Signed snapshots with Merkle root
-│   │   ├── schemas/                 Pydantic request/response models
-│   │   ├── routes/
-│   │   │   ├── actions.py           CRUD + query with filters
-│   │   │   ├── agents.py            Agent registration
-│   │   │   ├── verification.py      Chain + record verification
-│   │   │   ├── checkpoints.py       Checkpoint create/list/verify
-│   │   │   ├── organizations.py     Org CRUD
-│   │   │   ├── api_keys.py          Key create/list/revoke
-│   │   │   ├── register.py          Self-serve signup (no auth required)
-│   │   │   └── export.py            CSV stream + PDF generation endpoints
-│   │   ├── services/
-│   │   │   ├── hashing.py           *** HASHABLE_FIELDS, canonical JSON, SHA-256
-│   │   │   ├── chain.py             Chain building with per-org locks
-│   │   │   ├── verification.py      Streaming verification (500 records/chunk)
-│   │   │   ├── checkpoint.py        Signed checkpoints + Merkle + external proof
-│   │   │   ├── kms.py               LocalKMS (HMAC-SHA256) + AWSKMS
-│   │   │   ├── external_store.py    LocalFileStore + S3WORMStore
-│   │   │   ├── merkle.py            Binary Merkle tree (proof gen/verify)
-│   │   │   ├── immutability.py      SQLite trigger installation
-│   │   │   ├── export.py            CSV streaming generator + PDF builder (fpdf2)
-│   │   │   └── auth.py              API key generation, auth, permissions
-│   │   └── middleware/
-│   │       └── rate_limit.py        Sliding-window per API key
-│   └── tests/                       88 tests (test_api, test_auth, test_chain, test_hardening, test_hashing, test_register)
-│
-├── sdk/
-│   ├── pyproject.toml               PyPI metadata (name=vera-sdk, build backend)
-│   ├── setup.py                     Package definition (pip install -e .)
-│   ├── README.md                    PyPI-facing readme
-│   └── vera/
-│       ├── __init__.py              Public API exports
-│       ├── client.py                Sync client (retry + exponential backoff)
-│       ├── async_client.py          Async client (background queue, batch flush)
-│       ├── decorator.py             @audit (sync functions)
-│       ├── async_decorator.py       @async_audit (async functions)
-│       └── integrations/
-│           ├── langchain.py         BaseCallbackHandler (LLM, chain, tool, agent)
-│           ├── openai.py            AuditedOpenAI wrapper (non-streaming only)
-│           ├── anthropic.py         AuditedAnthropic wrapper (non-streaming only)
-│           └── crewai.py            BaseTool monkey-patch
-│
-└── frontend/
-    ├── package.json                 Dependencies (Next.js 16, React 19, Radix, TanStack)
-    ├── components.json              shadcn/ui configuration
-    ├── lib/
-    │   ├── api-client.ts            Typed fetch wrapper (Bearer auth, 401 redirect)
-    │   ├── api-types.ts             TypeScript interfaces matching backend schemas
-    │   ├── auth.ts                  localStorage helpers (API key, admin flag)
-    │   ├── constants.ts             UI constants (colors, labels)
-    │   └── utils.ts                 cn(), formatDate(), truncateHash()
-    ├── hooks/
-    │   ├── use-auth.tsx             AuthContext + AuthProvider + useAuth hook
-    │   ├── use-actions.ts           TanStack Query for actions
-    │   ├── use-agents.ts            TanStack Query for agents
-    │   ├── use-checkpoints.ts       TanStack Query for checkpoints
-    │   ├── use-verification.ts      TanStack Query for chain verification
-    │   ├── use-organization.ts      TanStack Query for org info
-    │   └── use-api-keys.ts          TanStack Query for API key management
-    ├── components/
-    │   ├── ui/                      shadcn/ui primitives (17 components)
-    │   ├── layout/                  Sidebar, Topbar, ProtectedRoute
-    │   ├── shared/                  StatusBadge, JsonViewer, Pagination
-    │   └── dashboard/              ChainStatusCard, StatsRow, ActionChart, GettingStarted (empty state)
-    └── app/
-        ├── layout.tsx               Root layout (dark theme, Geist fonts)
-        ├── providers.tsx            QueryClient + Auth + Tooltip providers
-        ├── globals.css              Tailwind + dark theme variables
-        ├── page.tsx                 Landing page (hero, features, CTA → /register)
-        ├── login/page.tsx           API key login
-        ├── register/page.tsx        Self-serve signup (org name → key display → dashboard)
-        └── (dashboard)/             Protected route group
-            ├── layout.tsx           Sidebar + topbar + auth guard
-            ├── page.tsx             Redirect → /dashboard
-            ├── dashboard/page.tsx   Dashboard (status, stats, chart, recent; getting-started card when empty)
-            ├── actions/
-            │   ├── page.tsx         Filterable list with pagination + Export CSV button
-            │   └── [id]/page.tsx    Detail view with JSON viewer
-            ├── verification/
-            │   └── page.tsx         Chain integrity + checkpoint management + Download Report button
-            ├── agents/
-            │   ├── page.tsx         Agent list
-            │   └── [id]/page.tsx    Agent detail + filtered actions
-            └── settings/
-                └── page.tsx         Org info + API key CRUD (admin only)
+│   │   ├── models/           SQLAlchemy models (orgs, API keys, agents, action records, checkpoints, policies, approvals, ...)
+│   │   ├── schemas/          Pydantic request/response models
+│   │   ├── routes/           ~30 route modules (actions, verification, checkpoints, policies, approvals, export, ...)
+│   │   ├── services/         ~40 service modules (hashing, chain, KMS, Merkle, policy engine, PDF, webhooks, ...)
+│   │   └── middleware/       Rate limiting
+│   ├── alembic/              Database migrations
+│   ├── setup_local.py        Bootstrap: creates DB, org, API key
+│   └── tests/                Backend test suite
+├── sdk/                      Python SDK (PyPI: vera-sdk)
+│   └── vera/                 Sync/async clients, @audit decorators, CLI, framework integrations
+├── frontend/                 Next.js dashboard + landing page
+├── simulator/                Example customer apps used for end-to-end testing
+├── scripts/                  CI gate scripts (copy linter, IAM tier check)
+├── docs/                     ADRs and integration guides
+├── docker-compose.yml        Dev: PostgreSQL 16 + API with hot-reload
+└── docker-compose.prod.yml   Prod: Gunicorn, 4 workers, DB port closed
 ```
+
+The hash contract — the canonical list of fields included in every record hash — lives in `backend/app/services/hashing.py` (`HASHABLE_FIELDS`), used by both chain building and verification.
 
 ---
 
@@ -1055,9 +950,9 @@ A hosted test instance runs at [usevera.xyz](https://usevera.xyz) (password-prot
 | External store | Local JSON Lines file | S3 WORM available but not yet connected |
 | Email alerts | Resend (async, fire-and-forget) | Set `RESEND_API_KEY` in Railway env vars to activate |
 | Frontend | Vercel (Next.js) | usevera.xyz, SITE_PASSWORD protected |
-| CI/CD | None | Manual push to deploy |
+| CI | GitHub Actions | 14 workflows: SDK tests, Playwright e2e, Postgres migration checks, frontend lint/type-check, copy + IAM lint gates |
 | Domain/TLS | usevera.xyz (Vercel) | TLS via Vercel |
-| Tests | 114 passing | `cd backend && python -m pytest -v` |
+| Tests | ~2,450 across backend + SDK | See [Testing](#testing) |
 
 ---
 
