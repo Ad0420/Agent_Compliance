@@ -3,14 +3,13 @@
 [![PyPI](https://img.shields.io/pypi/v/vera-sdk.svg)](https://pypi.org/project/vera-sdk/)
 [![Python](https://img.shields.io/pypi/pyversions/vera-sdk.svg)](https://pypi.org/project/vera-sdk/)
 
-Tamper-evident audit trail for AI agents. Cryptographic hash chain with tamper-evident verification, built for teams that need to prove what their AI agents did, when, and why.
+A tamper-evident audit trail for AI agents. Vera records what an agent did, when, with what inputs and reasoning, in an append-only log whose integrity can be independently verified.
 
 **Install:** `pip install vera-sdk`
-**Live:** [usevera.xyz](https://usevera.xyz) (password-protected testing environment)
 
-**The problem:** AI agents are taking consequential actions — approving loans, flagging transactions, making hiring recommendations — with no verifiable record. Regulators (EU AI Act Art. 12, GDPR, Colorado AI Act, SEC Rule 17a-4) are requiring tamper-evident logs. When something goes wrong, teams cannot answer: what did the agent do, did a human approve it, and has the log been touched since? AWS QLDB (the only comparable managed service) was deprecated July 2025. Vera fills that gap.
+AI agents increasingly take consequential actions — approving loans, flagging transactions, screening candidates — and several regulations (EU AI Act Art. 12, Colorado AI Act, SEC Rule 17a-4) expect verifiable records of those actions. Vera is one approach to that problem: a four-layer immutability stack — database triggers block edits, a SHA-256 hash chain detects tampering, KMS-signed checkpoints prevent chain recomputation, and optional S3 Object Lock (WORM) proofs survive database compromise — plus a Python SDK with integrations for LangChain, OpenAI, CrewAI, and Anthropic/Claude.
 
-**The solution:** A four-layer immutability stack: database triggers prevent edits, a SHA-256 hash chain detects tampering, KMS-signed checkpoints prevent chain recomputation, and S3 WORM external proofs survive full database compromise. Drop-in Python SDK with integrations for LangChain, OpenAI, CrewAI, and Anthropic/Claude.
+> **Disclaimer:** This software is provided *as is*, without warranty of any kind, express or implied. Nothing in this repository is legal or compliance advice, and using Vera does not by itself make any system compliant with any regulation. See [Disclaimer](#disclaimer).
 
 ---
 
@@ -27,9 +26,11 @@ Tamper-evident audit trail for AI agents. Cryptographic hash chain with tamper-e
 - [Project Structure](#project-structure)
 - [Architecture](#architecture)
 - [Roadmap](#roadmap)
-- [Regulatory Compliance](#regulatory-compliance)
+- [Regulatory Context](#regulatory-context)
 - [Known Issues & Limitations](#known-issues--limitations)
 - [Changelog](#changelog)
+- [Disclaimer](#disclaimer)
+- [License](#license)
 
 ---
 
@@ -136,7 +137,7 @@ Agent Action --> SDK --> API --> Hash Chain --> Checkpoint --> External Proof (S
 - **Layer 1** stops accidents. A DBA with superuser access can still disable triggers.
 - **Layer 2** detects tampering. Modifying one record breaks every hash after it.
 - **Layer 3** prevents chain recomputation. Checkpoints are signed with a key the attacker doesn't have (with AWS KMS, the key never leaves hardware).
-- **Layer 4** is the final guarantee. Even with root access AND the KMS key, proofs in S3 WORM physically cannot be deleted for the retention period.
+- **Layer 4** is the last line of defense. Even with root access AND the KMS key, S3 Object Lock (COMPLIANCE mode) is designed to prevent proof deletion for the retention period. Note: S3 is not connected by default — proofs are written to a local file on the same server running the backend, which is fine for development but does not provide this layer's protection.
 
 ### How the hash chain works
 
@@ -224,8 +225,8 @@ except ApprovalRejectedError as e:
     print(e.approval["status"])
 ```
 
-Every vote is KMS-signed and written to the audit chain — giving you cryptographic
-proof that a specific human approved a specific action at a specific time.
+Every vote is KMS-signed and written to the audit chain, creating a signed,
+chained record that a specific human approved a specific action at a specific time.
 Admins can approve or reject from the dashboard (`/approvals` page) or via
 `POST /v1/approvals/{id}/decide`.
 
@@ -770,7 +771,7 @@ Frontend (Next.js 16)                SDK (Python)
 
 ## Roadmap
 
-**Step 5 of 6 in progress. Live at [usevera.xyz](https://usevera.xyz).**
+Current status: step 5 of 6 in progress.
 
 | Step | What | Status | Effort |
 |------|------|--------|--------|
@@ -860,9 +861,9 @@ Both endpoints accept the same filters: `start_date`, `end_date`, `agent_name`, 
 
 ---
 
-## Regulatory Compliance
+## Regulatory Context
 
-Vera targets the emerging AI compliance landscape. This section maps exactly what we cover and what we don't.
+This section maps which regulatory requirements Vera's features relate to, and which they don't. It is informational only — **not legal advice** — and using Vera does not by itself make a system compliant with any of these regulations (see [Disclaimer](#disclaimer)).
 
 <details>
 <summary><strong>Regulations tracked</strong></summary>
@@ -879,16 +880,16 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 </details>
 
 <details>
-<summary><strong>What we cover</strong></summary>
+<summary><strong>What Vera maps to</strong></summary>
 
-| Requirement | Regulation | How Vera Satisfies It |
+| Requirement | Regulation | How Vera supports it |
 |---|---|---|
 | **Automatic event logging** | EU AI Act Art. 12 | Core product. Every action cryptographically chained with full context |
 | **Log retention (min 6 months)** | EU AI Act Art. 19/26 | Append-only with triggers blocking DELETE. S3 WORM configurable retention |
 | **Tamper detection** | EU AI Act Art. 12, ISO 42001 A.6.2.8 | Four independent immutability layers |
 | **Model version tracking** | FINRA 2026 Report | `model_id`, `model_version`, `framework`, `framework_version` per record |
 | **Prompt and output logging** | FINRA 2026 Report | `input_data` and `outcome` fields capture full I/O |
-| **Record retention 3-6 years** | SEC Rule 17a-4 | Records physically cannot be deleted |
+| **Record retention 3-6 years** | SEC Rule 17a-4 | Append-only design; deletes blocked by database triggers |
 | **Monitoring of AI operation** | EU AI Act Art. 26(5) | Chain verification API enables continuous monitoring |
 | **Per-action accountability** | Colorado AI Act, NIST AI RMF | `agent_name`, `authorized_by`, `delegation_chain`, `reasoning` per record |
 | **Bias audit data availability** | NYC LL 144, Colorado | Historical data queryable by date range, agent, type |
@@ -897,7 +898,7 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 </details>
 
 <details>
-<summary><strong>What we don't cover (gaps)</strong></summary>
+<summary><strong>What Vera does not cover (gaps)</strong></summary>
 
 | Requirement | Regulation | Gap | Priority |
 |---|---|---|---|
@@ -910,18 +911,7 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 | Configurable retention | GDPR vs EU AI Act | Data stays forever, may conflict with GDPR | P2 |
 </details>
 
-<details>
-<summary><strong>Penalties for non-compliance</strong></summary>
-
-| Regulation | Maximum Fine |
-|---|---|
-| **EU AI Act** — prohibited practices | EUR 35M or **7% global turnover** |
-| **EU AI Act** — other violations (incl. Art. 12 logging) | EUR 15M or **3% global turnover** |
-| **Colorado AI Act** | **$20,000 per violation per consumer** |
-| **NYC LL 144** | $500 first; $500-$1,500/day subsequent |
-| **SEC/FINRA** | Fines, suspensions, disgorgement |
-| **GDPR** (if logs contain personal data) | EUR 20M or **4% global turnover** |
-</details>
+More detailed regulatory notes live in [regs.md](regs.md).
 
 ---
 
@@ -1055,7 +1045,7 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 
 ## Current State
 
-**Live at [usevera.xyz](https://usevera.xyz) (password-protected testing environment).**
+A hosted test instance runs at [usevera.xyz](https://usevera.xyz) (password-protected). Everything below also runs fully self-hosted.
 
 | Component | Current | Notes |
 |-----------|---------|-------|
@@ -1071,6 +1061,16 @@ Vera targets the emerging AI compliance landscape. This section maps exactly wha
 
 ---
 
+## Disclaimer
+
+This software is provided **"as is", without warranty of any kind**, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and non-infringement. In no event shall the authors or contributors be liable for any claim, damages, or other liability arising from, out of, or in connection with the software or its use.
+
+In particular:
+
+- **No compliance guarantee.** The regulatory mappings in this README and in the product are informational only. They are not legal advice, and deploying Vera does not by itself make any system compliant with the EU AI Act, the Colorado AI Act, SEC/FINRA rules, GDPR, or any other regulation. Consult your own counsel.
+- **No security guarantee.** The immutability layers are engineering controls with documented limitations (see [Known Issues & Limitations](#known-issues--limitations)). Some components — AWS KMS signing and the S3 Object Lock store — are implemented but not exercised in CI or connected in the default setup.
+- **Pre-1.0 software.** APIs, schemas, and the hash format may change between releases.
+
 ## License
 
-Proprietary. All rights reserved.
+A `LICENSE` file has not been added yet. Until one is, copyright is held by the authors and all rights are reserved by default. The disclaimer above applies regardless.
